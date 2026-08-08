@@ -1,0 +1,7 @@
+{$DOMAIN} {
+	# Only the Meta webhook needs to be reachable from the internet.
+	reverse_proxy /webhook* whatsapp-gateway:3000
+	reverse_proxy /healthz whatsapp-gateway:3000
+
+	respond 404
+}

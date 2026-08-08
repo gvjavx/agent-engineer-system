@@ -1,0 +1,44 @@
+services:
+  whatsapp-gateway:
+    build:
+      context: ..
+      dockerfile: infra/whatsapp-gateway.Dockerfile
+    env_file: ../.env
+    environment:
+      - ORCHESTRATOR_URL=http://orchestrator:4000
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: infra/orchestrator.Dockerfile
+    env_file: ../.env
+    environment:
+      - GATEWAY_URL=http://whatsapp-gateway:3000
+      - WORKSPACES_DIR=/repo/workspaces
+      - DB_PATH=/repo/data/orchestrator.sqlite
+    volumes:
+      - ../workspaces:/repo/workspaces
+      - ../data:/repo/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN=${DOMAIN}
+    restart: unless-stopped
+    depends_on:
+      - whatsapp-gateway
+
+volumes:
+  caddy_data:
+  caddy_config:

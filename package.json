@@ -1,0 +1,20 @@
+{
+  "name": "agent-engineer-system",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI agent team (PM/BA/QA/Backend/Frontend/Lead) controllable via WhatsApp, connected to GitHub repositories.",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev:gateway": "npm run dev --workspace apps/whatsapp-gateway",
+    "dev:orchestrator": "npm run dev --workspace apps/orchestrator",
+    "start:gateway": "npm run start --workspace apps/whatsapp-gateway",
+    "start:orchestrator": "npm run start --workspace apps/orchestrator",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
