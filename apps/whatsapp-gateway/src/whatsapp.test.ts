@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { extractInboundMessages, sendWhatsAppOptions } from "./whatsapp.js";
+import { extractInboundMessages, sendWhatsAppOptions, uploadMedia, sendWhatsAppDocument } from "./whatsapp.js";
 
 // sendWhatsAppOptions hits the real Graph API via global fetch — swap it out
 // for a spy so these tests just check the payload shape, no network needed.
@@ -22,6 +22,27 @@ async function captureRequestBody(run: () => Promise<void>): Promise<Record<stri
 
 function webhookPayload(message: Record<string, unknown>) {
   return { entry: [{ changes: [{ value: { messages: [message] } }] }] };
+}
+
+// uploadMedia sends multipart/form-data, not JSON — capture the raw call
+// instead of trying to JSON.parse the body like captureRequestBody does.
+async function captureFetchCall(
+  run: () => Promise<void>,
+  responseBody: unknown = {}
+): Promise<{ url: string; init: RequestInit }> {
+  const originalFetch = globalThis.fetch;
+  let captured: { url: string; init: RequestInit } | undefined;
+  globalThis.fetch = (async (url: unknown, init: RequestInit) => {
+    captured = { url: String(url), init };
+    return new Response(JSON.stringify(responseBody), { status: 200 });
+  }) as typeof fetch;
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  if (!captured) throw new Error("fetch was never called");
+  return captured;
 }
 
 test("extractInboundMessages extracts plain text messages", () => {
@@ -120,4 +141,26 @@ test("sendWhatsAppOptions caps list rows at 10", async () => {
   const interactive = body.interactive as Record<string, unknown>;
   const action = interactive.action as { sections: { rows: unknown[] }[] };
   assert.equal(action.sections[0].rows.length, 10);
+});
+
+test("uploadMedia posts the file as multipart form data and returns the media id", async () => {
+  const { url, init } = await captureFetchCall(async () => {
+    const id = await uploadMedia(Buffer.from("hello world"), "FSD.md", "text/plain");
+    assert.equal(id, "media-123");
+  }, { id: "media-123" });
+
+  assert.match(url, /\/media$/);
+  assert.equal(init.method, "POST");
+  const form = init.body as FormData;
+  assert.equal(form.get("messaging_product"), "whatsapp");
+  assert.equal(form.get("type"), "text/plain");
+  const file = form.get("file") as File;
+  assert.equal(file.name, "FSD.md");
+  assert.equal(file.type, "text/plain");
+});
+
+test("sendWhatsAppDocument sends a document message referencing the media id", async () => {
+  const body = await captureRequestBody(() => sendWhatsAppDocument("628123", "media-123", "FSD.md", "ini dia"));
+  assert.equal(body.type, "document");
+  assert.deepEqual(body.document, { id: "media-123", filename: "FSD.md", caption: "ini dia" });
 });

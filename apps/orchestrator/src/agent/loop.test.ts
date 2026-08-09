@@ -90,6 +90,58 @@ test("runAgentLoop routes figma_ tool calls to the Figma session, not the local 
   assert.equal(result.summary, "saw: figma tool result");
 });
 
+test("runAgentLoop routes send_document tool calls to the sendDocument callback", async () => {
+  let calledWith: { relPath: string; caption: string | undefined } | undefined;
+  const sendDocument = async (relPath: string, caption: string | undefined) => {
+    calledWith = { relPath, caption };
+    return "Dokumen terkirim.";
+  };
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+
+  let turn = 0;
+  const provider: Provider = {
+    name: "fake",
+    async chat(messages: ChatMessage[]): Promise<ProviderResponse> {
+      turn++;
+      if (turn === 1) {
+        return {
+          type: "tool_calls",
+          calls: [{ id: "1", name: "send_document", input: { path: "FSD.md", caption: "ini FSD-nya" } }],
+        };
+      }
+      const toolMessage = messages.find((m) => m.role === "tool");
+      return { type: "text", text: `saw: ${toolMessage?.content}` };
+    },
+  };
+
+  const result = await runAgentLoop(baseParams({ providers: [provider], resolveFigmaToolsFn, sendDocument }));
+
+  assert.deepEqual(calledWith, { relPath: "FSD.md", caption: "ini FSD-nya" });
+  assert.equal(result.ok, true);
+  assert.equal(result.summary, "saw: Dokumen terkirim.");
+});
+
+test("runAgentLoop falls back to a stub message for send_document when no callback was given", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+
+  let turn = 0;
+  const provider: Provider = {
+    name: "fake",
+    async chat(messages: ChatMessage[]): Promise<ProviderResponse> {
+      turn++;
+      if (turn === 1) {
+        return { type: "tool_calls", calls: [{ id: "1", name: "send_document", input: { path: "FSD.md" } }] };
+      }
+      const toolMessage = messages.find((m) => m.role === "tool");
+      return { type: "text", text: `saw: ${toolMessage?.content}` };
+    },
+  };
+
+  const result = await runAgentLoop(baseParams({ providers: [provider], resolveFigmaToolsFn }));
+
+  assert.match(result.summary, /belum tersedia/);
+});
+
 test("runAgentLoop skips Figma resolution entirely when there's nothing Figma-related", async () => {
   let resolveCalled = false;
   const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => {

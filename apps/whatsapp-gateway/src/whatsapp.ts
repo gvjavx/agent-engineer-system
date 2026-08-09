@@ -159,3 +159,40 @@ async function postMessage(body: Record<string, unknown>): Promise<void> {
     throw new Error(`Failed to send WhatsApp message (${res.status}): ${responseBody}`);
   }
 }
+
+// Two-step process for sending a file: upload it to get a media id, then
+// reference that id in a "document" message. WhatsApp has no way to send
+// raw bytes directly in the message itself.
+export async function uploadMedia(buffer: Buffer, filename: string, mimeType: string): Promise<string> {
+  const url = `https://graph.facebook.com/${config.metaGraphApiVersion}/${config.metaPhoneNumberId}/media`;
+  const form = new FormData();
+  form.set("messaging_product", "whatsapp");
+  form.set("type", mimeType);
+  form.set("file", new Blob([Uint8Array.from(buffer)], { type: mimeType }), filename);
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.metaAccessToken}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const responseBody = await res.text();
+    throw new Error(`Failed to upload media (${res.status}): ${responseBody}`);
+  }
+  const json = (await res.json()) as { id: string };
+  return json.id;
+}
+
+export async function sendWhatsAppDocument(
+  to: string,
+  mediaId: string,
+  filename: string,
+  caption?: string
+): Promise<void> {
+  await postMessage({
+    messaging_product: "whatsapp",
+    to,
+    type: "document",
+    document: { id: mediaId, filename, ...(caption ? { caption } : {}) },
+  });
+}

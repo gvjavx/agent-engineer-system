@@ -53,9 +53,22 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       required: ["path", "old_string", "new_string"],
     },
   },
+  {
+    name: "send_document",
+    description:
+      "Send a file from this project to the user as a WhatsApp document attachment. Only call this when the user explicitly asked for the file to be sent/attached, or when delivering a document was the actual point of the task (e.g. \"bikin FSD-nya\") — not for every file you happen to touch while working. Supported: .pdf .doc .docx .ppt .pptx .xls .xlsx .csv .txt .md .zip, up to 16MB.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Path to the file, relative to the project root." },
+        caption: { type: "string", description: "Optional short caption to send along with the document." },
+      },
+      required: ["path"],
+    },
+  },
 ];
 
-function resolveWithin(cwd: string, relPath: string): string {
+export function resolveWithin(cwd: string, relPath: string): string {
   const resolved = path.resolve(cwd, relPath);
   const cwdWithSep = cwd.endsWith(path.sep) ? cwd : cwd + path.sep;
   if (resolved !== cwd && !resolved.startsWith(cwdWithSep)) {
@@ -142,6 +155,9 @@ export function briefToolDescription(name: string, input: Record<string, unknown
   }
   if (name === "read_file" && typeof input.path === "string") {
     return `Membaca ${input.path}`;
+  }
+  if (name === "send_document" && typeof input.path === "string") {
+    return `Mengirim ${input.path} sebagai dokumen`;
   }
   return `${name}`;
 }

@@ -4,6 +4,8 @@ import {
   extractInboundMessages,
   sendWhatsAppMessage,
   sendWhatsAppOptions,
+  uploadMedia,
+  sendWhatsAppDocument,
   verifySignature,
   type QuickReplyOption,
 } from "./whatsapp.js";
@@ -11,14 +13,9 @@ import { forwardToOrchestrator, forwardFigmaOAuthCallback } from "./orchestrator
 
 const app = express();
 
-// Meta signs the raw body, so we need it verbatim before JSON parsing kicks in.
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      (req as express.Request & { rawBody: Buffer }).rawBody = buf;
-    },
-  })
-);
+// No blanket app.use(express.json()) — each route gets its own parser sized
+// (and, for /webhook, raw-body-capturing) for what it actually needs, so a
+// bigger limit on one route doesn't quietly widen every other route too.
 
 // Step 1 of Meta webhook setup: they GET this URL with a challenge to confirm ownership.
 app.get("/webhook", (req, res) => {
@@ -33,41 +30,50 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// Step 2: Meta POSTs inbound messages/events here.
-app.post("/webhook", async (req, res) => {
-  const rawBody = (req as express.Request & { rawBody: Buffer }).rawBody;
-  const signature = req.header("X-Hub-Signature-256");
+// Step 2: Meta POSTs inbound messages/events here. Meta signs the raw body,
+// so we need it verbatim before JSON parsing kicks in.
+app.post(
+  "/webhook",
+  express.json({
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody: Buffer }).rawBody = buf;
+    },
+  }),
+  async (req, res) => {
+    const rawBody = (req as express.Request & { rawBody: Buffer }).rawBody;
+    const signature = req.header("X-Hub-Signature-256");
 
-  if (!verifySignature(rawBody, signature)) {
-    console.warn("Rejected webhook with invalid signature");
-    return res.sendStatus(401);
-  }
-
-  // Ack immediately; Meta retries aggressively if we're slow or if it 4xx/5xxs.
-  res.sendStatus(200);
-
-  const messages = extractInboundMessages(req.body);
-  for (const message of messages) {
-    const senderAllowed = config.allowedSenders.includes(message.from);
-    if (!senderAllowed) {
-      console.warn(`Ignoring message from non-allowlisted sender: ${message.from}`);
-      continue;
+    if (!verifySignature(rawBody, signature)) {
+      console.warn("Rejected webhook with invalid signature");
+      return res.sendStatus(401);
     }
-    try {
-      await forwardToOrchestrator(message);
-    } catch (err) {
-      console.error("Failed to forward inbound message to orchestrator:", err);
-      await sendWhatsAppMessage(
-        message.from,
-        "Waduh, pesannya gagal kekirim ke sistem. Coba kirim lagi ya sebentar."
-      ).catch(() => {});
+
+    // Ack immediately; Meta retries aggressively if we're slow or if it 4xx/5xxs.
+    res.sendStatus(200);
+
+    const messages = extractInboundMessages(req.body);
+    for (const message of messages) {
+      const senderAllowed = config.allowedSenders.includes(message.from);
+      if (!senderAllowed) {
+        console.warn(`Ignoring message from non-allowlisted sender: ${message.from}`);
+        continue;
+      }
+      try {
+        await forwardToOrchestrator(message);
+      } catch (err) {
+        console.error("Failed to forward inbound message to orchestrator:", err);
+        await sendWhatsAppMessage(
+          message.from,
+          "Waduh, pesannya gagal kekirim ke sistem. Coba kirim lagi ya sebentar."
+        ).catch(() => {});
+      }
     }
   }
-});
+);
 
 // Internal endpoint: orchestrator calls this to send a reply/progress update,
 // optionally as tappable quick-reply buttons/list instead of plain text.
-app.post("/send", async (req, res) => {
+app.post("/send", express.json(), async (req, res) => {
   if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
     return res.sendStatus(401);
   }
@@ -90,6 +96,34 @@ app.post("/send", async (req, res) => {
   } catch (err) {
     console.error("Failed to send WhatsApp message:", err);
     res.status(502).json({ error: "Failed to send WhatsApp message" });
+  }
+});
+
+// Internal endpoint: orchestrator calls this when the agent wants to deliver
+// a file as a WhatsApp document attachment. Bigger body limit than the other
+// routes since the file comes over as base64 — scoped to just this route.
+app.post("/send-document", express.json({ limit: "20mb" }), async (req, res) => {
+  if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
+    return res.sendStatus(401);
+  }
+  const { to, filename, mimeType, caption, contentBase64 } = req.body as {
+    to?: string;
+    filename?: string;
+    mimeType?: string;
+    caption?: string;
+    contentBase64?: string;
+  };
+  if (!to || !filename || !mimeType || !contentBase64) {
+    return res.status(400).json({ error: "Missing 'to', 'filename', 'mimeType', or 'contentBase64'" });
+  }
+  try {
+    const buffer = Buffer.from(contentBase64, "base64");
+    const mediaId = await uploadMedia(buffer, filename, mimeType);
+    await sendWhatsAppDocument(to, mediaId, filename, caption);
+    res.sendStatus(204);
+  } catch (err) {
+    console.error("Failed to send WhatsApp document:", err);
+    res.status(502).json({ error: "Failed to send WhatsApp document" });
   }
 });
 

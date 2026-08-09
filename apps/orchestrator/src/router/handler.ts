@@ -8,7 +8,7 @@ import {
   auditLog,
   type Project,
 } from "../db/index.js";
-import { sendWhatsApp, type QuickReplyOption } from "../whatsappClient.js";
+import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
 import { ensureWorkspace, createWorkBranch, ensureLocalFolder } from "../git/repo.js";
 import { buildProviders, splitProviderSpec } from "../agent/runner.js";
 import { checkProviderStatus } from "../agent/providerStatus.js";
@@ -19,6 +19,8 @@ import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment } from "../agen
 import { buildAuthorizeUrl } from "../agent/mcp/figmaAuth.js";
 import { createPendingState } from "../agent/mcp/figmaOAuthState.js";
 import { resolveCheckpoint, hasPendingCheckpoint } from "../agent/checkpoint.js";
+import { resolveWithin } from "../agent/tools.js";
+import { resolveDocumentMimeType, MAX_DOCUMENT_BYTES } from "../agent/documentGuard.js";
 import { config } from "../config.js";
 import { enqueueProjectTask, cancelActiveTask, getActiveTaskId } from "../queue/taskQueue.js";
 import {
@@ -592,6 +594,33 @@ async function executeTask(
         mode = { kind: "git", defaultBranch: project.default_branch, workBranch, autoMerge: project.auto_merge };
       }
 
+      const sendDocument = async (relPath: string, caption: string | undefined): Promise<string> => {
+        let full: string;
+        try {
+          full = resolveWithin(cwd, relPath);
+        } catch (err) {
+          return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        }
+        const mimeType = resolveDocumentMimeType(full);
+        if (!mimeType) {
+          return `Error: tipe file "${relPath}" gak didukung buat dikirim sebagai dokumen.`;
+        }
+        const stat = await fs.promises.stat(full).catch(() => undefined);
+        if (!stat) {
+          return `Error: file "${relPath}" gak ketemu.`;
+        }
+        if (stat.size > MAX_DOCUMENT_BYTES) {
+          return `Error: file "${relPath}" kegedean buat dikirim (maks ${MAX_DOCUMENT_BYTES / 1024 / 1024}MB).`;
+        }
+        try {
+          const contentBase64 = (await fs.promises.readFile(full)).toString("base64");
+          await sendWhatsAppDocument(from, path.basename(full), mimeType, contentBase64, caption);
+          return `Dokumen "${relPath}" berhasil dikirim ke user.`;
+        } catch (err) {
+          return `Error: gagal kirim dokumen — ${err instanceof Error ? err.message : String(err)}`;
+        }
+      };
+
       const result = await runPipeline({
         taskId,
         cwd,
@@ -602,6 +631,7 @@ async function executeTask(
         onProgress,
         checkpoints,
         onCheckpoint,
+        sendDocument,
         departmentModelLookup: (department) =>
           department === "semua"
             ? (state?.preferred_provider ?? undefined)

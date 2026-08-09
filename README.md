@@ -188,6 +188,17 @@ Agent bisa "lihat" desain Figma — baca layer, style, variabel, generate kode d
 
 Kalau kamu tempel link Figma sebelum pernah `hubungkan figma`, agent bakal bilang jelas ("belum kesambung, ketik hubungkan figma dulu") daripada gagal diam-diam.
 
+## Kirim dokumen sebagai lampiran WhatsApp
+
+Selain nulis file ke repo/folder, agent bisa ngirim file itu langsung sebagai lampiran dokumen di chat — bukan cuma diceritain dalam teks. AI yang mutusin kapan pakai ini (tool `send_document`), bukan otomatis buat tiap file yang disentuh — biar gak spam lampiran tiap kali agent nulis banyak file dalam task koding biasa. Dipanggil kalau kamu eksplisit minta dikirim/dilampirkan, atau memang itu tujuan tasknya (mis. "bikinin FSD-nya" → FSD.md-nya ikut dikirim).
+
+Contoh instruksi: `bikinin FSD buat fitur checkout, terus kirimin filenya ke sini`.
+
+Batasan:
+- Tipe file yang didukung: `.pdf .doc .docx .ppt .pptx .xls .xlsx .csv .txt .md .zip`. Di luar itu ditolak (default-deny, sama kayak filter tool Figma).
+- Maksimal 16MB per file — jauh di bawah limit dokumen WhatsApp (100MB) karena file dikirim base64 lewat panggilan internal, bukan streaming.
+- Kalau tipe file gak didukung atau kegedean, agent kasih tau jelas kenapa (bukan error mentah dari API).
+
 ## Catatan keamanan
 
 - Hanya nomor di `ALLOWED_SENDERS` yang perintahnya diproses.

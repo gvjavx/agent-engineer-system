@@ -69,4 +69,5 @@ test("briefToolDescription summarizes each tool kind", () => {
   assert.equal(briefToolDescription("write_file", { path: "a.txt" }), "Menulis a.txt");
   assert.equal(briefToolDescription("edit_file", { path: "a.txt" }), "Mengedit a.txt");
   assert.equal(briefToolDescription("read_file", { path: "a.txt" }), "Membaca a.txt");
+  assert.equal(briefToolDescription("send_document", { path: "FSD.md" }), "Mengirim FSD.md sebagai dokumen");
 });

@@ -35,6 +35,8 @@ export interface RunPipelineParams {
   // to go out with Ya/Tidak buttons attached. Falls back to onProgress
   // (as plain text, no buttons) if checkpoints is used without this set.
   onCheckpoint?: (message: string) => void;
+  // Backs the send_document tool — see loop.ts for why this is a callback.
+  sendDocument?: (relPath: string, caption: string | undefined) => Promise<string>;
   // Swappable for tests — default to the real config-backed implementations.
   buildProvidersFn?: (preferredProvider?: string) => Provider[];
   runTaskFn?: (params: RunTaskParams) => Promise<RunTaskResult>;
@@ -55,6 +57,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
     mode,
     checkpoints = false,
     onCheckpoint = onProgress,
+    sendDocument,
     buildProvidersFn = realBuildProviders,
     runTaskFn = realRunTask,
   } = params;
@@ -76,6 +79,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           abortController,
           preferredProvider,
           onProgress,
+          sendDocument,
         })
       : runTaskFn({
           kind: "local",
@@ -87,6 +91,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           abortController,
           preferredProvider,
           onProgress,
+          sendDocument,
         });
   }
 
@@ -127,6 +132,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
       abortController,
       onProgress,
       maxTurns: PHASE_MAX_TURNS,
+      sendDocument,
     });
 
     if (!result.ok) {
@@ -156,6 +162,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           abortController,
           onProgress,
           maxTurns: PHASE_MAX_TURNS,
+          sendDocument,
         });
 
         if (!result.ok) {

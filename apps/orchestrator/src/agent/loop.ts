@@ -17,6 +17,11 @@ export interface RunAgentLoopParams {
   // in the instruction and, if the account is linked, connects to Figma's
   // MCP server and returns its read-only tools.
   resolveFigmaToolsFn?: (instruction: string, taskId: string) => Promise<FigmaToolsResult>;
+  // Backs the send_document tool — real value only known at the router/handler
+  // level (needs the WhatsApp recipient), so it's threaded down as a callback
+  // rather than looked up here. Defaults to a stub so existing callers/tests
+  // that don't care about this tool don't need to pass it.
+  sendDocument?: (relPath: string, caption: string | undefined) => Promise<string>;
 }
 
 export interface RunAgentLoopResult {
@@ -42,6 +47,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
     onProgress,
     maxTurns = 40,
     resolveFigmaToolsFn = resolveFigmaTools,
+    sendDocument = async () => "Fitur kirim dokumen belum tersedia di sini.",
   } = params;
 
   if (providers.length === 0) {
@@ -121,7 +127,9 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
         const result =
           figmaTools.kind === "ready" && call.name.startsWith("figma_")
             ? await figmaTools.call(call.name.slice("figma_".length), call.input)
-            : await executeTool(call.name, call.input, cwd);
+            : call.name === "send_document"
+              ? await sendDocument(String(call.input.path ?? ""), typeof call.input.caption === "string" ? call.input.caption : undefined)
+              : await executeTool(call.name, call.input, cwd);
         messages.push({ role: "tool", toolCallId: call.id, toolName: call.name, content: result });
       }
     }
