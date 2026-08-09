@@ -38,3 +38,13 @@ export async function createWorkBranch(dir: string, taskId: string): Promise<str
   await simpleGit(dir).checkoutLocalBranch(branch);
   return branch;
 }
+
+// For kind='local' projects: no clone, no branch — the agent edits the folder
+// in place. project.repo_url holds the absolute path in this case.
+export async function ensureLocalFolder(project: Project): Promise<string> {
+  const dir = path.resolve(project.repo_url);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    throw new Error(`Folder tidak ditemukan: ${dir}`);
+  }
+  return dir;
+}

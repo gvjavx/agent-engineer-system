@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -10,13 +11,65 @@ function required(name: string): string {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// apps/orchestrator/src -> repo root
+// apps/orchestrator/src (or dist, once built) -> repo root
 const repoRoot = path.resolve(__dirname, "..", "..", "..");
+
+// Loads repo-root .env for local dev. In Docker, env vars come from the
+// compose env_file instead and no .env exists in the image, so this is a
+// harmless no-op there; either way it never overrides already-set vars.
+dotenv.config({ path: path.join(repoRoot, ".env") });
+
+// gemini gets its own SDK; anything else in AI_PROVIDER_ORDER is assumed
+// OpenAI-compatible and resolved via <NAME>_API_KEY/_BASE_URL/_MODEL — so new
+// providers (Groq, Mistral, ...) never need code changes, just env vars.
+const OPENAI_COMPATIBLE_DEFAULTS: Record<string, { baseUrl?: string; model?: string }> = {
+  qwen: { baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", model: "qwen3-coder-plus" },
+  openrouter: { baseUrl: "https://openrouter.ai/api/v1", model: "qwen/qwen3-coder:free" },
+};
+
+// gemini-2.5-flash and 2.0-flash both dropped to a 0-request free quota for
+// new keys within a year of launch, and -latest currently points at a model
+// with only 5rpm free — too tight for a multi-tool-call turn. flash-lite
+// held up better in testing. Re-check ai.google.dev/gemini-api/docs/rate-limits
+// if this starts erroring.
+const GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite";
+
+function requiredForProvider(providerName: string, envVar: string): string {
+  const value = process.env[envVar];
+  if (!value) {
+    throw new Error(
+      `Provider "${providerName}" ada di AI_PROVIDER_ORDER tapi env var ${envVar} belum diisi di .env.`
+    );
+  }
+  return value;
+}
+
+// Comma-separated so you can register several API keys for the same
+// provider (e.g. 5 Gemini keys) — the agent rotates to the next one when the
+// current key hits a rate limit/quota error, before falling back to a
+// different provider entirely.
+function parseApiKeys(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function envVarName(providerName: string, suffix: "API_KEY" | "BASE_URL" | "MODEL"): string {
+  return `${providerName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_${suffix}`;
+}
+
+const providerOrder = (process.env.AI_PROVIDER_ORDER ?? "gemini,openrouter,qwen")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+if (providerOrder.length === 0) {
+  throw new Error("AI_PROVIDER_ORDER tidak boleh kosong — isi minimal satu provider.");
+}
 
 export const config = {
   port: Number(process.env.ORCHESTRATOR_PORT ?? 4000),
-
-  anthropicApiKey: required("ANTHROPIC_API_KEY"),
 
   githubToken: required("GITHUB_TOKEN"),
 
@@ -29,5 +82,50 @@ export const config = {
   workspacesDir: process.env.WORKSPACES_DIR ?? path.join(repoRoot, "workspaces"),
   dbPath: process.env.DB_PATH ?? path.join(repoRoot, "data", "orchestrator.sqlite"),
 
-  claudeModel: process.env.CLAUDE_MODEL,
+  // Free AI providers, tried in this order with automatic fallback. Only
+  // providers actually listed in AI_PROVIDER_ORDER get validated/built.
+  providerOrder,
+
+  gemini: providerOrder.includes("gemini")
+    ? {
+        apiKeys: parseApiKeys(requiredForProvider("gemini", "GEMINI_API_KEY")),
+        model: process.env.GEMINI_MODEL ?? GEMINI_DEFAULT_MODEL,
+      }
+    : undefined,
+
+  // Optional — only set once someone actually registers a Figma OAuth app
+  // and runs "hubungkan figma". Left undefined otherwise so the rest of the
+  // system works fine without it.
+  figma:
+    process.env.FIGMA_MCP_CLIENT_ID && process.env.FIGMA_OAUTH_REDIRECT_URI
+      ? {
+          clientId: process.env.FIGMA_MCP_CLIENT_ID,
+          clientSecret: process.env.FIGMA_MCP_CLIENT_SECRET,
+          redirectUri: process.env.FIGMA_OAUTH_REDIRECT_URI,
+        }
+      : undefined,
+
+  // Keyed by provider name — one entry per non-"gemini" name in
+  // AI_PROVIDER_ORDER, built purely from the <NAME>_API_KEY/BASE_URL/MODEL
+  // convention (see comment above OPENAI_COMPATIBLE_DEFAULTS). API_KEY can be
+  // a comma-separated list, same as GEMINI_API_KEY above.
+  openAiCompatibleProviders: Object.fromEntries(
+    providerOrder
+      .filter((name) => name !== "gemini")
+      .map((name) => {
+        const defaults = OPENAI_COMPATIBLE_DEFAULTS[name];
+        const apiKeys = parseApiKeys(requiredForProvider(name, envVarName(name, "API_KEY")));
+        const baseUrl = process.env[envVarName(name, "BASE_URL")] ?? defaults?.baseUrl;
+        if (!baseUrl) {
+          throw new Error(
+            `Provider "${name}" butuh env var ${envVarName(name, "BASE_URL")} (endpoint OpenAI-compatible-nya) di .env.`
+          );
+        }
+        const model = process.env[envVarName(name, "MODEL")] ?? defaults?.model;
+        if (!model) {
+          throw new Error(`Provider "${name}" butuh env var ${envVarName(name, "MODEL")} di .env.`);
+        }
+        return [name, { apiKeys, baseUrl, model }];
+      })
+  ) as Record<string, { apiKeys: string[]; baseUrl: string; model: string }>,
 };

@@ -1,6 +1,9 @@
 import express from "express";
 import { config } from "./config.js";
 import { handleInboundMessage } from "./router/handler.js";
+import { exchangeCodeForTokens } from "./agent/mcp/figmaAuth.js";
+import { consumePendingState } from "./agent/mcp/figmaOAuthState.js";
+import { sendWhatsApp } from "./whatsappClient.js";
 import "./db/index.js";
 
 const app = express();
@@ -22,6 +25,31 @@ app.post("/inbound", (req, res) => {
   handleInboundMessage(from, text).catch((err) => {
     console.error(`Unhandled error handling message from ${from}:`, err);
   });
+});
+
+// Called by whatsapp-gateway (the only publicly reachable piece) once the
+// user finishes Figma's OAuth consent screen and gets redirected back.
+app.post("/internal/figma-oauth-callback", (req, res) => {
+  if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
+    return res.sendStatus(401);
+  }
+  const { code, state } = req.body as { code?: string; state?: string };
+  if (!code || !state) {
+    return res.status(400).json({ error: "Missing 'code' or 'state'" });
+  }
+  res.sendStatus(202);
+
+  const fromNumber = consumePendingState(state);
+  if (!fromNumber) {
+    console.error("Figma OAuth callback with an unknown or expired state");
+    return;
+  }
+
+  exchangeCodeForTokens(code)
+    .then(() => sendWhatsApp(fromNumber, "Figma udah kesambung! Tinggal tempel link Figma-nya di instruksi kamu."))
+    .catch((err) =>
+      sendWhatsApp(fromNumber, `Gagal nyambungin Figma: ${err instanceof Error ? err.message : String(err)}`)
+    );
 });
 
 app.get("/healthz", (_req, res) => res.sendStatus(200));

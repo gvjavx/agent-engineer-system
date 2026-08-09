@@ -15,3 +15,18 @@ export async function forwardToOrchestrator(message: InboundMessage): Promise<vo
     throw new Error(`Orchestrator rejected inbound message (${res.status}): ${body}`);
   }
 }
+
+export async function forwardFigmaOAuthCallback(code: string, state: string): Promise<void> {
+  const res = await fetch(`${config.orchestratorUrl}/internal/figma-oauth-callback`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Internal-Secret": config.internalSharedSecret,
+    },
+    body: JSON.stringify({ code, state }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Orchestrator rejected Figma OAuth callback (${res.status}): ${body}`);
+  }
+}

@@ -11,9 +11,10 @@ db.pragma("journal_mode = WAL");
 db.exec(`
   CREATE TABLE IF NOT EXISTS projects (
     alias TEXT PRIMARY KEY,
-    repo_url TEXT NOT NULL,
+    repo_url TEXT NOT NULL, -- git remote URL, or an absolute local path when kind='local'
     default_branch TEXT NOT NULL DEFAULT 'main',
     auto_merge TEXT NOT NULL DEFAULT 'direct', -- 'direct' | 'pr'
+    kind TEXT NOT NULL DEFAULT 'git', -- 'git' | 'local'
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -39,15 +40,40 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS conversation_state (
     from_number TEXT PRIMARY KEY,
     active_project_alias TEXT,
-    pending_action TEXT -- JSON blob for multi-step flows (e.g. awaiting repo URL)
+    pending_action TEXT, -- JSON blob for multi-step flows (e.g. awaiting repo URL)
+    preferred_provider TEXT, -- AI provider to try first, set via "pakai model semua <nama>"
+    department_models TEXT -- JSON {department: providerName}, set via "pakai model <departemen> <nama>"
+  );
+
+  -- Single row (id=1): the one Figma account linked via "hubungkan figma".
+  -- Single-tenant by design, same assumption as ALLOWED_SENDERS.
+  CREATE TABLE IF NOT EXISTS figma_oauth (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    access_token TEXT NOT NULL,
+    refresh_token TEXT NOT NULL,
+    expires_at TEXT NOT NULL
   );
 `);
+
+// Idempotent migrations for DBs created before these columns existed.
+for (const migration of [
+  "ALTER TABLE conversation_state ADD COLUMN preferred_provider TEXT",
+  "ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'git'",
+  "ALTER TABLE conversation_state ADD COLUMN department_models TEXT",
+]) {
+  try {
+    db.exec(migration);
+  } catch {
+    // already applied
+  }
+}
 
 export interface Project {
   alias: string;
   repo_url: string;
   default_branch: string;
   auto_merge: "direct" | "pr";
+  kind: "git" | "local";
   created_at: string;
 }
 
@@ -62,8 +88,14 @@ export const projectsRepo = {
   },
   create(alias: string, repoUrl: string, defaultBranch = "main"): Project {
     db.prepare(
-      "INSERT INTO projects (alias, repo_url, default_branch) VALUES (?, ?, ?)"
+      "INSERT INTO projects (alias, repo_url, default_branch, kind) VALUES (?, ?, ?, 'git')"
     ).run(alias, repoUrl, defaultBranch);
+    return this.get(alias)!;
+  },
+  createLocal(alias: string, localPath: string): Project {
+    db.prepare(
+      "INSERT INTO projects (alias, repo_url, default_branch, kind) VALUES (?, ?, '', 'local')"
+    ).run(alias, localPath);
     return this.get(alias)!;
   },
 };
@@ -117,12 +149,21 @@ export const auditLog = {
       "INSERT INTO audit_log (task_id, kind, detail) VALUES (?, ?, ?)"
     ).run(taskId, kind, detail);
   },
+  // Used by the "status" command to show which pipeline phase is currently running.
+  latestNote(taskId: string): string | undefined {
+    const row = db
+      .prepare("SELECT detail FROM audit_log WHERE task_id = ? AND kind = 'note' ORDER BY id DESC LIMIT 1")
+      .get(taskId) as { detail: string } | undefined;
+    return row?.detail;
+  },
 };
 
 export interface ConversationState {
   from_number: string;
   active_project_alias: string | null;
   pending_action: string | null;
+  preferred_provider: string | null;
+  department_models: string | null;
 }
 
 export const conversationRepo = {
@@ -142,5 +183,54 @@ export const conversationRepo = {
       `INSERT INTO conversation_state (from_number, pending_action) VALUES (?, ?)
        ON CONFLICT(from_number) DO UPDATE SET pending_action = excluded.pending_action`
     ).run(fromNumber, pending);
+  },
+  setPreferredProvider(fromNumber: string, providerName: string | null): void {
+    db.prepare(
+      `INSERT INTO conversation_state (from_number, preferred_provider) VALUES (?, ?)
+       ON CONFLICT(from_number) DO UPDATE SET preferred_provider = excluded.preferred_provider`
+    ).run(fromNumber, providerName);
+  },
+  getDepartmentModels(fromNumber: string): Record<string, string> {
+    const raw = this.get(fromNumber)?.department_models;
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  },
+  getDepartmentModel(fromNumber: string, department: string): string | undefined {
+    return this.getDepartmentModels(fromNumber)[department];
+  },
+  setDepartmentModel(fromNumber: string, department: string, providerName: string): void {
+    const current = this.getDepartmentModels(fromNumber);
+    current[department] = providerName;
+    db.prepare(
+      `INSERT INTO conversation_state (from_number, department_models) VALUES (?, ?)
+       ON CONFLICT(from_number) DO UPDATE SET department_models = excluded.department_models`
+    ).run(fromNumber, JSON.stringify(current));
+  },
+};
+
+export interface FigmaOAuthTokens {
+  access_token: string;
+  refresh_token: string;
+  expires_at: string; // ISO timestamp
+}
+
+export const figmaOAuthRepo = {
+  get(): FigmaOAuthTokens | undefined {
+    return db.prepare("SELECT access_token, refresh_token, expires_at FROM figma_oauth WHERE id = 1").get() as
+      | FigmaOAuthTokens
+      | undefined;
+  },
+  save(tokens: FigmaOAuthTokens): void {
+    db.prepare(
+      `INSERT INTO figma_oauth (id, access_token, refresh_token, expires_at) VALUES (1, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET access_token = excluded.access_token, refresh_token = excluded.refresh_token, expires_at = excluded.expires_at`
+    ).run(tokens.access_token, tokens.refresh_token, tokens.expires_at);
+  },
+  clear(): void {
+    db.prepare("DELETE FROM figma_oauth WHERE id = 1").run();
   },
 };

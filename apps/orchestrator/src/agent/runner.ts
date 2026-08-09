@@ -1,148 +1,114 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.js";
-import { buildSystemPrompt } from "./systemPrompt.js";
-import { auditLog } from "../db/index.js";
+import { buildGitSystemPrompt, buildLocalFolderSystemPrompt } from "./systemPrompt.js";
+import { runAgentLoop } from "./loop.js";
+import { GeminiProvider } from "./providers/gemini.js";
+import { OpenAiCompatibleProvider } from "./providers/openAiCompatible.js";
+import type { Provider } from "./types.js";
 
-export interface RunTaskParams {
+export type RunTaskParams = {
   taskId: string;
   cwd: string;
   projectAlias: string;
-  defaultBranch: string;
-  workBranch: string;
-  autoMerge: "direct" | "pr";
   instruction: string;
   abortController: AbortController;
   onProgress: (text: string) => void;
-}
+  // Provider name to try first (from "pakai model <nama>"). Falls back to the
+  // rest of config.providerOrder if it fails — this only changes which
+  // provider goes first, it never narrows the fallback chain.
+  preferredProvider?: string;
+} & (
+  | { kind: "git"; defaultBranch: string; workBranch: string; autoMerge: "direct" | "pr" }
+  | { kind: "local"; folderPath: string }
+);
 
 export interface RunTaskResult {
   ok: boolean;
   summary: string;
-  totalCostUsd?: number;
 }
 
-interface ContentBlock {
-  type: string;
-  text?: string;
-  name?: string;
-  input?: unknown;
+// "<provider>" or "<provider>/<model>" — the /model suffix overrides the
+// provider's env-configured default model. Used by "pakai model" (and the
+// resulting preferredProvider / department_models values) so a department
+// can pin a specific model, not just a provider.
+export function splitProviderSpec(spec: string): { name: string; model?: string } {
+  const slashIndex = spec.indexOf("/");
+  if (slashIndex === -1) return { name: spec };
+  return { name: spec.slice(0, slashIndex), model: spec.slice(slashIndex + 1) };
 }
 
-function briefToolDescription(block: ContentBlock): string {
-  if (block.type !== "tool_use" || !block.name) return "";
-  const input = block.input as Record<string, unknown> | undefined;
-  if (block.name === "Bash" && typeof input?.command === "string") {
-    const cmd = input.command as string;
-    return `🔧 ${cmd.length > 120 ? cmd.slice(0, 120) + "…" : cmd}`;
+// One provider instance per API key configured for this name — lets someone
+// register several keys for the same provider (e.g. 5 Gemini keys) so the
+// loop rotates to the next key on a rate-limit/quota error instead of
+// falling straight through to a different provider.
+function buildProvidersByName(name: string, modelOverride: string | undefined): Provider[] {
+  if (name === "gemini" && config.gemini) {
+    const model = modelOverride ?? config.gemini.model;
+    return config.gemini.apiKeys.map((apiKey) => new GeminiProvider({ apiKey, model }));
   }
-  if ((block.name === "Edit" || block.name === "Write") && typeof input?.file_path === "string") {
-    return `✏️ ${block.name === "Write" ? "Menulis" : "Mengedit"} ${input.file_path}`;
+  const openAiCompatible = config.openAiCompatibleProviders[name];
+  if (openAiCompatible) {
+    const model = modelOverride ?? openAiCompatible.model;
+    return openAiCompatible.apiKeys.map(
+      (apiKey) => new OpenAiCompatibleProvider({ name, baseURL: openAiCompatible.baseUrl, apiKey, model })
+    );
   }
-  if (block.name === "Read" && typeof input?.file_path === "string") {
-    return `📖 Membaca ${input.file_path}`;
-  }
-  return `⚙️ ${block.name}`;
+  return [];
 }
 
-// Only a handful of milestone bash commands get pushed to WhatsApp as progress
-// updates — everything else just goes to the audit log, to avoid spamming the user.
-const MILESTONE_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
-  { pattern: /\bgit\s+commit\b/, label: "📝 Commit dibuat" },
-  { pattern: /\bgit\s+push\b/, label: "⬆️ Push ke remote" },
-  { pattern: /\bgh\s+pr\s+create\b/, label: "🔀 Pull request dibuat" },
-  { pattern: /\bgh\s+pr\s+merge\b/, label: "✅ Pull request di-merge" },
-  { pattern: /\bgit\s+merge\b/, label: "✅ Branch di-merge" },
-  {
-    pattern: /\b(npm|pnpm|yarn)\s+(test|run\s+test|run\s+build|run\s+lint)\b|\bpytest\b|\bgo\s+test\b/,
-    label: "🧪 Menjalankan test/build",
-  },
-];
+// preferredProviderSpec (a "<provider>" or "<provider>/<model>" string) moves
+// every entry belonging to that provider name to the front, as a group — so
+// when a provider has several API keys, all of them get exhausted before
+// falling through to a different provider, instead of just one key jumping
+// the queue. Rebuilt with the override model if one was given; everyone else
+// keeps their default model as the fallback. Exported (rather than folded
+// into buildProviders) so this reordering logic is testable without touching
+// the real env-backed config.
+export function applyPreferredProvider(
+  providers: Provider[],
+  preferredProviderSpec: string | undefined,
+  buildProvidersByNameFn: (name: string, modelOverride: string | undefined) => Provider[]
+): Provider[] {
+  if (!preferredProviderSpec) return providers;
 
-function detectMilestone(command: string): string | undefined {
-  for (const { pattern, label } of MILESTONE_PATTERNS) {
-    if (pattern.test(command)) return label;
-  }
-  return undefined;
+  const { name, model } = splitProviderSpec(preferredProviderSpec);
+  const preferred = model ? buildProvidersByNameFn(name, model) : providers.filter((p) => p.name === name);
+  if (preferred.length === 0) return providers;
+
+  return [...preferred, ...providers.filter((p) => p.name !== name)];
+}
+
+// Builds the fallback chain in config.providerOrder order, each provider
+// expanded into one entry per configured API key (all sharing the same
+// .name), each with its env-configured default model. "gemini" gets its own
+// SDK-backed provider; every other name is generic OpenAI-compatible config
+// (see config.ts) — so adding a new provider never touches this file. Also
+// used by the "daftar model" WhatsApp command to check every configured
+// provider/key's live status.
+export function buildProviders(preferredProviderSpec?: string): Provider[] {
+  const providers = config.providerOrder.flatMap((name) => buildProvidersByName(name, undefined));
+  return applyPreferredProvider(providers, preferredProviderSpec, buildProvidersByName);
 }
 
 export async function runTask(params: RunTaskParams): Promise<RunTaskResult> {
-  const {
-    taskId,
-    cwd,
-    projectAlias,
-    defaultBranch,
-    workBranch,
-    autoMerge,
+  const { taskId, cwd, projectAlias, instruction, abortController, onProgress, preferredProvider } = params;
+
+  const systemPrompt =
+    params.kind === "git"
+      ? buildGitSystemPrompt({
+          projectAlias,
+          defaultBranch: params.defaultBranch,
+          workBranch: params.workBranch,
+          autoMerge: params.autoMerge,
+        })
+      : buildLocalFolderSystemPrompt({ projectAlias, folderPath: params.folderPath });
+
+  return runAgentLoop({
+    providers: buildProviders(preferredProvider),
+    systemPrompt,
     instruction,
+    cwd,
+    taskId,
     abortController,
     onProgress,
-  } = params;
-
-  const systemPrompt = buildSystemPrompt({
-    projectAlias,
-    defaultBranch,
-    workBranch,
-    autoMerge,
   });
-
-  const stream = query({
-    prompt: instruction,
-    options: {
-      cwd,
-      abortController,
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      tools: { type: "preset", preset: "claude_code" },
-      systemPrompt,
-      model: config.claudeModel,
-      env: { ...process.env, ANTHROPIC_API_KEY: config.anthropicApiKey },
-    },
-  });
-
-  let finalSummary = "";
-  let ok = false;
-  let totalCostUsd: number | undefined;
-
-  try {
-    for await (const message of stream) {
-      if (message.type === "assistant") {
-        const content = (message.message?.content ?? []) as ContentBlock[];
-        for (const block of content) {
-          if (block.type === "tool_use") {
-            const desc = briefToolDescription(block);
-            if (desc) {
-              auditLog.add(taskId, "tool_use", desc);
-            }
-            if (block.name === "Bash") {
-              const input = block.input as Record<string, unknown> | undefined;
-              const command = typeof input?.command === "string" ? input.command : "";
-              const milestone = detectMilestone(command);
-              if (milestone) onProgress(milestone);
-            }
-          }
-        }
-      } else if (message.type === "result") {
-        if (message.subtype === "success") {
-          finalSummary = message.result;
-          ok = !message.is_error;
-        } else {
-          finalSummary = `Task berhenti dengan error (${message.subtype}).`;
-          ok = false;
-        }
-        totalCostUsd = (message as { total_cost_usd?: number }).total_cost_usd;
-      }
-    }
-  } catch (err) {
-    auditLog.add(taskId, "error", String(err));
-    return {
-      ok: false,
-      summary: `Terjadi error saat menjalankan agent: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-
-  if (!finalSummary) {
-    finalSummary = "Task selesai tanpa ringkasan dari agent.";
-  }
-
-  return { ok, summary: finalSummary, totalCostUsd };
 }

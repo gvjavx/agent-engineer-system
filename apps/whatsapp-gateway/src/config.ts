@@ -1,3 +1,7 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
+
 function required(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -5,6 +9,15 @@ function required(name: string): string {
   }
   return value;
 }
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// apps/whatsapp-gateway/src (or dist, once built) -> repo root
+const repoRoot = path.resolve(__dirname, "..", "..", "..");
+
+// Loads repo-root .env for local dev. In Docker, env vars come from the
+// compose env_file instead and no .env exists in the image, so this is a
+// harmless no-op there; either way it never overrides already-set vars.
+dotenv.config({ path: path.join(repoRoot, ".env") });
 
 export const config = {
   port: Number(process.env.PORT ?? 3000),

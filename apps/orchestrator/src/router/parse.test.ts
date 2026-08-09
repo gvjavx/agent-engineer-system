@@ -2,11 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   parseAddProject,
+  parseAddFolder,
   parseUseProject,
+  parseUseModel,
+  parseListModelsForProvider,
   isListProjectsCommand,
+  isListModelsCommand,
   isHelpCommand,
   isStatusCommand,
   isStopCommand,
+  isConfirmYes,
+  isConfirmNo,
+  isConfirmYesWithCheckpoints,
+  isIntroCommand,
+  isConnectFigmaCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -39,4 +48,83 @@ test("phrase matchers ignore case and whitespace", () => {
   assert.ok(isStatusCommand("status"));
   assert.ok(isStopCommand("Batalkan"));
   assert.ok(!isStopCommand("batalkan dong ya"));
+  assert.ok(isListModelsCommand("Daftar Model"));
+});
+
+test("parseUseModel: 2-token form defaults department to 'semua'", () => {
+  assert.deepEqual(parseUseModel("pakai model gemini"), { department: "semua", provider: "gemini" });
+  assert.deepEqual(parseUseModel("gunakan model openrouter"), { department: "semua", provider: "openrouter" });
+  assert.equal(parseUseModel("pakai gemini"), undefined);
+});
+
+test("parseUseModel: 3-token form captures department and provider separately", () => {
+  assert.deepEqual(parseUseModel("pakai model dev groq"), { department: "dev", provider: "groq" });
+  assert.deepEqual(parseUseModel("gunakan model qa openrouter"), { department: "qa", provider: "openrouter" });
+});
+
+test("parseUseModel: provider token can carry a /model suffix", () => {
+  assert.deepEqual(parseUseModel("pakai model gemini/gemini-3.5-flash"), {
+    department: "semua",
+    provider: "gemini/gemini-3.5-flash",
+  });
+  assert.deepEqual(parseUseModel("pakai model dev openrouter/qwen/qwen3-coder:free"), {
+    department: "dev",
+    provider: "openrouter/qwen/qwen3-coder:free",
+  });
+});
+
+test("parseListModelsForProvider extracts provider and search keyword", () => {
+  assert.deepEqual(parseListModelsForProvider("daftar model gemini flash"), {
+    provider: "gemini",
+    query: "flash",
+  });
+  assert.deepEqual(parseListModelsForProvider("list model openrouter qwen coder"), {
+    provider: "openrouter",
+    query: "qwen coder",
+  });
+  assert.equal(parseListModelsForProvider("daftar model gemini"), undefined);
+});
+
+test("parseAddFolder extracts alias and path, including paths with spaces", () => {
+  assert.deepEqual(parseAddFolder("tambah folder kerja D:/my-product/agent-engineer-system"), {
+    alias: "kerja",
+    path: "D:/my-product/agent-engineer-system",
+  });
+  assert.deepEqual(parseAddFolder("tambah folder dokumen C:/Users/User/My Documents"), {
+    alias: "dokumen",
+    path: "C:/Users/User/My Documents",
+  });
+  assert.equal(parseAddFolder("tambah folder cuma-satu-kata"), undefined);
+});
+
+test("isConfirmYes/isConfirmNo recognize common replies", () => {
+  assert.ok(isConfirmYes("ya"));
+  assert.ok(isConfirmYes("Boleh"));
+  assert.ok(isConfirmYes("  oke  "));
+  assert.ok(!isConfirmYes("tidak"));
+  assert.ok(isConfirmNo("tidak"));
+  assert.ok(isConfirmNo("Batal"));
+  assert.ok(!isConfirmNo("ya"));
+});
+
+test("isConfirmYesWithCheckpoints recognizes the checkpoint opt-in phrases only", () => {
+  assert.ok(isConfirmYesWithCheckpoints("ya, checkpoint"));
+  assert.ok(isConfirmYesWithCheckpoints("Review Tiap Fase"));
+  assert.ok(!isConfirmYesWithCheckpoints("ya"));
+  assert.ok(!isConfirmYesWithCheckpoints("lanjut"));
+});
+
+test("isIntroCommand recognizes common self-introduction questions", () => {
+  assert.ok(isIntroCommand("siapa kamu"));
+  assert.ok(isIntroCommand("Kamu Siapa?"));
+  assert.ok(isIntroCommand("  kenalin dong  "));
+  assert.ok(isIntroCommand("who are you"));
+  assert.ok(!isIntroCommand("tambahin fitur login dong"));
+});
+
+test("isConnectFigmaCommand recognizes the Figma linking phrases", () => {
+  assert.ok(isConnectFigmaCommand("hubungkan figma"));
+  assert.ok(isConnectFigmaCommand("Connect Figma"));
+  assert.ok(isConnectFigmaCommand("  sambungkan figma  "));
+  assert.ok(!isConnectFigmaCommand("liat desain figma dong"));
 });
