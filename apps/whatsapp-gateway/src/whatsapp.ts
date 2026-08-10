@@ -21,12 +21,19 @@ export interface InboundMessage {
   text: string;
   waMessageId: string;
   timestamp: string;
+  // Present only for an image message — the caption (if any) is carried in
+  // `text` above instead, empty string if none, same convention `text`
+  // already uses for a tapped interactive button/list id.
+  imageId?: string;
+  imageMimeType?: string;
 }
 
-// Extracts messages from a Meta Cloud API webhook payload — plain text, plus
-// taps on interactive reply buttons/list rows (normalized to the option's id
-// as if the user had typed it, so the orchestrator's command parsing doesn't
-// need to know buttons exist at all).
+// Extracts messages from a Meta Cloud API webhook payload — plain text, taps
+// on interactive reply buttons/list rows (normalized to the option's id as if
+// the user had typed it, so the orchestrator's command parsing doesn't need
+// to know buttons exist at all), and images (the webhook only ever carries a
+// media id reference, never the bytes — see whatsapp-gateway's index.ts for
+// where those get resolved and downloaded before forwarding).
 export function extractInboundMessages(payload: unknown): InboundMessage[] {
   const messages: InboundMessage[] = [];
   const entries = (payload as { entry?: unknown[] })?.entry ?? [];
@@ -47,6 +54,7 @@ export function extractInboundMessages(payload: unknown): InboundMessage[] {
             button_reply?: { id: string; title: string };
             list_reply?: { id: string; title: string };
           };
+          image?: { id: string; mime_type: string; caption?: string };
         };
         if (msg.type === "text" && msg.text?.body) {
           messages.push({ from: msg.from, text: msg.text.body, waMessageId: msg.id, timestamp: msg.timestamp });
@@ -55,6 +63,15 @@ export function extractInboundMessages(payload: unknown): InboundMessage[] {
           if (tapped?.id) {
             messages.push({ from: msg.from, text: tapped.id, waMessageId: msg.id, timestamp: msg.timestamp });
           }
+        } else if (msg.type === "image" && msg.image?.id) {
+          messages.push({
+            from: msg.from,
+            text: msg.image.caption ?? "",
+            waMessageId: msg.id,
+            timestamp: msg.timestamp,
+            imageId: msg.image.id,
+            imageMimeType: msg.image.mime_type,
+          });
         }
       }
     }
@@ -195,4 +212,29 @@ export async function sendWhatsAppDocument(
     type: "document",
     document: { id: mediaId, filename, ...(caption ? { caption } : {}) },
   });
+}
+
+// Reverse of uploadMedia: the webhook only ever gives us a media id, never
+// the bytes. Two authenticated calls — resolve the id to a short-lived (5
+// minute) CDN url, then fetch that url — both need the same Bearer token.
+export async function downloadMedia(mediaId: string): Promise<{ buffer: Buffer; mimeType: string }> {
+  const metaUrl = `https://graph.facebook.com/${config.metaGraphApiVersion}/${mediaId}`;
+  const metaRes = await fetch(metaUrl, {
+    headers: { Authorization: `Bearer ${config.metaAccessToken}` },
+  });
+  if (!metaRes.ok) {
+    throw new Error(`Failed to resolve media URL (${metaRes.status}): ${await metaRes.text()}`);
+  }
+  const { url, mime_type: declaredMimeType } = (await metaRes.json()) as { url: string; mime_type: string };
+
+  const fileRes = await fetch(url, {
+    headers: { Authorization: `Bearer ${config.metaAccessToken}` },
+  });
+  if (!fileRes.ok) {
+    throw new Error(`Failed to download media bytes (${fileRes.status}): ${await fileRes.text()}`);
+  }
+  const buffer = Buffer.from(await fileRes.arrayBuffer());
+  // Trust the actual bytes' declared type over the metadata call's claim, in
+  // case they ever disagree; fall back to the metadata if the CDN omits it.
+  return { buffer, mimeType: fileRes.headers.get("content-type") ?? declaredMimeType };
 }

@@ -199,6 +199,15 @@ Batasan:
 - Maksimal 16MB per file — jauh di bawah limit dokumen WhatsApp (100MB) karena file dikirim base64 lewat panggilan internal, bukan streaming.
 - Kalau tipe file gak didukung atau kegedean, agent kasih tau jelas kenapa (bukan error mentah dari API).
 
+## Kirim gambar buat direview/dikerjain
+
+Kirim gambar (screenshot, mockup, error dialog, dsb) langsung dari WhatsApp — agent bakal "liat" isinya dulu lewat AI vision sebelum mulai kerja. Kalau gambarnya dikirim bareng caption (mis. "perbaiki tampilan sesuai screenshot ini"), caption + hasil liatan gambar langsung jadi instruksi, lewat alur konfirmasi rencana yang sama seperti instruksi teks biasa. Kirim tanpa caption juga boleh — agent bakal ceritain apa yang dia liat, terus nanya mau diapain, daripada nebak-nebak sendiri.
+
+Batasan:
+- Format yang didukung: JPEG dan PNG saja (batasan bawaan WhatsApp Cloud API untuk pesan tipe gambar — bukan batasan kita).
+- Maksimal 5MB per gambar (limit bawaan WhatsApp buat gambar masuk).
+- Butuh provider AI yang model-nya bisa vision — dari default `AI_PROVIDER_ORDER=gemini,openrouter,qwen`, cuma Gemini yang vision-capable; model coder default OpenRouter/Qwen gak bisa "lihat" gambar. Kalau semua provider yang aktif gak bisa, agent bilang jelas dan nyaranin ganti model, gak diam-diam nebak.
+
 ## Catatan keamanan
 
 - Hanya nomor di `ALLOWED_SENDERS` yang perintahnya diproses.
@@ -247,4 +256,4 @@ App kita (`META_APP_ID`) harus ada di daftar `data`.
 - Deploy otomatis aplikasi yang dibuat agent (Vercel/Render/DigitalOcean API) supaya langsung dapat URL live.
 - Role PM/BA/QA/Dev sebagai subagent terpisah, bukan satu system prompt.
 - Sandbox Docker per-task untuk isolasi eksekusi.
-- Dukungan lampiran WhatsApp (gambar, voice note).
+- Dukungan lampiran WhatsApp berupa voice note (gambar sudah didukung, lihat "Kirim gambar buat direview/dikerjain" di atas).

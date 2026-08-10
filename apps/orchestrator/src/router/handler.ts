@@ -15,6 +15,7 @@ import { checkProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
 import { classifyCommandIntent } from "../agent/commandIntent.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
+import { describeImage } from "../agent/imageDescription.js";
 import { listGeminiModels, listOpenAiCompatibleModels } from "../agent/modelCatalog.js";
 import { runPipeline, type PhaseSpec, type PipelineMode } from "../agent/pipeline.js";
 import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment } from "../agent/departments.js";
@@ -42,6 +43,7 @@ import {
   isConfirmYesWithCheckpoints,
   isIntroCommand,
   isConnectFigmaCommand,
+  isGreetingCommand,
   isAllowedRepoUrl,
   isPlausibleShortCommand,
 } from "./parse.js";
@@ -49,6 +51,8 @@ import {
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Gampangnya, aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
 
 Mau mulai? Daftarin project dulu, atau ketik "bantuan" buat lihat semua perintahnya.`;
+
+const GREETING_TEXT = `Halo, baik nih! Ada yang mau dikerjain, atau ketik "bantuan" dulu kalau mau lihat-lihat perintahnya.`;
 
 const DEPARTMENT_LIST_TEXT = DEPARTMENT_KEYS.map((k) => `${k} (${DEPARTMENT_LABELS[k]})`).join(", ");
 
@@ -65,6 +69,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *stop* — batalin task yang lagi jalan di project aktif
 - *hubungkan figma* — sambungin akun Figma kamu (sekali aja) biar aku bisa baca desainnya
 - Tempel link Figma langsung di instruksi (mis. "bikin komponen dari desain ini: https://figma.com/design/...") — aku bakal baca layer/style/variabel-nya, cuma baca aja, gak pernah aku ubah
+- Kirim gambar (screenshot, mockup, dsb) bareng caption instruksinya (mis. "perbaiki tampilan sesuai screenshot ini") — aku bakal liat gambarnya dulu baru mulai kerjain. Kirim tanpa caption juga boleh, nanti aku ceritain apa yang aku liat terus tanya mau diapain.
 - Atau langsung ketik aja apa yang mau dikerjain (mis. "tambahin endpoint health check"). Aku bakal tebak departemen mana yang perlu ngerjain, kasih tau rencananya, baru mulai setelah kamu konfirmasi — kalau rencananya lebih dari satu fase, kamu bisa pilih "review tiap fase" biar aku pause dulu abis tiap fase kelar, nunggu kamu approve atau minta revisi sebelum lanjut.`;
 
 interface PendingAddFolder {
@@ -103,7 +108,11 @@ const COMMAND_INTENT_MAX_WORDS = 12;
 // Confirmation replies are inherently short, so a tighter bound is safe here.
 const CONFIRMATION_INTENT_MAX_WORDS = 8;
 
-export async function handleInboundMessage(from: string, text: string): Promise<void> {
+export async function handleInboundMessage(
+  from: string,
+  text: string,
+  image?: { mimeType: string; base64Data: string }
+): Promise<void> {
   const trimmed = text.trim();
 
   const bashApprovalReply = await handlePendingBashApproval(from, trimmed);
@@ -115,8 +124,23 @@ export async function handleInboundMessage(from: string, text: string): Promise<
   const pendingReply = await handlePendingConfirmation(from, trimmed);
   if (pendingReply) return;
 
+  // Checked after the three pending-state handlers above (not before) — an
+  // image arriving while the user has an unresolved confirmation must not
+  // silently overwrite it. Image and text are mutually exclusive at the
+  // webhook level, so this doesn't create any ordering conflict with the
+  // text-command matchers below.
+  if (image) {
+    await handleImageMessage(from, trimmed, image);
+    return;
+  }
+
   if (isIntroCommand(trimmed)) {
     await handleIntroCommand(from);
+    return;
+  }
+
+  if (isGreetingCommand(trimmed)) {
+    await handleGreetingCommand(from);
     return;
   }
 
@@ -281,6 +305,10 @@ async function handleIntroCommand(from: string): Promise<void> {
   await sendWhatsApp(from, INTRO_TEXT);
 }
 
+async function handleGreetingCommand(from: string): Promise<void> {
+  await sendWhatsApp(from, GREETING_TEXT);
+}
+
 async function handleHelpCommand(from: string): Promise<void> {
   await sendWhatsApp(from, HELP_TEXT);
 }
@@ -400,7 +428,49 @@ async function handleConnectFigmaCommand(from: string): Promise<void> {
   );
 }
 
-// Fallback for when none of the 7 commands above matched exactly — asks an
+async function handleImageMessage(
+  from: string,
+  caption: string,
+  image: { mimeType: string; base64Data: string }
+): Promise<void> {
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  if (providers.length === 0) {
+    await sendWhatsApp(from, "Belum ada AI provider yang aktif, jadi aku belum bisa liat gambarnya.");
+    return;
+  }
+
+  await sendWhatsApp(from, "Oke, aku liatin dulu ya gambarnya, bentar...");
+
+  const description = await describeImage(
+    image.base64Data,
+    image.mimeType,
+    caption || undefined,
+    providers,
+    new AbortController().signal
+  );
+
+  if (description === undefined) {
+    await sendWhatsApp(
+      from,
+      'Waduh, kayaknya model AI yang aktif buat chat ini gak bisa "lihat" gambar. Coba ganti model dulu (ketik "daftar model" buat lihat pilihannya, terus "pakai model <nama>"), habis itu kirim ulang gambarnya ya.'
+    );
+    return;
+  }
+
+  if (caption) {
+    const mergedInstruction = `${caption}\n\n(Gambar yang dikirim bareng ini nunjukkin: ${description})`;
+    await handleFreeTextInstruction(from, mergedInstruction);
+    return;
+  }
+
+  await sendWhatsApp(
+    from,
+    `Ini yang aku tangkep dari gambarnya:\n\n${description}\n\nMau aku apain nih? Kasih instruksinya ya, abis itu aku lanjutin.`
+  );
+}
+
+// Fallback for when none of the commands above matched exactly — asks an
 // AI provider whether this message means one of them anyway (a paraphrase),
 // before handleFreeTextInstruction assumes it's a coding task. Gated by
 // isPlausibleShortCommand so this never runs (and never costs an AI call)
@@ -416,6 +486,9 @@ async function tryHandleSemanticCommand(from: string, trimmed: string): Promise<
   switch (intent) {
     case "intro":
       await handleIntroCommand(from);
+      return true;
+    case "greeting":
+      await handleGreetingCommand(from);
       return true;
     case "help":
       await handleHelpCommand(from);

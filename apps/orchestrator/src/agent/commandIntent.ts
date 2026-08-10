@@ -1,7 +1,7 @@
 import type { Provider } from "./types.js";
 
 // Fallback for when the exact-phrase matchers in router/parse.ts miss a
-// paraphrase of one of these 7 zero-argument commands ("gimana caranya pake
+// paraphrase of one of these zero-argument commands ("gimana caranya pake
 // ini" instead of "bantuan"). Argument-taking commands (tambah project,
 // pakai model, dst.) stay exact-syntax — extracting an alias/URL/model name
 // from loose phrasing is a different, riskier problem than recognizing intent.
@@ -13,6 +13,7 @@ export const COMMAND_INTENTS = [
   "status",
   "stop",
   "connect_figma",
+  "greeting",
   "none",
 ] as const;
 export type CommandIntent = (typeof COMMAND_INTENTS)[number];
@@ -28,6 +29,7 @@ list_models — asking to see which AI providers/models are currently configured
 status — asking what task is currently running
 stop — asking to cancel/stop the currently running task
 connect_figma — asking to connect/link a Figma account
+greeting — a greeting or small-talk opener with no other content (e.g. "halo", "hi", "apa kabar", "selamat pagi") — nothing else being asked yet
 none — anything else, including any coding/development task or instruction, however short, and anything not confidently one of the above
 
 Reply with exactly one line, in exactly this format, nothing else:

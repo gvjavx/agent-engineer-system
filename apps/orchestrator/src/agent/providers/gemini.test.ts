@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { toGeminiContents, toGeminiTools } from "./gemini.js";
+import { toGeminiContents, toGeminiTools, buildGeminiVisionContents } from "./gemini.js";
 import type { ChatMessage, ToolSchema } from "../types.js";
 
 test("toGeminiContents converts user/assistant/tool turns and skips system", () => {
@@ -72,6 +72,16 @@ test("toGeminiContents merges consecutive tool results into one turn", () => {
   assert.equal(contents[2].parts?.length, 2);
   assert.deepEqual(contents[2].parts?.[0].functionResponse?.id, "call_1");
   assert.deepEqual(contents[2].parts?.[1].functionResponse?.id, "call_2");
+});
+
+test("buildGeminiVisionContents builds one user turn with inline image + text parts", () => {
+  const contents = buildGeminiVisionContents("aGVsbG8=", "image/jpeg", "describe this");
+  assert.deepEqual(contents, [
+    {
+      role: "user",
+      parts: [{ inlineData: { mimeType: "image/jpeg", data: "aGVsbG8=" } }, { text: "describe this" }],
+    },
+  ]);
 });
 
 test("toGeminiTools maps ToolSchema to functionDeclarations with parametersJsonSchema", () => {

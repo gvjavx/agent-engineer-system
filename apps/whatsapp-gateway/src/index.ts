@@ -6,9 +6,11 @@ import {
   sendWhatsAppOptions,
   uploadMedia,
   sendWhatsAppDocument,
+  downloadMedia,
   verifySignature,
   type QuickReplyOption,
 } from "./whatsapp.js";
+import { isAllowedInboundImageMimeType, MAX_INBOUND_IMAGE_BYTES } from "./imageGuard.js";
 import { forwardToOrchestrator, forwardFigmaOAuthCallback } from "./orchestratorClient.js";
 
 const app = express();
@@ -58,8 +60,45 @@ app.post(
         console.warn(`Ignoring message from non-allowlisted sender: ${message.from}`);
         continue;
       }
+
+      let image: { mimeType: string; base64Data: string } | undefined;
+      if (message.imageId) {
+        if (!message.imageMimeType || !isAllowedInboundImageMimeType(message.imageMimeType)) {
+          await sendWhatsAppMessage(
+            message.from,
+            "Format gambarnya belum aku dukung (cuma JPEG/PNG). Coba kirim format lain ya."
+          ).catch(() => {});
+          continue;
+        }
+        try {
+          const downloaded = await downloadMedia(message.imageId);
+          if (!isAllowedInboundImageMimeType(downloaded.mimeType)) {
+            await sendWhatsAppMessage(
+              message.from,
+              "Format gambarnya belum aku dukung (cuma JPEG/PNG). Coba kirim format lain ya."
+            ).catch(() => {});
+            continue;
+          }
+          if (downloaded.buffer.length > MAX_INBOUND_IMAGE_BYTES) {
+            await sendWhatsAppMessage(
+              message.from,
+              `Gambarnya kegedean (maks ${MAX_INBOUND_IMAGE_BYTES / 1024 / 1024}MB). Coba kompres dulu.`
+            ).catch(() => {});
+            continue;
+          }
+          image = { mimeType: downloaded.mimeType, base64Data: downloaded.buffer.toString("base64") };
+        } catch (err) {
+          console.error("Failed to download inbound image:", err);
+          await sendWhatsAppMessage(
+            message.from,
+            "Waduh, gagal ambil gambarnya dari WhatsApp. Coba kirim ulang ya."
+          ).catch(() => {});
+          continue;
+        }
+      }
+
       try {
-        await forwardToOrchestrator(message);
+        await forwardToOrchestrator(message, image);
       } catch (err) {
         console.error("Failed to forward inbound message to orchestrator:", err);
         await sendWhatsAppMessage(

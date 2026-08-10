@@ -1,14 +1,17 @@
 import { config } from "./config.js";
 import type { InboundMessage } from "./whatsapp.js";
 
-export async function forwardToOrchestrator(message: InboundMessage): Promise<void> {
+export async function forwardToOrchestrator(
+  message: InboundMessage,
+  image?: { mimeType: string; base64Data: string }
+): Promise<void> {
   const res = await fetch(`${config.orchestratorUrl}/inbound`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Internal-Secret": config.internalSharedSecret,
     },
-    body: JSON.stringify(message),
+    body: JSON.stringify({ ...message, image }),
   });
   if (!res.ok) {
     const body = await res.text();

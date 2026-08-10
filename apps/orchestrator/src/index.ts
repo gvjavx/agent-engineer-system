@@ -7,15 +7,23 @@ import { sendWhatsApp } from "./whatsappClient.js";
 import "./db/index.js";
 
 const app = express();
-app.use(express.json());
 
-app.post("/inbound", (req, res) => {
+// No blanket app.use(express.json()) — each route gets its own parser sized
+// for what it actually needs, same principle as whatsapp-gateway/src/index.ts.
+
+app.post("/inbound", express.json({ limit: "8mb" }), (req, res) => {
   if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
     return res.sendStatus(401);
   }
-  const { from, text } = req.body as { from?: string; text?: string };
-  if (!from || !text) {
-    return res.status(400).json({ error: "Missing 'from' or 'text'" });
+  const { from, text, image } = req.body as {
+    from?: string;
+    text?: string;
+    image?: { mimeType?: string; base64Data?: string };
+  };
+  // text === "" is valid and expected for a captionless image — only reject
+  // when there's neither text nor an image at all.
+  if (!from || (!image && !text)) {
+    return res.status(400).json({ error: "Missing 'from', or missing both 'text' and 'image'" });
   }
   // Belt-and-suspenders: whatsapp-gateway already filters by ALLOWED_SENDERS
   // before forwarding, but this endpoint shouldn't blindly trust every caller
@@ -29,14 +37,16 @@ app.post("/inbound", (req, res) => {
   // minutes and is reported back to WhatsApp asynchronously as it progresses.
   res.sendStatus(202);
 
-  handleInboundMessage(from, text).catch((err) => {
+  const validImage =
+    image?.mimeType && image?.base64Data ? { mimeType: image.mimeType, base64Data: image.base64Data } : undefined;
+  handleInboundMessage(from, text ?? "", validImage).catch((err) => {
     console.error(`Unhandled error handling message from ${from}:`, err);
   });
 });
 
 // Called by whatsapp-gateway (the only publicly reachable piece) once the
 // user finishes Figma's OAuth consent screen and gets redirected back.
-app.post("/internal/figma-oauth-callback", (req, res) => {
+app.post("/internal/figma-oauth-callback", express.json(), (req, res) => {
   if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
     return res.sendStatus(401);
   }

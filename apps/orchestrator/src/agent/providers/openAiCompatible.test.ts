@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { toOpenAiMessages, toOpenAiTools } from "./openAiCompatible.js";
+import { toOpenAiMessages, toOpenAiTools, buildOpenAiVisionMessages } from "./openAiCompatible.js";
 import type { ChatMessage, ToolSchema } from "../types.js";
 
 test("toOpenAiMessages converts system/user/tool turns and assistant tool_calls", () => {
@@ -27,6 +27,19 @@ test("toOpenAiMessages converts system/user/tool turns and assistant tool_calls"
   });
   assert.deepEqual(openAiMessages[3], { role: "tool", tool_call_id: "call_1", content: "exit_code: 0" });
   assert.deepEqual(openAiMessages[4], { role: "assistant", content: "Done." });
+});
+
+test("buildOpenAiVisionMessages builds one user message with text + image_url content parts", () => {
+  const messages = buildOpenAiVisionMessages("aGVsbG8=", "image/png", "describe this");
+  assert.deepEqual(messages, [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "describe this" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+      ],
+    },
+  ]);
 });
 
 test("toOpenAiTools maps ToolSchema to function-typed tools", () => {

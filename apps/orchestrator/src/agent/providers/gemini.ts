@@ -52,6 +52,13 @@ export function toGeminiContents(messages: ChatMessage[]): Content[] {
   return contents;
 }
 
+// One user turn carrying the image inline plus the instruction text — Gemini's
+// Part type already supports inlineData as a sibling to text, no new import
+// needed.
+export function buildGeminiVisionContents(base64Data: string, mimeType: string, prompt: string): Content[] {
+  return [{ role: "user", parts: [{ inlineData: { mimeType, data: base64Data } }, { text: prompt }] }];
+}
+
 export function toGeminiTools(tools: ToolSchema[]) {
   return [
     {
@@ -110,5 +117,19 @@ export class GeminiProvider implements Provider {
     }
 
     return { type: "text", text: response.text ?? "" };
+  }
+
+  async describeImage(base64Data: string, mimeType: string, prompt: string, signal: AbortSignal): Promise<string> {
+    let response;
+    try {
+      response = await this.client.models.generateContent({
+        model: this.model,
+        contents: buildGeminiVisionContents(base64Data, mimeType, prompt),
+        config: { abortSignal: signal },
+      });
+    } catch (err) {
+      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err);
+    }
+    return response.text ?? "";
   }
 }

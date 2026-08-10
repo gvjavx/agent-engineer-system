@@ -48,6 +48,13 @@ export type ProviderResponse =
 export interface Provider {
   name: string;
   chat(messages: ChatMessage[], tools: ToolSchema[], signal: AbortSignal): Promise<ProviderResponse>;
+  // Optional: only providers whose underlying API actually supports vision
+  // implement this. Absent means "this provider can't see images" —
+  // agent/imageDescription.ts skips it rather than calling and catching a
+  // throw. Kept off the required Provider shape so the many test doubles
+  // across this codebase that construct a bare {name, chat} don't need to
+  // grow one just to satisfy the compiler.
+  describeImage?(base64Data: string, mimeType: string, prompt: string, signal: AbortSignal): Promise<string>;
 }
 
 export class ProviderError extends Error {

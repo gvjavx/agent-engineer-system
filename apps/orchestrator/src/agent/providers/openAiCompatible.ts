@@ -40,6 +40,25 @@ export function toOpenAiTools(tools: ToolSchema[]): ChatCompletionTool[] {
   }));
 }
 
+// Standard OpenAI vision format — a content-parts array is only valid on
+// user-role messages (per the openai package's own types), which is all we
+// need for a one-shot "describe this image" call.
+export function buildOpenAiVisionMessages(
+  base64Data: string,
+  mimeType: string,
+  prompt: string
+): ChatCompletionMessageParam[] {
+  return [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64Data}` } },
+      ],
+    },
+  ];
+}
+
 // Used for any OpenAI-compatible chat-completions endpoint — Qwen/DashScope,
 // OpenRouter, and any future free provider that speaks this API shape. Adding
 // a new one is just a new instance of this class with a different baseURL/key/model.
@@ -89,5 +108,22 @@ export class OpenAiCompatibleProvider implements Provider {
     }
 
     return { type: "text", text: message.content ?? "" };
+  }
+
+  async describeImage(base64Data: string, mimeType: string, prompt: string, signal: AbortSignal): Promise<string> {
+    let message;
+    try {
+      const response = await this.client.chat.completions.create(
+        { model: this.model, messages: buildOpenAiVisionMessages(base64Data, mimeType, prompt) },
+        { signal }
+      );
+      message = response.choices[0]?.message;
+    } catch (err) {
+      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err);
+    }
+    if (!message) {
+      throw new ProviderError(this.name, "Empty response from provider");
+    }
+    return message.content ?? "";
   }
 }

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { extractInboundMessages, sendWhatsAppOptions, uploadMedia, sendWhatsAppDocument } from "./whatsapp.js";
+import {
+  extractInboundMessages,
+  sendWhatsAppOptions,
+  uploadMedia,
+  sendWhatsAppDocument,
+  downloadMedia,
+} from "./whatsapp.js";
 
 // sendWhatsAppOptions hits the real Graph API via global fetch — swap it out
 // for a spy so these tests just check the payload shape, no network needed.
@@ -18,6 +24,31 @@ async function captureRequestBody(run: () => Promise<void>): Promise<Record<stri
   }
   if (!captured) throw new Error("fetch was never called");
   return captured;
+}
+
+// downloadMedia makes two sequential fetch calls (resolve id -> url, then
+// fetch the url) — queue up a response for each, in order.
+interface QueuedResponse {
+  status: number;
+  jsonBody?: unknown;
+  arrayBuffer?: ArrayBuffer;
+  headers?: Record<string, string>;
+}
+
+async function withQueuedFetch<T>(responses: QueuedResponse[], run: () => Promise<T>): Promise<T> {
+  const originalFetch = globalThis.fetch;
+  let callIndex = 0;
+  globalThis.fetch = (async () => {
+    const next = responses[callIndex++];
+    if (!next) throw new Error("fetch called more times than expected");
+    const body = next.arrayBuffer ?? (next.jsonBody !== undefined ? JSON.stringify(next.jsonBody) : undefined);
+    return new Response(body, { status: next.status, headers: next.headers });
+  }) as typeof fetch;
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 }
 
 function webhookPayload(message: Record<string, unknown>) {
@@ -79,7 +110,45 @@ test("extractInboundMessages extracts a tapped list row as its id", () => {
 });
 
 test("extractInboundMessages ignores message types it doesn't understand", () => {
-  const payload = webhookPayload({ id: "wamid.4", from: "628123", timestamp: "4", type: "image" });
+  const payload = webhookPayload({ id: "wamid.4", from: "628123", timestamp: "4", type: "sticker" });
+  assert.deepEqual(extractInboundMessages(payload), []);
+});
+
+test("extractInboundMessages extracts an image message with a caption", () => {
+  const payload = webhookPayload({
+    id: "wamid.5",
+    from: "628123",
+    timestamp: "5",
+    type: "image",
+    image: { id: "media-abc", mime_type: "image/jpeg", caption: "perbaiki tampilan ini" },
+  });
+  assert.deepEqual(extractInboundMessages(payload), [
+    {
+      from: "628123",
+      text: "perbaiki tampilan ini",
+      waMessageId: "wamid.5",
+      timestamp: "5",
+      imageId: "media-abc",
+      imageMimeType: "image/jpeg",
+    },
+  ]);
+});
+
+test("extractInboundMessages extracts an image message without a caption as empty text", () => {
+  const payload = webhookPayload({
+    id: "wamid.6",
+    from: "628123",
+    timestamp: "6",
+    type: "image",
+    image: { id: "media-def", mime_type: "image/png" },
+  });
+  assert.deepEqual(extractInboundMessages(payload), [
+    { from: "628123", text: "", waMessageId: "wamid.6", timestamp: "6", imageId: "media-def", imageMimeType: "image/png" },
+  ]);
+});
+
+test("extractInboundMessages ignores an image message missing the image object/id", () => {
+  const payload = webhookPayload({ id: "wamid.7", from: "628123", timestamp: "7", type: "image" });
   assert.deepEqual(extractInboundMessages(payload), []);
 });
 
@@ -163,4 +232,49 @@ test("sendWhatsAppDocument sends a document message referencing the media id", a
   const body = await captureRequestBody(() => sendWhatsAppDocument("628123", "media-123", "FSD.md", "ini dia"));
   assert.equal(body.type, "document");
   assert.deepEqual(body.document, { id: "media-123", filename: "FSD.md", caption: "ini dia" });
+});
+
+test("downloadMedia resolves the media id then fetches the bytes", async () => {
+  const bytes = new TextEncoder().encode("fake image bytes").buffer;
+  const result = await withQueuedFetch(
+    [
+      { status: 200, jsonBody: { url: "https://cdn.example/media-abc", mime_type: "image/jpeg" } },
+      { status: 200, arrayBuffer: bytes, headers: { "content-type": "image/jpeg" } },
+    ],
+    () => downloadMedia("media-abc")
+  );
+  assert.equal(result.mimeType, "image/jpeg");
+  assert.equal(result.buffer.toString(), "fake image bytes");
+});
+
+test("downloadMedia falls back to the metadata's mime type when the bytes response omits Content-Type", async () => {
+  const bytes = new TextEncoder().encode("x").buffer;
+  const result = await withQueuedFetch(
+    [
+      { status: 200, jsonBody: { url: "https://cdn.example/media-abc", mime_type: "image/png" } },
+      { status: 200, arrayBuffer: bytes },
+    ],
+    () => downloadMedia("media-abc")
+  );
+  assert.equal(result.mimeType, "image/png");
+});
+
+test("downloadMedia throws with the response body when resolving the media id fails", async () => {
+  await assert.rejects(
+    withQueuedFetch([{ status: 404, jsonBody: { error: "not found" } }], () => downloadMedia("missing")),
+    /Failed to resolve media URL \(404\)/
+  );
+});
+
+test("downloadMedia throws with the response body when downloading the bytes fails", async () => {
+  await assert.rejects(
+    withQueuedFetch(
+      [
+        { status: 200, jsonBody: { url: "https://cdn.example/media-abc", mime_type: "image/jpeg" } },
+        { status: 410, jsonBody: { error: "expired" } },
+      ],
+      () => downloadMedia("media-abc")
+    ),
+    /Failed to download media bytes \(410\)/
+  );
 });

@@ -161,6 +161,44 @@ export function isIntroCommand(text: string): boolean {
   return INTRO_PHRASES.has(text.trim().toLowerCase());
 }
 
+const GREETING_PHRASES = new Set([
+  "halo",
+  "halo!",
+  "hallo",
+  "hai",
+  "hai!",
+  "hi",
+  "hi!",
+  "hello",
+  "hello!",
+  "hey",
+  "hey!",
+  "woy",
+  "eh halo",
+  "selamat pagi",
+  "pagi",
+  "met pagi",
+  "selamat siang",
+  "siang",
+  "met siang",
+  "selamat sore",
+  "sore",
+  "met sore",
+  "selamat malam",
+  "malam",
+  "met malam",
+  "apa kabar",
+  "apa kabar?",
+  "gimana kabarnya",
+  "gimana kabarnya?",
+  "kabar baik?",
+  "sehat?",
+]);
+
+export function isGreetingCommand(text: string): boolean {
+  return GREETING_PHRASES.has(text.trim().toLowerCase());
+}
+
 const CONFIRM_YES_PHRASES = new Set(["ya", "iya", "yes", "y", "oke", "ok", "boleh", "lanjut", "setuju"]);
 const CONFIRM_NO_PHRASES = new Set(["tidak", "no", "n", "batal", "jangan", "gak", "ga", "nggak"]);
 // The third button at the plan-confirmation step, for opting into per-phase

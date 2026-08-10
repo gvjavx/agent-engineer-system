@@ -16,6 +16,7 @@ import {
   isConfirmYesWithCheckpoints,
   isIntroCommand,
   isConnectFigmaCommand,
+  isGreetingCommand,
   isAllowedRepoUrl,
   isPlausibleShortCommand,
 } from "./parse.js";
@@ -161,6 +162,16 @@ test("isIntroCommand recognizes common self-introduction questions", () => {
   assert.ok(isIntroCommand("  kenalin dong  "));
   assert.ok(isIntroCommand("who are you"));
   assert.ok(!isIntroCommand("tambahin fitur login dong"));
+});
+
+test("isGreetingCommand recognizes common greetings", () => {
+  assert.ok(isGreetingCommand("halo"));
+  assert.ok(isGreetingCommand("Hai!"));
+  assert.ok(isGreetingCommand("  selamat pagi  "));
+  assert.ok(isGreetingCommand("apa kabar"));
+  assert.ok(isGreetingCommand("Apa Kabar?"));
+  assert.ok(!isGreetingCommand("halo, tambahin endpoint health check dong"));
+  assert.ok(!isGreetingCommand("tambahin fitur login dong"));
 });
 
 test("isConnectFigmaCommand recognizes the Figma linking phrases", () => {
