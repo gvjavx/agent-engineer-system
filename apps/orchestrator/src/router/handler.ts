@@ -16,6 +16,7 @@ import { classifyDepartments } from "../agent/classifier.js";
 import { classifyCommandIntent } from "../agent/commandIntent.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
 import { describeImage } from "../agent/imageDescription.js";
+import { explainInSimpleTerms } from "../agent/explainAssistant.js";
 import { listGeminiModels, listOpenAiCompatibleModels } from "../agent/modelCatalog.js";
 import { runPipeline, type PhaseSpec, type PipelineMode } from "../agent/pipeline.js";
 import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment } from "../agent/departments.js";
@@ -53,6 +54,25 @@ const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Gampangnya, aku ini s
 Mau mulai? Daftarin project dulu, atau ketik "bantuan" buat lihat semua perintahnya.`;
 
 const GREETING_TEXT = `Halo, baik nih! Ada yang mau dikerjain, atau ketik "bantuan" dulu kalau mau lihat-lihat perintahnya.`;
+
+// For non-technical "how does this work" questions — no command syntax, no
+// jargon. Separate from HELP_TEXT (the command cheatsheet) on purpose: someone
+// asking in plain language wants a plain-language answer, not a syntax dump.
+const EXPLAIN_TEXT = `Gampangnya gini: kamu tinggal certain apa yang kamu mau, kayak ngobrol biasa aja — misalnya "bikinin aku toko online buat jualan baju" atau "tambahin fitur login di aplikasi yang kemarin".
+
+Abis itu, buat request bikin aplikasi, biasanya aku jalanin langkah-langkah kayak gini (cuma yang relevan buat request kamu aja yang jalan, gak semuanya tiap kali):
+1. Pertama, aku bertindak sebagai Product Owner — nangkep dulu kebutuhan kamu sebenernya dan nentuin cakupan yang paling masuk akal.
+2. Abis itu aku bertindak sebagai Project Manager — ngatur urutan kerjaan, bagian mana yang perlu dikerjain duluan.
+3. Lalu aku bertindak sebagai System Analyst — mikirin alur kerja dan kebutuhan sistemnya biar sesuai sama yang kamu mau.
+4. Masuk ke bagian UI/UX — kamu bisa hubungin aku ke desain Figma yang udah kamu buat sebelumnya, atau biarin aku yang desain otomatis.
+5. Abis UI/UX kelar, aku mulai nulis kodenya berdasarkan yang udah disepakati di langkah-langkah sebelumnya.
+6. Terakhir aku bertindak sebagai QA/Tester — nyariin bug dan mastiin semua fungsinya jalan dengan bener.
+
+Kalau requestnya butuh (mis. mau di-publish biar bisa diakses orang, atau ada hal non-teknis di sisi bisnis), kadang ada tahap tambahan buat urus infrastruktur/publikasi atau sisi bisnisnya juga.
+
+Sebelum mulai, aku kasih tau dulu rencananya dan tunggu kamu bilang oke. Selama proses aku kabarin progressnya lewat chat ini, dan kamu bisa berhentiin kapan aja kalau berubah pikiran. Begitu kelar, hasilnya langsung siap dipakai — gak perlu kamu utak-atik sendiri.
+
+Kalau nanti udah lebih kenal dan mau tau perintah-perintah teknisnya, tinggal ketik "bantuan".`;
 
 const DEPARTMENT_LIST_TEXT = DEPARTMENT_KEYS.map((k) => `${k} (${DEPARTMENT_LABELS[k]})`).join(", ");
 
@@ -313,6 +333,16 @@ async function handleHelpCommand(from: string): Promise<void> {
   await sendWhatsApp(from, HELP_TEXT);
 }
 
+async function handleExplainCommand(from: string, question: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const answer =
+    providers.length > 0
+      ? await explainInSimpleTerms(question, providers[0], new AbortController().signal)
+      : undefined;
+  await sendWhatsApp(from, answer ?? EXPLAIN_TEXT);
+}
+
 async function handleListProjectsCommand(from: string): Promise<void> {
   const projects = projectsRepo.list();
   if (projects.length === 0) {
@@ -492,6 +522,9 @@ async function tryHandleSemanticCommand(from: string, trimmed: string): Promise<
       return true;
     case "help":
       await handleHelpCommand(from);
+      return true;
+    case "explain":
+      await handleExplainCommand(from, trimmed);
       return true;
     case "list_projects":
       await handleListProjectsCommand(from);

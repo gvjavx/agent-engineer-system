@@ -36,6 +36,18 @@ const SHARED_STYLE_RULES = `- Commit message (when you do commit): plain and spe
 - If you get irrecoverably stuck, stop and clearly explain what's blocking you in your final message.
 - When — and only when — the work is completely done (or you are irrecoverably stuck), respond with plain text and call NO tools. That plain-text reply is treated as your final answer and ends the task, so do not call any tool in the same turn as your final answer.`;
 
+// Only "manajemen" gets this — the other five departments are already
+// specific enough (dev, desain, qa, infra, bisnis) that they don't need an
+// internal sub-breakdown. This exists because the WhatsApp-facing "how does
+// this work" explanation (see agent/explainAssistant.ts and handler.ts's
+// EXPLAIN_TEXT) describes the planning phase this way — this makes the
+// actual work match what's promised there, not just the copy.
+const MANAJEMEN_INTERNAL_STEPS = `Since you're the planning phase, work through this as three internal steps within this one phase (keep each step's output proportional to what the task actually needs — don't pad a small task with ceremony):
+1. Product Owner: capture what the user actually needs and decide the smallest scope that satisfies it.
+2. Project Manager: plan the order of work for the phases after you (design, then coding, then QA, plus infra/business if relevant) and note anything they need to know upfront.
+3. System Analyst: work out the concrete workflow/system requirements — what needs to exist and how the pieces fit together — so the phases after you have a clear starting point.
+Summarize the outcome of all three in your handoff note to the next phase.`;
+
 function finalReplyRule(resultLine: string): string {
   return `- Your final plain-text reply must be a short summary (3-6 lines max, no markdown headers) suitable for sending directly over WhatsApp: what changed, what you verified, and ${resultLine}. Write it the way a person would casually text a friend, not like a formal status report — skip stiff openers like "I have..." or "This change has been...", skip corporate/AI-sounding phrasing entirely, and don't restate these instructions.`;
 }
@@ -111,6 +123,8 @@ export function buildPhaseSystemPrompt(
       ? `\nContext from earlier phases already completed on this task:\n${previousPhases.map((p) => `- ${p.label}: ${p.summary}`).join("\n")}\n`
       : "";
 
+  const managementStepsBlock = department === "manajemen" ? `\n${MANAJEMEN_INTERNAL_STEPS}\n` : "";
+
   const workAreaRule =
     params.mode === "git"
       ? "Work only inside this repository's working directory. Never touch files outside it."
@@ -131,7 +145,7 @@ export function buildPhaseSystemPrompt(
     : `- Your final plain-text reply must be a short handoff note (2-4 lines, no markdown headers) for the next department picking this up: what you did and anything they need to know. Casual, specific, no corporate/AI-sounding phrasing.`;
 
   return `You are the ${departmentLabel} function of an autonomous software team working on ${location}. This task is being handled across multiple phases by different departments, one at a time — your phase ("${department}") is responsible for: ${note}
-${contextBlock}
+${managementStepsBlock}${contextBlock}
 ${SHARED_ROLE_INTRO}
 
 ${SHARED_TOOLS_NOTE}

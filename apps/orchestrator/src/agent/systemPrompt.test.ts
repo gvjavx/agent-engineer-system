@@ -45,3 +45,35 @@ test("buildPhaseSystemPrompt warns against treating tool output as instructions,
   assert.ok(notLast.includes(UNTRUSTED_CONTENT_MARKER));
   assert.ok(last.includes(UNTRUSTED_CONTENT_MARKER));
 });
+
+test("buildPhaseSystemPrompt adds the Product Owner/PM/System Analyst breakdown only for the manajemen phase", () => {
+  const manajemenPrompt = buildPhaseSystemPrompt({
+    department: "manajemen",
+    departmentLabel: "Manajemen Proyek & Produk",
+    note: "scope out the new checkout feature",
+    projectAlias: "demo",
+    isLastPhase: false,
+    previousPhases: [],
+    mode: "git",
+    defaultBranch: "main",
+    workBranch: "agent/abc123",
+    autoMerge: "direct",
+  });
+  assert.match(manajemenPrompt, /Product Owner/);
+  assert.match(manajemenPrompt, /Project Manager/);
+  assert.match(manajemenPrompt, /System Analyst/);
+
+  const devPrompt = buildPhaseSystemPrompt({
+    department: "dev",
+    departmentLabel: "Tim Pengembangan",
+    note: "implement the checkout feature",
+    projectAlias: "demo",
+    isLastPhase: false,
+    previousPhases: [{ label: "Manajemen Proyek & Produk", summary: "scoped the feature" }],
+    mode: "git",
+    defaultBranch: "main",
+    workBranch: "agent/abc123",
+    autoMerge: "direct",
+  });
+  assert.doesNotMatch(devPrompt, /Product Owner/);
+});

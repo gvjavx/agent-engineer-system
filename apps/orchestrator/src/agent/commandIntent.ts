@@ -8,6 +8,7 @@ import type { Provider } from "./types.js";
 export const COMMAND_INTENTS = [
   "intro",
   "help",
+  "explain",
   "list_projects",
   "list_models",
   "status",
@@ -23,7 +24,8 @@ function buildCommandIntentPrompt(text: string): string {
 
 Commands:
 intro — asking who/what the bot is, asking it to introduce itself
-help — asking what the bot can do, how to use it, or for a list of commands
+help — asking specifically for the list of commands, exact command syntax, or a technical usage reference/cheatsheet
+explain — asking in general, non-technical, plain language how the bot works, how it helps them, or what happens when they ask it to build/change something (e.g. "jelaskan bagaimana anda membantu saya membuat aplikasi") — NOT asking for specific command syntax, just a conceptual explanation
 list_projects — asking to see the list of already-registered projects
 list_models — asking to see which AI providers/models are currently configured and usable (NOT asking to search/browse a specific provider's full model catalog — that's a different, unsupported-here request)
 status — asking what task is currently running

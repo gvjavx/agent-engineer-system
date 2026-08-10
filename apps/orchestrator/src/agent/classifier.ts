@@ -15,6 +15,8 @@ function buildClassifierPrompt(instruction: string): string {
 Departments:
 ${departmentList}
 
+If the task is building a whole new application/feature from scratch, use manajemen, desain, dev, and qa, in that order — desain must come before dev so the UI/UX is worked out before writing code — plus infra and/or bisnis too if genuinely relevant. For smaller or narrower requests (a fix, a tweak, adding one small thing to something that already exists), only pick the departments that specific request actually needs — don't force the full sequence onto something small.
+
 Reply with one line per relevant department, in the order they should work, exactly in this format:
 <department-key>: <one short sentence on what that department will do for this task>
 

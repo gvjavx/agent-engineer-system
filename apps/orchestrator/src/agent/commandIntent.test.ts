@@ -22,6 +22,16 @@ test("classifyCommandIntent tolerates a noisy response with the line buried in e
   assert.equal(await classifyCommandIntent("udahan, stop dulu", provider, new AbortController().signal), "stop");
 });
 
+test("classifyCommandIntent recognizes a non-technical 'how does this work' question as explain, not help", async () => {
+  const provider = fakeProvider(async () => ({ type: "text", text: "INTENT: explain" }));
+  const result = await classifyCommandIntent(
+    "jelaskan bagaimana anda membantu saya membuat aplikasi",
+    provider,
+    new AbortController().signal
+  );
+  assert.equal(result, "explain");
+});
+
 test("classifyCommandIntent falls back to none when no line matches the format", async () => {
   const provider = fakeProvider(async () => ({ type: "text", text: "I'm not sure what you mean." }));
   assert.equal(await classifyCommandIntent("x", provider, new AbortController().signal), "none");
