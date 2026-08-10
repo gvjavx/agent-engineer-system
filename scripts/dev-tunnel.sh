@@ -49,16 +49,31 @@ pids+=($!)
 
 echo "Waiting for ngrok's public URL..."
 public_url=""
+# Matched on target port, not tunnels[0] — :4040's API can be shared with
+# another ngrok agent already running on this machine for something
+# unrelated, in which case tunnels[0] may not be the one this script just
+# started (see the same fix in fix-whatsapp-webhook.sh for the incident that
+# prompted this).
 for _ in $(seq 1 20); do
   public_url=$(curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null | node -e "
-    let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
-      try { console.log(JSON.parse(d).tunnels[0].public_url); } catch { process.exit(1); }
+    let d = '';
+    process.stdin.on('data', (c) => (d += c));
+    process.stdin.on('end', () => {
+      try {
+        const tunnels = JSON.parse(d).tunnels || [];
+        const match = tunnels.find((t) => {
+          try { return t.proto === 'https' && new URL(t.config.addr).port === '3000'; } catch { return false; }
+        });
+        if (!match) process.exit(1);
+        console.log(match.public_url);
+      } catch { process.exit(1); }
     });" 2>/dev/null) && [ -n "$public_url" ] && break
   sleep 1
 done
 
 if [ -z "$public_url" ]; then
-  echo "ngrok didn't come up in time — check /tmp/ngrok-dev.log" >&2
+  echo "ngrok didn't come up in time (or another ngrok agent on this machine is holding :4040" >&2
+  echo "and this tunnel never showed up there) — check /tmp/ngrok-dev.log" >&2
   exit 1
 fi
 
