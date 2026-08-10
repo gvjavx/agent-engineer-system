@@ -32,6 +32,21 @@ export function isAllowedRepoUrl(repoUrl: string): boolean {
   return ALLOWED_REPO_URL_RE.test(repoUrl);
 }
 
+const URL_RE = /https?:\/\//i;
+
+// Cheap zero-AI-cost gate before spending a classification call on a message
+// that didn't match any exact-phrase command (see agent/commandIntent.ts and
+// agent/confirmationIntent.ts): the commands this backs and any realistic
+// paraphrase of them are short; genuine coding-task instructions run longer
+// and/or carry URLs (e.g. a Figma link). Messages that fail this check skip
+// the classifier and fall straight to the existing behavior for their call
+// site — zero added AI cost for that case.
+export function isPlausibleShortCommand(text: string, maxWords: number): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || URL_RE.test(trimmed)) return false;
+  return trimmed.split(/\s+/).filter(Boolean).length <= maxWords;
+}
+
 export interface AddFolderCommand {
   alias: string;
   path: string;

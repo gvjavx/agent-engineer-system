@@ -13,6 +13,8 @@ import { ensureWorkspace, createWorkBranch, ensureLocalFolder } from "../git/rep
 import { buildProviders, splitProviderSpec } from "../agent/runner.js";
 import { checkProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
+import { classifyCommandIntent } from "../agent/commandIntent.js";
+import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
 import { listGeminiModels, listOpenAiCompatibleModels } from "../agent/modelCatalog.js";
 import { runPipeline, type PhaseSpec, type PipelineMode } from "../agent/pipeline.js";
 import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment } from "../agent/departments.js";
@@ -41,6 +43,7 @@ import {
   isIntroCommand,
   isConnectFigmaCommand,
   isAllowedRepoUrl,
+  isPlausibleShortCommand,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Gampangnya, aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -93,6 +96,13 @@ const PLAN_CONFIRM_OPTIONS: QuickReplyOption[] = [
   { id: "tidak", title: "Tidak, batal" },
 ];
 
+// Cap on how long a message can be before it's not even worth spending an AI
+// call to check whether it's a paraphrase of one of these commands — see
+// isPlausibleShortCommand in parse.ts. Provisional, easy to retune.
+const COMMAND_INTENT_MAX_WORDS = 12;
+// Confirmation replies are inherently short, so a tighter bound is safe here.
+const CONFIRMATION_INTENT_MAX_WORDS = 8;
+
 export async function handleInboundMessage(from: string, text: string): Promise<void> {
   const trimmed = text.trim();
 
@@ -106,74 +116,22 @@ export async function handleInboundMessage(from: string, text: string): Promise<
   if (pendingReply) return;
 
   if (isIntroCommand(trimmed)) {
-    await sendWhatsApp(from, INTRO_TEXT);
+    await handleIntroCommand(from);
     return;
   }
 
   if (isHelpCommand(trimmed)) {
-    await sendWhatsApp(from, HELP_TEXT);
+    await handleHelpCommand(from);
     return;
   }
 
   if (isListProjectsCommand(trimmed)) {
-    const projects = projectsRepo.list();
-    if (projects.length === 0) {
-      await sendWhatsApp(
-        from,
-        "Belum ada project yang terdaftar nih. Daftarin dulu ya, ketik: tambah project <nama> <url-repo>"
-      );
-    } else {
-      const lines = projects.map(
-        (p) => `• ${p.alias}${p.kind === "local" ? " (folder lokal)" : ""} — ${p.repo_url}`
-      );
-      await sendWhatsApp(from, `Ini project yang udah terdaftar:\n${lines.join("\n")}`);
-    }
+    await handleListProjectsCommand(from);
     return;
   }
 
   if (isListModelsCommand(trimmed)) {
-    const state = conversationRepo.get(from);
-    const providers = buildProviders();
-    await sendWhatsApp(from, "Bentar, aku cek satu-satu dulu ya...");
-
-    const results = await Promise.all(
-      providers.map(async (provider) => ({
-        name: provider.name,
-        status: await checkProviderStatus(provider),
-      }))
-    );
-
-    // Multiple API keys for the same provider all share provider.name — number
-    // them ("gemini (key 2/5)") so a dead key among several isn't invisible.
-    const totalPerName = new Map<string, number>();
-    for (const r of results) totalPerName.set(r.name, (totalPerName.get(r.name) ?? 0) + 1);
-    const seenPerName = new Map<string, number>();
-
-    const providerLines = results.map(({ name, status }) => {
-      const total = totalPerName.get(name) ?? 1;
-      const index = (seenPerName.get(name) ?? 0) + 1;
-      seenPerName.set(name, index);
-      const label = total > 1 ? `${name} (key ${index}/${total})` : name;
-      const tag = name === state?.preferred_provider ? " (default)" : "";
-      const desc =
-        status.state === "ok"
-          ? "bisa dipakai"
-          : status.state === "rate_limited"
-            ? "lagi kena limit, coba lagi sebentar"
-            : `error — ${status.message.slice(0, 150)}`;
-      return `• ${label}${tag} — ${desc}`;
-    });
-
-    const deptModels = conversationRepo.getDepartmentModels(from);
-    const deptLines = DEPARTMENT_KEYS.map(
-      (key) => `• ${DEPARTMENT_LABELS[key]}: ${deptModels[key] ?? "(pakai default)"}`
-    );
-    const defaultLine = `Default (semua): ${state?.preferred_provider ?? "otomatis, provider pertama yang aktif"}`;
-
-    await sendWhatsApp(
-      from,
-      `Provider yang aktif:\n${providerLines.join("\n")}\n\nModel per departemen:\n${deptLines.join("\n")}\n${defaultLine}`
-    );
+    await handleListModelsCommand(from);
     return;
   }
 
@@ -297,67 +255,208 @@ export async function handleInboundMessage(from: string, text: string): Promise<
   }
 
   if (isStatusCommand(trimmed)) {
-    const state = conversationRepo.get(from);
-    if (!state?.active_project_alias) {
-      await sendWhatsApp(from, "Belum ada project aktif nih. Ketik \"pakai <nama>\" dulu ya.");
-      return;
-    }
-    const activeTaskId = getActiveTaskId(state.active_project_alias);
-    if (!activeTaskId) {
-      const recent = tasksRepo.recentForNumber(from, 1)[0];
-      await sendWhatsApp(
-        from,
-        recent
-          ? `Gak ada task yang lagi jalan di "${state.active_project_alias}". Task terakhir statusnya: ${recent.status}.`
-          : `Gak ada task yang lagi jalan di "${state.active_project_alias}".`
-      );
-    } else {
-      const task = tasksRepo.get(activeTaskId);
-      const phaseNote = auditLog.latestNote(activeTaskId);
-      await sendWhatsApp(
-        from,
-        `Masih ngerjain task di "${state.active_project_alias}" nih:\n"${task?.instruction ?? ""}"` +
-          (phaseNote ? `\n\nTerakhir: ${phaseNote}` : "")
-      );
-    }
+    await handleStatusCommand(from);
     return;
   }
 
   if (isStopCommand(trimmed)) {
-    const state = conversationRepo.get(from);
-    if (!state?.active_project_alias) {
-      await sendWhatsApp(from, "Belum ada project aktif.");
-      return;
-    }
-    const cancelledId = cancelActiveTask(state.active_project_alias);
-    if (cancelledId) {
-      tasksRepo.setStatus(cancelledId, "cancelled", "Dibatalkan oleh user via WhatsApp.");
-      await sendWhatsApp(from, `Oke, task di "${state.active_project_alias}" udah aku batalin.`);
-    } else {
-      await sendWhatsApp(from, "Gak ada task yang lagi jalan.");
-    }
+    await handleStopCommand(from);
     return;
   }
 
   if (isConnectFigmaCommand(trimmed)) {
-    if (!config.figma) {
-      await sendWhatsApp(
-        from,
-        "Figma belum disetel di server (client ID OAuth-nya belum diisi di .env). Bilang ke yang pegang server ya."
-      );
-      return;
-    }
-    const state = createPendingState(from);
-    const authorizeUrl = buildAuthorizeUrl(state);
-    await sendWhatsApp(
-      from,
-      `Buka link ini buat sambungin akun Figma kamu, izinin aksesnya, nanti aku kabarin kalau udah connect:\n${authorizeUrl}`
-    );
+    await handleConnectFigmaCommand(from);
     return;
   }
 
+  // Nothing matched exactly — before assuming it's a coding task, check
+  // whether it's actually a paraphrase of one of the 7 commands above.
+  if (await tryHandleSemanticCommand(from, trimmed)) return;
+
   // Default: free-text instruction -> classify departments -> confirm -> pipeline.
   await handleFreeTextInstruction(from, trimmed);
+}
+
+async function handleIntroCommand(from: string): Promise<void> {
+  await sendWhatsApp(from, INTRO_TEXT);
+}
+
+async function handleHelpCommand(from: string): Promise<void> {
+  await sendWhatsApp(from, HELP_TEXT);
+}
+
+async function handleListProjectsCommand(from: string): Promise<void> {
+  const projects = projectsRepo.list();
+  if (projects.length === 0) {
+    await sendWhatsApp(
+      from,
+      "Belum ada project yang terdaftar nih. Daftarin dulu ya, ketik: tambah project <nama> <url-repo>"
+    );
+  } else {
+    const lines = projects.map((p) => `• ${p.alias}${p.kind === "local" ? " (folder lokal)" : ""} — ${p.repo_url}`);
+    await sendWhatsApp(from, `Ini project yang udah terdaftar:\n${lines.join("\n")}`);
+  }
+}
+
+async function handleListModelsCommand(from: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  const providers = buildProviders();
+  await sendWhatsApp(from, "Bentar, aku cek satu-satu dulu ya...");
+
+  const results = await Promise.all(
+    providers.map(async (provider) => ({
+      name: provider.name,
+      status: await checkProviderStatus(provider),
+    }))
+  );
+
+  // Multiple API keys for the same provider all share provider.name — number
+  // them ("gemini (key 2/5)") so a dead key among several isn't invisible.
+  const totalPerName = new Map<string, number>();
+  for (const r of results) totalPerName.set(r.name, (totalPerName.get(r.name) ?? 0) + 1);
+  const seenPerName = new Map<string, number>();
+
+  const providerLines = results.map(({ name, status }) => {
+    const total = totalPerName.get(name) ?? 1;
+    const index = (seenPerName.get(name) ?? 0) + 1;
+    seenPerName.set(name, index);
+    const label = total > 1 ? `${name} (key ${index}/${total})` : name;
+    const tag = name === state?.preferred_provider ? " (default)" : "";
+    const desc =
+      status.state === "ok"
+        ? "bisa dipakai"
+        : status.state === "rate_limited"
+          ? "lagi kena limit, coba lagi sebentar"
+          : `error — ${status.message.slice(0, 150)}`;
+    return `• ${label}${tag} — ${desc}`;
+  });
+
+  const deptModels = conversationRepo.getDepartmentModels(from);
+  const deptLines = DEPARTMENT_KEYS.map(
+    (key) => `• ${DEPARTMENT_LABELS[key]}: ${deptModels[key] ?? "(pakai default)"}`
+  );
+  const defaultLine = `Default (semua): ${state?.preferred_provider ?? "otomatis, provider pertama yang aktif"}`;
+
+  await sendWhatsApp(
+    from,
+    `Provider yang aktif:\n${providerLines.join("\n")}\n\nModel per departemen:\n${deptLines.join("\n")}\n${defaultLine}`
+  );
+}
+
+async function handleStatusCommand(from: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif nih. Ketik "pakai <nama>" dulu ya.');
+    return;
+  }
+  const activeTaskId = getActiveTaskId(state.active_project_alias);
+  if (!activeTaskId) {
+    const recent = tasksRepo.recentForNumber(from, 1)[0];
+    await sendWhatsApp(
+      from,
+      recent
+        ? `Gak ada task yang lagi jalan di "${state.active_project_alias}". Task terakhir statusnya: ${recent.status}.`
+        : `Gak ada task yang lagi jalan di "${state.active_project_alias}".`
+    );
+  } else {
+    const task = tasksRepo.get(activeTaskId);
+    const phaseNote = auditLog.latestNote(activeTaskId);
+    await sendWhatsApp(
+      from,
+      `Masih ngerjain task di "${state.active_project_alias}" nih:\n"${task?.instruction ?? ""}"` +
+        (phaseNote ? `\n\nTerakhir: ${phaseNote}` : "")
+    );
+  }
+}
+
+async function handleStopCommand(from: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, "Belum ada project aktif.");
+    return;
+  }
+  const cancelledId = cancelActiveTask(state.active_project_alias);
+  if (cancelledId) {
+    tasksRepo.setStatus(cancelledId, "cancelled", "Dibatalkan oleh user via WhatsApp.");
+    await sendWhatsApp(from, `Oke, task di "${state.active_project_alias}" udah aku batalin.`);
+  } else {
+    await sendWhatsApp(from, "Gak ada task yang lagi jalan.");
+  }
+}
+
+async function handleConnectFigmaCommand(from: string): Promise<void> {
+  if (!config.figma) {
+    await sendWhatsApp(
+      from,
+      "Figma belum disetel di server (client ID OAuth-nya belum diisi di .env). Bilang ke yang pegang server ya."
+    );
+    return;
+  }
+  const state = createPendingState(from);
+  const authorizeUrl = buildAuthorizeUrl(state);
+  await sendWhatsApp(
+    from,
+    `Buka link ini buat sambungin akun Figma kamu, izinin aksesnya, nanti aku kabarin kalau udah connect:\n${authorizeUrl}`
+  );
+}
+
+// Fallback for when none of the 7 commands above matched exactly — asks an
+// AI provider whether this message means one of them anyway (a paraphrase),
+// before handleFreeTextInstruction assumes it's a coding task. Gated by
+// isPlausibleShortCommand so this never runs (and never costs an AI call)
+// for messages that are clearly full task instructions already.
+async function tryHandleSemanticCommand(from: string, trimmed: string): Promise<boolean> {
+  if (!isPlausibleShortCommand(trimmed, COMMAND_INTENT_MAX_WORDS)) return false;
+
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  if (providers.length === 0) return false; // let handleFreeTextInstruction give its own "no provider" message
+
+  const intent = await classifyCommandIntent(trimmed, providers[0], new AbortController().signal);
+  switch (intent) {
+    case "intro":
+      await handleIntroCommand(from);
+      return true;
+    case "help":
+      await handleHelpCommand(from);
+      return true;
+    case "list_projects":
+      await handleListProjectsCommand(from);
+      return true;
+    case "list_models":
+      await handleListModelsCommand(from);
+      return true;
+    case "status":
+      await handleStatusCommand(from);
+      return true;
+    case "stop":
+      await handleStopCommand(from);
+      return true;
+    case "connect_figma":
+      await handleConnectFigmaCommand(from);
+      return true;
+    default:
+      return false; // "none"
+  }
+}
+
+// Shared by the three pending-handlers below. Fail-closed is structural, not
+// something each caller audits: this only ever runs when both isConfirmYes
+// and isConfirmNo already missed, and its "yes"/"no" results take exactly
+// the same code paths those deterministic checks used to take — "unclear"
+// (including "no provider configured" or "reply too long to bother") takes
+// exactly the pre-existing default path each caller already had. No new code
+// paths are introduced, only new ways to reach the existing ones.
+async function interpretConfirmationReply(
+  preferredProvider: string | undefined,
+  trimmed: string
+): Promise<ConfirmationIntent> {
+  if (isConfirmYes(trimmed)) return "yes";
+  if (isConfirmNo(trimmed)) return "no";
+  if (!isPlausibleShortCommand(trimmed, CONFIRMATION_INTENT_MAX_WORDS)) return "unclear";
+  const providers = buildProviders(preferredProvider);
+  if (providers.length === 0) return "unclear";
+  return classifyConfirmationIntent(trimmed, providers[0], new AbortController().signal);
 }
 
 // Checked before everything else: same in-memory-pending-per-taskId pattern
@@ -370,7 +469,8 @@ async function handlePendingBashApproval(from: string, trimmed: string): Promise
   const taskId = state?.active_project_alias ? getActiveTaskId(state.active_project_alias) : undefined;
   if (!taskId || !hasPendingBashApproval(taskId)) return false;
 
-  const approved = isConfirmYes(trimmed);
+  const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+  const approved = intent === "yes";
   resolveBashApproval(taskId, approved);
   await sendWhatsApp(
     from,
@@ -387,12 +487,13 @@ async function handlePendingCheckpoint(from: string, trimmed: string): Promise<b
   const taskId = state?.active_project_alias ? getActiveTaskId(state.active_project_alias) : undefined;
   if (!taskId || !hasPendingCheckpoint(taskId)) return false;
 
-  if (isConfirmYes(trimmed)) {
+  const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+  if (intent === "yes") {
     resolveCheckpoint(taskId, { action: "continue" });
-  } else if (isConfirmNo(trimmed)) {
+  } else if (intent === "no") {
     resolveCheckpoint(taskId, { action: "cancel" });
   } else {
-    // Anything else is treated as the revision itself — no separate command needed.
+    // Anything else (including "unclear") is treated as the revision itself — no separate command needed.
     resolveCheckpoint(taskId, { action: "revise", instruction: trimmed });
   }
   return true; // the pipeline itself sends the next WhatsApp message once it resumes
@@ -416,7 +517,8 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
   }
 
   if (pending.type === "confirm_add_folder") {
-    if (isConfirmYes(trimmed)) {
+    const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+    if (intent === "yes") {
       conversationRepo.setPendingAction(from, null);
       projectsRepo.createLocal(pending.alias, pending.path);
       conversationRepo.setActiveProject(from, pending.alias);
@@ -427,7 +529,7 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
       return true;
     }
     conversationRepo.setPendingAction(from, null);
-    if (isConfirmNo(trimmed)) {
+    if (intent === "no") {
       await sendWhatsApp(from, "Oke, gak jadi ya.");
     } else {
       await sendWhatsApp(from, 'Gak jelas jawabannya, jadi aku batalin dulu. Ulangi "tambah folder" lagi kalau masih mau.');
@@ -437,16 +539,28 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
 
   if (pending.type === "confirm_pipeline") {
     conversationRepo.setPendingAction(from, null);
-    if (isConfirmYesWithCheckpoints(trimmed) || isConfirmYes(trimmed)) {
+    // Exact-match only — this option is always tap-generated via the third
+    // quick-reply button, so there's no paraphrase to recognize here.
+    if (isConfirmYesWithCheckpoints(trimmed)) {
       const project = projectsRepo.get(pending.alias);
       if (!project) {
         await sendWhatsApp(from, `Waduh, project "${pending.alias}" udah gak ada. Coba ulangi instruksinya.`);
         return true;
       }
-      await executeTask(from, project, pending.instruction, pending.phases, isConfirmYesWithCheckpoints(trimmed));
+      await executeTask(from, project, pending.instruction, pending.phases, true);
       return true;
     }
-    if (isConfirmNo(trimmed)) {
+    const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+    if (intent === "yes") {
+      const project = projectsRepo.get(pending.alias);
+      if (!project) {
+        await sendWhatsApp(from, `Waduh, project "${pending.alias}" udah gak ada. Coba ulangi instruksinya.`);
+        return true;
+      }
+      await executeTask(from, project, pending.instruction, pending.phases, false);
+      return true;
+    }
+    if (intent === "no") {
       await sendWhatsApp(from, "Oke, gak jadi ya.");
     } else {
       await sendWhatsApp(from, "Gak jelas jawabannya, jadi aku batalin dulu. Kirim lagi instruksinya kalau masih mau.");

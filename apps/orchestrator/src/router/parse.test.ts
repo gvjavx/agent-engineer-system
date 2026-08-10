@@ -17,6 +17,7 @@ import {
   isIntroCommand,
   isConnectFigmaCommand,
   isAllowedRepoUrl,
+  isPlausibleShortCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -51,6 +52,29 @@ test("isAllowedRepoUrl rejects non-github hosts, non-https schemes, and git tran
   assert.ok(!isAllowedRepoUrl("file:///etc/passwd"));
   assert.ok(!isAllowedRepoUrl("https://github.com.evil.com/x/y.git"));
   assert.ok(!isAllowedRepoUrl("https://github.com/x/y --upload-pack=touch pwned"));
+});
+
+test("isPlausibleShortCommand accepts short paraphrases", () => {
+  assert.ok(isPlausibleShortCommand("gimana caranya pake ini", 12));
+  assert.ok(isPlausibleShortCommand("bantuan", 12));
+  assert.ok(isPlausibleShortCommand("udahan, stop dulu", 12));
+});
+
+test("isPlausibleShortCommand respects the word-count boundary", () => {
+  const exactlyMax = "satu dua tiga empat lima enam tujuh delapan sembilan sepuluh sebelas duabelas";
+  assert.equal(exactlyMax.split(/\s+/).length, 12);
+  assert.ok(isPlausibleShortCommand(exactlyMax, 12));
+  assert.ok(!isPlausibleShortCommand(exactlyMax + " tigabelas", 12));
+});
+
+test("isPlausibleShortCommand rejects messages containing a URL regardless of word count", () => {
+  assert.ok(!isPlausibleShortCommand("bikin komponen React dari desain ini: https://figma.com/design/abc", 12));
+  assert.ok(!isPlausibleShortCommand("http://example.com", 12));
+});
+
+test("isPlausibleShortCommand rejects empty input", () => {
+  assert.ok(!isPlausibleShortCommand("", 12));
+  assert.ok(!isPlausibleShortCommand("   ", 12));
 });
 
 test("parseUseProject extracts alias from pakai/gunakan", () => {
