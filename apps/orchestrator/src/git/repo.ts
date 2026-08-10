@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { simpleGit } from "simple-git";
@@ -8,22 +9,36 @@ export function workspacePath(alias: string): string {
   return path.join(config.workspacesDir, alias);
 }
 
-// Injects the GitHub token into an https remote URL so clone/push/pull work headlessly.
-function authenticatedUrl(repoUrl: string): string {
-  if (!repoUrl.startsWith("https://")) return repoUrl;
-  const url = new URL(repoUrl);
-  url.username = "x-access-token";
-  url.password = config.githubToken;
-  return url.toString();
+// GitHub auth used to be embedded straight into the https remote URL, which
+// meant the token sat in plaintext in every workspace's .git/config and
+// leaked into any error message that echoed the remote (e.g. a failed clone
+// forwarded verbatim to WhatsApp). A global credential helper avoids both:
+// git asks it for a password on demand, it reads GITHUB_TOKEN straight from
+// the process environment, and nothing token-shaped ever touches disk. Scoped
+// to github.com only, so the token is never offered to some other https host.
+// Set up once at process start — also covers `git push` run by the agent's
+// own `bash` tool, since that inherits the same global git config.
+const GITHUB_URL_SCOPE = "https://github.com";
+
+// Lazy + once: only touches global git config the first time a workspace
+// operation actually needs it, not just from importing this module (matters
+// for tests, and for not failing orchestrator startup if `git` isn't on PATH
+// for some unrelated reason).
+let credentialHelperReady = false;
+function ensureGithubCredentialHelper(): void {
+  if (credentialHelperReady) return;
+  const helper = `!f() { [ "$1" = get ] && echo username=x-access-token && echo "password=$GITHUB_TOKEN"; }; f`;
+  execFileSync("git", ["config", "--global", `credential.${GITHUB_URL_SCOPE}.helper`, helper]);
+  credentialHelperReady = true;
 }
 
 export async function ensureWorkspace(project: Project): Promise<string> {
+  ensureGithubCredentialHelper();
   const dir = workspacePath(project.alias);
-  const remote = authenticatedUrl(project.repo_url);
 
   if (!fs.existsSync(path.join(dir, ".git"))) {
     fs.mkdirSync(dir, { recursive: true });
-    await simpleGit().clone(remote, dir);
+    await simpleGit().clone(project.repo_url, dir);
   }
 
   const git = simpleGit(dir);

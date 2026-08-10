@@ -1,5 +1,5 @@
 import { auditLog } from "../db/index.js";
-import { TOOL_SCHEMAS, executeTool, briefToolDescription, detectMilestone } from "./tools.js";
+import { TOOL_SCHEMAS, executeTool, briefToolDescription, detectMilestone, isDangerousBashCommand } from "./tools.js";
 import { resolveFigmaTools, type FigmaToolsResult } from "./mcp/figmaTools.js";
 import type { ChatMessage, Provider, ToolSchema } from "./types.js";
 import { ProviderError } from "./types.js";
@@ -22,6 +22,11 @@ export interface RunAgentLoopParams {
   // rather than looked up here. Defaults to a stub so existing callers/tests
   // that don't care about this tool don't need to pass it.
   sendDocument?: (relPath: string, caption: string | undefined) => Promise<string>;
+  // Called before running a `bash` command that isDangerousBashCommand flags,
+  // to ask the user on WhatsApp and wait for their reply. Defaults to
+  // auto-deny (fail closed) so a caller that forgets to wire this doesn't
+  // silently downgrade to "run it anyway".
+  onDangerousBash?: (command: string, reason: string) => Promise<boolean>;
 }
 
 export interface RunAgentLoopResult {
@@ -48,6 +53,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
     maxTurns = 40,
     resolveFigmaToolsFn = resolveFigmaTools,
     sendDocument = async () => "Fitur kirim dokumen belum tersedia di sini.",
+    onDangerousBash = async () => false,
   } = params;
 
   if (providers.length === 0) {
@@ -123,6 +129,28 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
         auditLog.add(taskId, "tool_use", briefToolDescription(call.name, call.input));
         const milestone = detectMilestone(call.name, call.input);
         if (milestone) onProgress(milestone);
+
+        if (call.name === "bash") {
+          const dangerReason = isDangerousBashCommand(String(call.input.command ?? ""));
+          if (dangerReason) {
+            auditLog.add(taskId, "note", `Nunggu konfirmasi WhatsApp buat command berisiko (${dangerReason})`);
+            const approved = await onDangerousBash(String(call.input.command ?? ""), dangerReason);
+            if (abortController.signal.aborted) {
+              return { ok: false, summary: "Oke, task-nya udah aku batalin." };
+            }
+            if (!approved) {
+              auditLog.add(taskId, "note", "Command berisiko gak disetujui, dilewatin.");
+              messages.push({
+                role: "tool",
+                toolCallId: call.id,
+                toolName: call.name,
+                content:
+                  "Error: command ini butuh persetujuan user lewat WhatsApp dan tidak disetujui. Jangan diulang persis sama — coba pendekatan lain, atau jelaskan di ringkasan akhir kenapa ini diperlukan.",
+              });
+              continue;
+            }
+          }
+        }
 
         const result =
           figmaTools.kind === "ready" && call.name.startsWith("figma_")

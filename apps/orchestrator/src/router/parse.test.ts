@@ -16,6 +16,7 @@ import {
   isConfirmYesWithCheckpoints,
   isIntroCommand,
   isConnectFigmaCommand,
+  isAllowedRepoUrl,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -34,6 +35,22 @@ test("parseAddProject is case-insensitive and tolerates surrounding whitespace",
 test("parseAddProject returns undefined for unrelated text", () => {
   assert.equal(parseAddProject("tambahin fitur login"), undefined);
   assert.equal(parseAddProject("tambah project cuma-satu-kata"), undefined);
+});
+
+test("isAllowedRepoUrl accepts plain https github.com repo URLs", () => {
+  assert.ok(isAllowedRepoUrl("https://github.com/x/toko-online.git"));
+  assert.ok(isAllowedRepoUrl("https://github.com/x/toko-online"));
+  assert.ok(isAllowedRepoUrl("https://github.com/x/toko-online/"));
+});
+
+test("isAllowedRepoUrl rejects non-github hosts, non-https schemes, and git transport tricks", () => {
+  assert.ok(!isAllowedRepoUrl("https://gitlab.com/x/y.git"));
+  assert.ok(!isAllowedRepoUrl("http://github.com/x/y.git"));
+  assert.ok(!isAllowedRepoUrl("git@github.com:x/y.git"));
+  assert.ok(!isAllowedRepoUrl("ext::sh -c \"touch pwned\""));
+  assert.ok(!isAllowedRepoUrl("file:///etc/passwd"));
+  assert.ok(!isAllowedRepoUrl("https://github.com.evil.com/x/y.git"));
+  assert.ok(!isAllowedRepoUrl("https://github.com/x/y --upload-pack=touch pwned"));
 });
 
 test("parseUseProject extracts alias from pakai/gunakan", () => {

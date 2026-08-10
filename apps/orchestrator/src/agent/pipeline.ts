@@ -37,6 +37,8 @@ export interface RunPipelineParams {
   onCheckpoint?: (message: string) => void;
   // Backs the send_document tool — see loop.ts for why this is a callback.
   sendDocument?: (relPath: string, caption: string | undefined) => Promise<string>;
+  // Backs the WhatsApp confirmation gate for risky bash commands — see loop.ts.
+  onDangerousBash?: (command: string, reason: string) => Promise<boolean>;
   // Swappable for tests — default to the real config-backed implementations.
   buildProvidersFn?: (preferredProvider?: string) => Provider[];
   runTaskFn?: (params: RunTaskParams) => Promise<RunTaskResult>;
@@ -58,6 +60,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
     checkpoints = false,
     onCheckpoint = onProgress,
     sendDocument,
+    onDangerousBash,
     buildProvidersFn = realBuildProviders,
     runTaskFn = realRunTask,
   } = params;
@@ -80,6 +83,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           preferredProvider,
           onProgress,
           sendDocument,
+          onDangerousBash,
         })
       : runTaskFn({
           kind: "local",
@@ -92,6 +96,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           preferredProvider,
           onProgress,
           sendDocument,
+          onDangerousBash,
         });
   }
 
@@ -133,6 +138,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
       onProgress,
       maxTurns: PHASE_MAX_TURNS,
       sendDocument,
+      onDangerousBash,
     });
 
     if (!result.ok) {
@@ -163,6 +169,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           onProgress,
           maxTurns: PHASE_MAX_TURNS,
           sendDocument,
+          onDangerousBash,
         });
 
         if (!result.ok) {

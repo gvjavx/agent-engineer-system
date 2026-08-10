@@ -76,6 +76,15 @@ export const config = {
   internalSharedSecret: required("INTERNAL_SHARED_SECRET"),
   gatewayUrl: process.env.GATEWAY_URL ?? "http://whatsapp-gateway:3000",
 
+  // Re-checked here too, not just in whatsapp-gateway's own copy of this list —
+  // /inbound only trusts X-Internal-Secret, so without this a leaked internal
+  // secret (or a port-4000 misconfiguration) would let anyone impersonate the
+  // owner and command the agent directly, bypassing the gateway's filter entirely.
+  allowedSenders: (process.env.ALLOWED_SENDERS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+
   // Default WhatsApp number (E.164, no "+") to send unsolicited/global notices to.
   ownerNumber: required("OWNER_WHATSAPP_NUMBER"),
 

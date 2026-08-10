@@ -19,6 +19,7 @@ import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment } from "../agen
 import { buildAuthorizeUrl } from "../agent/mcp/figmaAuth.js";
 import { createPendingState } from "../agent/mcp/figmaOAuthState.js";
 import { resolveCheckpoint, hasPendingCheckpoint } from "../agent/checkpoint.js";
+import { waitForBashApproval, resolveBashApproval, hasPendingBashApproval } from "../agent/bashApproval.js";
 import { resolveWithin } from "../agent/tools.js";
 import { resolveDocumentMimeType, MAX_DOCUMENT_BYTES } from "../agent/documentGuard.js";
 import { config } from "../config.js";
@@ -39,6 +40,7 @@ import {
   isConfirmYesWithCheckpoints,
   isIntroCommand,
   isConnectFigmaCommand,
+  isAllowedRepoUrl,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Gampangnya, aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -93,6 +95,9 @@ const PLAN_CONFIRM_OPTIONS: QuickReplyOption[] = [
 
 export async function handleInboundMessage(from: string, text: string): Promise<void> {
   const trimmed = text.trim();
+
+  const bashApprovalReply = await handlePendingBashApproval(from, trimmed);
+  if (bashApprovalReply) return;
 
   const checkpointReply = await handlePendingCheckpoint(from, trimmed);
   if (checkpointReply) return;
@@ -231,6 +236,13 @@ export async function handleInboundMessage(from: string, text: string): Promise<
       await sendWhatsApp(from, `Project "${alias}" udah ada, gak perlu didaftarin lagi.`);
       return;
     }
+    if (!isAllowedRepoUrl(repoUrl)) {
+      await sendWhatsApp(
+        from,
+        `URL "${repoUrl}" gak valid. Harus link repo GitHub https://, format https://github.com/owner/repo.`
+      );
+      return;
+    }
     await sendWhatsApp(from, `Oke, aku daftarin "${alias}" dulu ya, lagi clone repo-nya...`);
     try {
       const project = projectsRepo.create(alias, repoUrl);
@@ -346,6 +358,25 @@ export async function handleInboundMessage(from: string, text: string): Promise<
 
   // Default: free-text instruction -> classify departments -> confirm -> pipeline.
   await handleFreeTextInstruction(from, trimmed);
+}
+
+// Checked before everything else: same in-memory-pending-per-taskId pattern
+// as handlePendingCheckpoint below, but for a single risky bash command
+// rather than a whole pipeline phase. Fails closed on anything but an
+// explicit "ya" — an ambiguous reply shouldn't accidentally green-light a
+// command flagged as dangerous in the first place.
+async function handlePendingBashApproval(from: string, trimmed: string): Promise<boolean> {
+  const state = conversationRepo.get(from);
+  const taskId = state?.active_project_alias ? getActiveTaskId(state.active_project_alias) : undefined;
+  if (!taskId || !hasPendingBashApproval(taskId)) return false;
+
+  const approved = isConfirmYes(trimmed);
+  resolveBashApproval(taskId, approved);
+  await sendWhatsApp(
+    from,
+    approved ? "Oke, aku jalanin ya." : "Oke, aku skip command itu, cari cara lain dulu."
+  );
+  return true;
 }
 
 // Checked before handlePendingConfirmation: a checkpoint pause is tied to a
@@ -621,6 +652,15 @@ async function executeTask(
         }
       };
 
+      const onDangerousBash = async (command: string, reason: string): Promise<boolean> => {
+        await sendWhatsApp(
+          from,
+          `Mau aku jalanin command ini?\n\`${command}\`\n\nAku tanya dulu soalnya: ${reason}. Balas ya/tidak.`,
+          YES_NO_OPTIONS
+        );
+        return waitForBashApproval(taskId, abortController.signal);
+      };
+
       const result = await runPipeline({
         taskId,
         cwd,
@@ -632,6 +672,7 @@ async function executeTask(
         checkpoints,
         onCheckpoint,
         sendDocument,
+        onDangerousBash,
         departmentModelLookup: (department) =>
           department === "semua"
             ? (state?.preferred_provider ?? undefined)

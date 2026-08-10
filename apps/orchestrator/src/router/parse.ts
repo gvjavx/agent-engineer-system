@@ -21,6 +21,17 @@ export function parseAddProject(text: string): AddProjectCommand | undefined {
   return { alias: match[1], repoUrl: match[2] };
 }
 
+// Restricts repoUrl to plain https:// GitHub URLs. Two things this blocks
+// that a bare "non-empty string" check wouldn't: git transport helpers like
+// "ext::sh -c ..." (git runs that shell command on clone — instant RCE), and
+// https:// URLs to hosts other than github.com (which would otherwise get
+// offered our GitHub credential on clone/fetch, see git/repo.ts).
+const ALLOWED_REPO_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\.git)?\/?$/;
+
+export function isAllowedRepoUrl(repoUrl: string): boolean {
+  return ALLOWED_REPO_URL_RE.test(repoUrl);
+}
+
 export interface AddFolderCommand {
   alias: string;
   path: string;

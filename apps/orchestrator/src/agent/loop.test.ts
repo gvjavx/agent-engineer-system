@@ -142,6 +142,108 @@ test("runAgentLoop falls back to a stub message for send_document when no callba
   assert.match(result.summary, /belum tersedia/);
 });
 
+test("runAgentLoop asks onDangerousBash before running a flagged command, and skips it when denied", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+  let askedWith: { command: string; reason: string } | undefined;
+
+  let turn = 0;
+  const provider: Provider = {
+    name: "fake",
+    async chat(messages: ChatMessage[]): Promise<ProviderResponse> {
+      turn++;
+      if (turn === 1) {
+        return { type: "tool_calls", calls: [{ id: "1", name: "bash", input: { command: "sudo rm x" } }] };
+      }
+      const toolMessage = messages.find((m) => m.role === "tool");
+      return { type: "text", text: `saw: ${toolMessage?.content}` };
+    },
+  };
+
+  const onDangerousBash = async (command: string, reason: string) => {
+    askedWith = { command, reason };
+    return false; // denied
+  };
+
+  const result = await runAgentLoop(baseParams({ providers: [provider], resolveFigmaToolsFn, onDangerousBash }));
+
+  assert.deepEqual(askedWith, { command: "sudo rm x", reason: "eskalasi privilege lewat sudo" });
+  assert.equal(result.ok, true);
+  assert.match(result.summary, /saw: Error: command ini butuh persetujuan/);
+});
+
+test("runAgentLoop actually runs a flagged bash command once onDangerousBash approves it", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+
+  let turn = 0;
+  const provider: Provider = {
+    name: "fake",
+    async chat(messages: ChatMessage[]): Promise<ProviderResponse> {
+      turn++;
+      if (turn === 1) {
+        return { type: "tool_calls", calls: [{ id: "1", name: "bash", input: { command: "sudo echo hi" } }] };
+      }
+      const toolMessage = messages.find((m) => m.role === "tool");
+      return { type: "text", text: `saw: ${toolMessage?.content}` };
+    },
+  };
+
+  const result = await runAgentLoop(
+    baseParams({ providers: [provider], resolveFigmaToolsFn, onDangerousBash: async () => true })
+  );
+
+  assert.equal(result.ok, true);
+  assert.match(result.summary, /exit_code:/); // actually reached executeTool, not the denial message
+});
+
+test("runAgentLoop denies a flagged bash command by default when onDangerousBash isn't wired", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+
+  let turn = 0;
+  const provider: Provider = {
+    name: "fake",
+    async chat(messages: ChatMessage[]): Promise<ProviderResponse> {
+      turn++;
+      if (turn === 1) {
+        return { type: "tool_calls", calls: [{ id: "1", name: "bash", input: { command: "sudo echo hi" } }] };
+      }
+      const toolMessage = messages.find((m) => m.role === "tool");
+      return { type: "text", text: `saw: ${toolMessage?.content}` };
+    },
+  };
+
+  const result = await runAgentLoop(baseParams({ providers: [provider], resolveFigmaToolsFn }));
+
+  assert.match(result.summary, /saw: Error: command ini butuh persetujuan/);
+});
+
+test("runAgentLoop never asks onDangerousBash for an ordinary bash command", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+  let asked = false;
+
+  let turn = 0;
+  const provider: Provider = {
+    name: "fake",
+    async chat(messages: ChatMessage[]): Promise<ProviderResponse> {
+      turn++;
+      if (turn === 1) {
+        return { type: "tool_calls", calls: [{ id: "1", name: "bash", input: { command: "echo hi" } }] };
+      }
+      const toolMessage = messages.find((m) => m.role === "tool");
+      return { type: "text", text: `saw: ${toolMessage?.content}` };
+    },
+  };
+
+  const onDangerousBash = async () => {
+    asked = true;
+    return true;
+  };
+
+  const result = await runAgentLoop(baseParams({ providers: [provider], resolveFigmaToolsFn, onDangerousBash }));
+
+  assert.equal(asked, false);
+  assert.match(result.summary, /exit_code:/);
+});
+
 test("runAgentLoop skips Figma resolution entirely when there's nothing Figma-related", async () => {
   let resolveCalled = false;
   const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => {

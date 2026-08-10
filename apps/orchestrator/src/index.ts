@@ -17,6 +17,13 @@ app.post("/inbound", (req, res) => {
   if (!from || !text) {
     return res.status(400).json({ error: "Missing 'from' or 'text'" });
   }
+  // Belt-and-suspenders: whatsapp-gateway already filters by ALLOWED_SENDERS
+  // before forwarding, but this endpoint shouldn't blindly trust every caller
+  // that knows the internal secret to have applied that filter correctly.
+  if (!config.allowedSenders.includes(from)) {
+    console.warn(`Rejecting /inbound from non-allowlisted sender: ${from}`);
+    return res.sendStatus(403);
+  }
 
   // Ack immediately; the actual work (cloning, running the agent) can take
   // minutes and is reported back to WhatsApp asynchronously as it progresses.

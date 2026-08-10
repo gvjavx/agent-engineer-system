@@ -18,6 +18,8 @@ export type RunTaskParams = {
   preferredProvider?: string;
   // Backs the send_document tool — see loop.ts for why this is a callback.
   sendDocument?: (relPath: string, caption: string | undefined) => Promise<string>;
+  // Backs the WhatsApp confirmation gate for risky bash commands — see loop.ts.
+  onDangerousBash?: (command: string, reason: string) => Promise<boolean>;
 } & (
   | { kind: "git"; defaultBranch: string; workBranch: string; autoMerge: "direct" | "pr" }
   | { kind: "local"; folderPath: string }
@@ -92,7 +94,8 @@ export function buildProviders(preferredProviderSpec?: string): Provider[] {
 }
 
 export async function runTask(params: RunTaskParams): Promise<RunTaskResult> {
-  const { taskId, cwd, projectAlias, instruction, abortController, onProgress, preferredProvider, sendDocument } = params;
+  const { taskId, cwd, projectAlias, instruction, abortController, onProgress, preferredProvider, sendDocument, onDangerousBash } =
+    params;
 
   const systemPrompt =
     params.kind === "git"
@@ -113,5 +116,6 @@ export async function runTask(params: RunTaskParams): Promise<RunTaskResult> {
     abortController,
     onProgress,
     sendDocument,
+    onDangerousBash,
   });
 }

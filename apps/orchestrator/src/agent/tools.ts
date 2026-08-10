@@ -183,3 +183,42 @@ export function detectMilestone(name: string, input: Record<string, unknown>): s
   }
   return undefined;
 }
+
+// Heuristic, not a sandbox — the bash tool still runs with the full OS
+// permissions of the orchestrator process (see README's security notes), so
+// this only buys a human-in-the-loop pause before the handful of command
+// shapes most likely to be either a genuine mistake or a hijacked/injected
+// instruction (see the prompt-injection note in systemPrompt.ts). Biased
+// toward over-flagging: a false positive just costs one extra WhatsApp
+// confirmation, a false negative defeats the whole point.
+const DANGEROUS_BASH_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(bash|sh|zsh)\b/i, reason: "download lalu langsung dieksekusi ke shell" },
+  { pattern: /\bchmod\s+(-R\s+)?0?777\b/i, reason: "buka permission 777" },
+  { pattern: /\bsudo\b/i, reason: "eskalasi privilege lewat sudo" },
+  { pattern: /\bbase64\s+(-d|--decode)\b/i, reason: "decode payload base64 (pola umum buat nyembunyiin isi command)" },
+  { pattern: /\b(nc|ncat|netcat)\b[^\n]*(-e\b|\/bin\/(sh|bash))/i, reason: "pola reverse shell" },
+  { pattern: />&?\s*\/dev\/tcp\//i, reason: "pola reverse shell lewat /dev/tcp" },
+  {
+    pattern: /\b(cat|less|more|head|tail|type)\b[^\n|]*(\.env\b|id_rsa\b|\.ssh[\\/]|\.git-credentials\b|credentials\.json\b|\.aws[\\/]credentials\b)/i,
+    reason: "baca file kredensial/rahasia",
+  },
+];
+
+// Split out from the table above because "rm -rf something" is only worth
+// flagging when it's aimed at something catastrophic (root/home/wildcard) —
+// checking flags and target separately reads a lot clearer than cramming
+// both into one regex, and avoids flagging routine "rm -rf dist" cleanup.
+const RM_FORCE_RECURSIVE_RE = /-\w*r\w*f\w*\b|-\w*f\w*r\w*\b|(--recursive\b.*--force\b)|(--force\b.*--recursive\b)/i;
+const RM_CATASTROPHIC_TARGET_RE = /(^|\s)(\/\*?|~\/?\*?|\$HOME\S*|\*)(\s|$)/i;
+
+function isDangerousRm(command: string): boolean {
+  return /\brm\b/i.test(command) && RM_FORCE_RECURSIVE_RE.test(command) && RM_CATASTROPHIC_TARGET_RE.test(command);
+}
+
+export function isDangerousBashCommand(command: string): string | undefined {
+  if (isDangerousRm(command)) return "hapus paksa yang menyasar root/home/wildcard";
+  for (const { pattern, reason } of DANGEROUS_BASH_PATTERNS) {
+    if (pattern.test(command)) return reason;
+  }
+  return undefined;
+}
