@@ -5,6 +5,7 @@ const ADD_PROJECT_RE = /^tambah\s+project\s+(\S+)\s+(\S+)\s*$/i;
 // Path can contain spaces (Windows paths especially), so it's everything
 // after the alias rather than a single \S+ token.
 const ADD_FOLDER_RE = /^tambah\s+folder\s+(\S+)\s+(.+?)\s*$/i;
+const DELETE_PROJECT_RE = /^(hapus|hapuskan)\s+project\s+(\S+)\s*$/i;
 const USE_PROJECT_RE = /^(pakai|gunakan)\s+(\S+)\s*$/i;
 const USE_MODEL_RE = /^(pakai|gunakan)\s+model\s+(\S+)\s*$/i;
 const USE_DEPARTMENT_MODEL_RE = /^(pakai|gunakan)\s+model\s+(\S+)\s+(\S+)\s*$/i;
@@ -56,6 +57,11 @@ export function parseAddFolder(text: string): AddFolderCommand | undefined {
   const match = text.trim().match(ADD_FOLDER_RE);
   if (!match) return undefined;
   return { alias: match[1], path: match[2] };
+}
+
+export function parseDeleteProject(text: string): string | undefined {
+  const match = text.trim().match(DELETE_PROJECT_RE);
+  return match?.[2];
 }
 
 export function parseUseProject(text: string): string | undefined {

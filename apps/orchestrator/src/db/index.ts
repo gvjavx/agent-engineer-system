@@ -98,6 +98,14 @@ export const projectsRepo = {
     ).run(alias, localPath);
     return this.get(alias)!;
   },
+  // Only unregisters the project — never touches anything on disk. For
+  // kind='local' projects repo_url IS the user's real folder on the server
+  // (see git/repo.ts), so deleting the row must never cascade into deleting
+  // files; for kind='git' the local clone under workspaces/<alias> is simply
+  // left behind (harmless, re-clonable, and not this method's job to clean up).
+  delete(alias: string): void {
+    db.prepare("DELETE FROM projects WHERE alias = ?").run(alias);
+  },
 };
 
 export interface Task {
@@ -177,6 +185,12 @@ export const conversationRepo = {
       `INSERT INTO conversation_state (from_number, active_project_alias) VALUES (?, ?)
        ON CONFLICT(from_number) DO UPDATE SET active_project_alias = excluded.active_project_alias`
     ).run(fromNumber, alias);
+  },
+  // Called when a project is deleted — clears it as the active project for
+  // every conversation that had it selected (not just the one that deleted
+  // it), so nobody's left pointed at an alias that no longer exists.
+  clearActiveProjectEverywhere(alias: string): void {
+    db.prepare("UPDATE conversation_state SET active_project_alias = NULL WHERE active_project_alias = ?").run(alias);
   },
   setPendingAction(fromNumber: string, pending: string | null): void {
     db.prepare(

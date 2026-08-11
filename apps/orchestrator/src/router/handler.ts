@@ -16,7 +16,7 @@ import { classifyDepartments } from "../agent/classifier.js";
 import { classifyCommandIntent } from "../agent/commandIntent.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
 import { describeImage } from "../agent/imageDescription.js";
-import { explainInSimpleTerms } from "../agent/explainAssistant.js";
+import { explainInSimpleTerms, introduceYourself, respondToGreeting, explainHelp } from "../agent/dynamicReplies.js";
 import { listGeminiModels, listOpenAiCompatibleModels } from "../agent/modelCatalog.js";
 import { runPipeline, type PhaseSpec, type PipelineMode } from "../agent/pipeline.js";
 import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment } from "../agent/departments.js";
@@ -31,6 +31,7 @@ import { enqueueProjectTask, cancelActiveTask, getActiveTaskId } from "../queue/
 import {
   parseAddProject,
   parseAddFolder,
+  parseDeleteProject,
   parseUseProject,
   parseUseModel,
   parseListModelsForProvider,
@@ -49,7 +50,7 @@ import {
   isPlausibleShortCommand,
 } from "./parse.js";
 
-const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Gampangnya, aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
+const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
 
 Mau mulai? Daftarin project dulu, atau ketik "bantuan" buat lihat semua perintahnya.`;
 
@@ -58,7 +59,7 @@ const GREETING_TEXT = `Halo, baik nih! Ada yang mau dikerjain, atau ketik "bantu
 // For non-technical "how does this work" questions — no command syntax, no
 // jargon. Separate from HELP_TEXT (the command cheatsheet) on purpose: someone
 // asking in plain language wants a plain-language answer, not a syntax dump.
-const EXPLAIN_TEXT = `Gampangnya gini: kamu tinggal certain apa yang kamu mau, kayak ngobrol biasa aja — misalnya "bikinin aku toko online buat jualan baju" atau "tambahin fitur login di aplikasi yang kemarin".
+const EXPLAIN_TEXT = `Kamu tinggal certain apa yang kamu mau, kayak ngobrol biasa aja — misalnya "bikinin aku toko online buat jualan baju" atau "tambahin fitur login di aplikasi yang kemarin".
 
 Abis itu, buat request bikin aplikasi, biasanya aku jalanin langkah-langkah kayak gini (cuma yang relevan buat request kamu aja yang jalan, gak semuanya tiap kali):
 1. Pertama, aku bertindak sebagai Product Owner — nangkep dulu kebutuhan kamu sebenernya dan nentuin cakupan yang paling masuk akal.
@@ -80,6 +81,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *daftar project* — lihat semua project yang udah terdaftar
 - *tambah project <nama> <url-repo>* — daftarin repo GitHub baru
 - *tambah folder <nama> <path-lokal>* — daftarin folder lokal di server (bukan lewat git)
+- *hapus project <nama>* — unregister project dari daftar (gak ngehapus apa pun di server — clone/folder aslinya tetap ada)
 - *pakai <nama>* — ganti project aktif buat chat ini
 - *daftar model* — cek AI model yang aku pakai per departemen, masih bisa dipakai atau lagi bermasalah
 - *daftar model <provider> <kata kunci>* — cari model spesifik di provider itu (mis. "daftar model gemini flash") — cuma yang bisa dipakai yang ditampilin
@@ -98,6 +100,11 @@ interface PendingAddFolder {
   path: string;
 }
 
+interface PendingDeleteProject {
+  type: "confirm_delete_project";
+  alias: string;
+}
+
 interface PendingPipeline {
   type: "confirm_pipeline";
   alias: string;
@@ -105,7 +112,7 @@ interface PendingPipeline {
   phases: PhaseSpec[];
 }
 
-type PendingActionData = PendingAddFolder | PendingPipeline;
+type PendingActionData = PendingAddFolder | PendingDeleteProject | PendingPipeline;
 
 const YES_NO_OPTIONS: QuickReplyOption[] = [
   { id: "ya", title: "Ya, lanjut" },
@@ -119,6 +126,48 @@ const PLAN_CONFIRM_OPTIONS: QuickReplyOption[] = [
   { id: "ya", title: "Ya, langsung" },
   { id: "ya, checkpoint", title: "Ya, review tiap fase" },
   { id: "tidak", title: "Tidak, batal" },
+];
+
+// Attached to every "bantuan" reply. Rows for parameter-less commands use the
+// exact phrase as the id, so a tap hits the real command directly (zero AI
+// cost). Rows for commands that need arguments (tambah project, pakai model,
+// dst.) can't be completed by a single tap — WhatsApp sends the tapped id
+// back as a normal message, it doesn't pre-fill the input box — so those use
+// a natural-language question as the id instead. That question doesn't match
+// any exact command, so it falls through to the semantic classifier, which
+// recognizes it as "help" and explainHelp answers it grounded in the real
+// command reference — same flow as if the user had typed the question by hand.
+const HELP_OPTIONS: QuickReplyOption[] = [
+  { id: "daftar project", title: "Daftar project", description: "Lihat semua project yang udah terdaftar" },
+  {
+    id: "gimana cara tambah project baru?",
+    title: "Tambah project",
+    description: "Repo GitHub, atau folder lokal di server",
+  },
+  {
+    id: "gimana cara hapus project?",
+    title: "Hapus project",
+    description: "Unregister, gak ngehapus apa pun di server",
+  },
+  {
+    id: "gimana cara ganti project aktif?",
+    title: "Ganti project aktif",
+    description: "Pindah ke project lain buat chat ini",
+  },
+  { id: "daftar model", title: "Daftar model", description: "Cek AI model yang aktif per departemen" },
+  {
+    id: "gimana cara ganti model AI yang dipakai?",
+    title: "Ganti model AI",
+    description: "Pilih model AI default atau khusus satu departemen",
+  },
+  { id: "status", title: "Status", description: "Cek task yang lagi jalan" },
+  { id: "stop", title: "Stop", description: "Batalin task yang lagi jalan" },
+  { id: "hubungkan figma", title: "Hubungkan Figma", description: "Sambungin akun Figma kamu" },
+  {
+    id: "gimana cara mulai ngerjain sesuatu?",
+    title: "Mulai ngerjain sesuatu",
+    description: "Instruksi bebas, link Figma, atau kirim gambar",
+  },
 ];
 
 // Cap on how long a message can be before it's not even worth spending an AI
@@ -155,17 +204,17 @@ export async function handleInboundMessage(
   }
 
   if (isIntroCommand(trimmed)) {
-    await handleIntroCommand(from);
+    await handleIntroCommand(from, trimmed);
     return;
   }
 
   if (isGreetingCommand(trimmed)) {
-    await handleGreetingCommand(from);
+    await handleGreetingCommand(from, trimmed);
     return;
   }
 
   if (isHelpCommand(trimmed)) {
-    await handleHelpCommand(from);
+    await handleHelpCommand(from, trimmed);
     return;
   }
 
@@ -285,6 +334,27 @@ export async function handleInboundMessage(
     return;
   }
 
+  const deleteAlias = parseDeleteProject(trimmed);
+  if (deleteAlias) {
+    const project = projectsRepo.get(deleteAlias);
+    if (!project) {
+      await sendWhatsApp(from, `Project "${deleteAlias}" gak ketemu. Ketik "daftar project" buat lihat daftarnya.`);
+      return;
+    }
+    if (getActiveTaskId(deleteAlias)) {
+      await sendWhatsApp(from, `Masih ada task yang lagi jalan di "${deleteAlias}". Ketik "stop" dulu sebelum hapus.`);
+      return;
+    }
+    const pending: PendingDeleteProject = { type: "confirm_delete_project", alias: deleteAlias };
+    conversationRepo.setPendingAction(from, JSON.stringify(pending));
+    const diskNote =
+      project.kind === "local"
+        ? "cuma ke-unregister dari sini, foldernya di server gak ke-hapus"
+        : "cuma ke-unregister dari sini, clone lokalnya di server gak ke-hapus (repo aslinya di GitHub jelas gak kesentuh)";
+    await sendWhatsApp(from, `Yakin mau hapus project "${deleteAlias}"? (${diskNote}) Boleh lanjut?`, YES_NO_OPTIONS);
+    return;
+  }
+
   const useAlias = parseUseProject(trimmed);
   if (useAlias) {
     const alias = useAlias;
@@ -321,16 +391,34 @@ export async function handleInboundMessage(
   await handleFreeTextInstruction(from, trimmed);
 }
 
-async function handleIntroCommand(from: string): Promise<void> {
-  await sendWhatsApp(from, INTRO_TEXT);
+// Each of these three follows the same shape: try an AI-generated reply
+// tailored to what was actually asked, fall back to the static text if
+// there's no provider configured or the call fails — never leaves the user
+// without an answer just because a provider hiccuped.
+async function handleIntroCommand(from: string, question: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const answer =
+    providers.length > 0 ? await introduceYourself(question, providers[0], new AbortController().signal) : undefined;
+  await sendWhatsApp(from, answer ?? INTRO_TEXT);
 }
 
-async function handleGreetingCommand(from: string): Promise<void> {
-  await sendWhatsApp(from, GREETING_TEXT);
+async function handleGreetingCommand(from: string, message: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const answer =
+    providers.length > 0 ? await respondToGreeting(message, providers[0], new AbortController().signal) : undefined;
+  await sendWhatsApp(from, answer ?? GREETING_TEXT);
 }
 
-async function handleHelpCommand(from: string): Promise<void> {
-  await sendWhatsApp(from, HELP_TEXT);
+async function handleHelpCommand(from: string, question: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const answer =
+    providers.length > 0
+      ? await explainHelp(question, HELP_TEXT, providers[0], new AbortController().signal)
+      : undefined;
+  await sendWhatsApp(from, answer ?? HELP_TEXT, HELP_OPTIONS, "Pilih topik");
 }
 
 async function handleExplainCommand(from: string, question: string): Promise<void> {
@@ -350,10 +438,18 @@ async function handleListProjectsCommand(from: string): Promise<void> {
       from,
       "Belum ada project yang terdaftar nih. Daftarin dulu ya, ketik: tambah project <nama> <url-repo>"
     );
-  } else {
-    const lines = projects.map((p) => `• ${p.alias}${p.kind === "local" ? " (folder lokal)" : ""} — ${p.repo_url}`);
-    await sendWhatsApp(from, `Ini project yang udah terdaftar:\n${lines.join("\n")}`);
+    return;
   }
+  const lines = projects.map((p) => `• ${p.alias}${p.kind === "local" ? " (folder lokal)" : ""} — ${p.repo_url}`);
+  // Tappable, same id shape as the project picker in handleFreeTextInstruction
+  // ("pakai <alias>") — tap switches the active project directly instead of
+  // making the user type it out after reading the list.
+  const options: QuickReplyOption[] = projects.map((p) => ({
+    id: `pakai ${p.alias}`,
+    title: p.alias,
+    description: p.kind === "local" ? "Folder lokal" : p.repo_url,
+  }));
+  await sendWhatsApp(from, `Ini project yang udah terdaftar:\n${lines.join("\n")}`, options, "Pilih project");
 }
 
 async function handleListModelsCommand(from: string): Promise<void> {
@@ -395,9 +491,21 @@ async function handleListModelsCommand(from: string): Promise<void> {
   );
   const defaultLine = `Default (semua): ${state?.preferred_provider ?? "otomatis, provider pertama yang aktif"}`;
 
+  // Tappable shortcut to switch the default provider — deduped by name since
+  // multiple keys for the same provider would otherwise offer the same tap
+  // more than once.
+  const usableProviderNames = [...new Set(results.filter((r) => r.status.state === "ok").map((r) => r.name))];
+  const options: QuickReplyOption[] = usableProviderNames.map((name) => ({
+    id: `pakai model semua ${name}`,
+    title: name,
+    description: name === state?.preferred_provider ? "Provider default sekarang" : "Jadiin provider default",
+  }));
+
   await sendWhatsApp(
     from,
-    `Provider yang aktif:\n${providerLines.join("\n")}\n\nModel per departemen:\n${deptLines.join("\n")}\n${defaultLine}`
+    `Provider yang aktif:\n${providerLines.join("\n")}\n\nModel per departemen:\n${deptLines.join("\n")}\n${defaultLine}`,
+    options,
+    "Pilih provider"
   );
 }
 
@@ -422,7 +530,8 @@ async function handleStatusCommand(from: string): Promise<void> {
     await sendWhatsApp(
       from,
       `Masih ngerjain task di "${state.active_project_alias}" nih:\n"${task?.instruction ?? ""}"` +
-        (phaseNote ? `\n\nTerakhir: ${phaseNote}` : "")
+        (phaseNote ? `\n\nTerakhir: ${phaseNote}` : ""),
+      [{ id: "stop", title: "Stop" }]
     );
   }
 }
@@ -515,13 +624,13 @@ async function tryHandleSemanticCommand(from: string, trimmed: string): Promise<
   const intent = await classifyCommandIntent(trimmed, providers[0], new AbortController().signal);
   switch (intent) {
     case "intro":
-      await handleIntroCommand(from);
+      await handleIntroCommand(from, trimmed);
       return true;
     case "greeting":
-      await handleGreetingCommand(from);
+      await handleGreetingCommand(from, trimmed);
       return true;
     case "help":
-      await handleHelpCommand(from);
+      await handleHelpCommand(from, trimmed);
       return true;
     case "explain":
       await handleExplainCommand(from, trimmed);
@@ -639,6 +748,24 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
       await sendWhatsApp(from, "Oke, gak jadi ya.");
     } else {
       await sendWhatsApp(from, 'Gak jelas jawabannya, jadi aku batalin dulu. Ulangi "tambah folder" lagi kalau masih mau.');
+    }
+    return true;
+  }
+
+  if (pending.type === "confirm_delete_project") {
+    const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+    if (intent === "yes") {
+      conversationRepo.setPendingAction(from, null);
+      projectsRepo.delete(pending.alias);
+      conversationRepo.clearActiveProjectEverywhere(pending.alias);
+      await sendWhatsApp(from, `Oke, "${pending.alias}" udah ke-unregister.`);
+      return true;
+    }
+    conversationRepo.setPendingAction(from, null);
+    if (intent === "no") {
+      await sendWhatsApp(from, "Oke, gak jadi ya.");
+    } else {
+      await sendWhatsApp(from, 'Gak jelas jawabannya, jadi aku batalin dulu. Ulangi "hapus project" lagi kalau masih mau.');
     }
     return true;
   }

@@ -49,34 +49,44 @@ done
 
 callback_base="${1:-}"
 if [ -z "$callback_base" ]; then
-  # ngrok's :4040 API can be listing tunnels for other projects too (same
-  # ngrok agent, different local ports) — picking tunnels[0] blindly handed
-  # Meta whatever tunnel happened to be first, verification 404'd, and it had
-  # nothing to do with this repo. Match on the tunnel whose local target port
-  # is actually whatsapp-gateway's (PORT in .env, default 3000) instead.
+  # ngrok's admin API defaults to :4040, but a second `ngrok http ...` on the
+  # same machine (e.g. a stray/other-project agent already holding :4040)
+  # silently falls back to the next free port (4041, 4042, ...) instead of
+  # failing — hit this directly: our own tunnel to port 3000 was alive on
+  # :4041 and invisible to a script that only ever checked :4040. Scan a
+  # small range instead of a single port, and match on the tunnel whose
+  # local target is actually whatsapp-gateway's (PORT in .env, default 3000).
   gateway_port="${PORT:-3000}"
-  callback_base=$(curl -s http://127.0.0.1:4040/api/tunnels | node -e "
+  callback_base=$(node -e "
     const port = process.argv[1];
-    let d = '';
-    process.stdin.on('data', (c) => (d += c));
-    process.stdin.on('end', () => {
-      let tunnels;
-      try { tunnels = JSON.parse(d).tunnels || []; } catch { process.exit(1); }
-      const matches = tunnels.filter((t) => {
+    const adminPorts = [4040, 4041, 4042, 4043, 4044, 4045];
+    (async () => {
+      const allTunnels = [];
+      for (const adminPort of adminPorts) {
+        try {
+          const res = await fetch('http://127.0.0.1:' + adminPort + '/api/tunnels', { signal: AbortSignal.timeout(1000) });
+          if (!res.ok) continue;
+          const body = await res.json();
+          for (const t of body.tunnels || []) allTunnels.push(t);
+        } catch {
+          // nothing listening on that admin port — not every ngrok agent uses it
+        }
+      }
+      const matches = allTunnels.filter((t) => {
         try { return t.proto === 'https' && new URL(t.config.addr).port === port; } catch { return false; }
       });
       if (matches.length === 1) { console.log(matches[0].public_url); return; }
       if (matches.length === 0) {
-        console.error('No ngrok tunnel points at localhost:' + port + ' (whatsapp-gateway).');
+        console.error('No ngrok tunnel points at localhost:' + port + ' (whatsapp-gateway) on admin ports ' + adminPorts.join(', ') + '.');
       } else {
         console.error('Multiple ngrok tunnels point at localhost:' + port + ' — pass the URL explicitly.');
       }
-      if (tunnels.length > 0) {
+      if (allTunnels.length > 0) {
         console.error('Tunnels currently running:');
-        for (const t of tunnels) console.error('  ' + t.public_url + ' -> ' + (t.config?.addr ?? '?'));
+        for (const t of allTunnels) console.error('  ' + t.public_url + ' -> ' + (t.config?.addr ?? '?'));
       }
       process.exit(1);
-    });
+    })();
   " "$gateway_port") || {
     echo "Couldn't auto-detect the ngrok URL for localhost:$gateway_port (see above, or start one: ngrok http $gateway_port)." >&2
     echo "Or pass it explicitly: ./scripts/fix-whatsapp-webhook.sh https://<your-url>.ngrok-free.app" >&2

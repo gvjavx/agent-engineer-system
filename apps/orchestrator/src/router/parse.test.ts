@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   parseAddProject,
   parseAddFolder,
+  parseDeleteProject,
   parseUseProject,
   parseUseModel,
   parseListModelsForProvider,
@@ -37,6 +38,18 @@ test("parseAddProject is case-insensitive and tolerates surrounding whitespace",
 test("parseAddProject returns undefined for unrelated text", () => {
   assert.equal(parseAddProject("tambahin fitur login"), undefined);
   assert.equal(parseAddProject("tambah project cuma-satu-kata"), undefined);
+});
+
+test("parseDeleteProject extracts the alias", () => {
+  assert.equal(parseDeleteProject("hapus project toko-online"), "toko-online");
+  assert.equal(parseDeleteProject("  Hapus Project  demo  "), "demo");
+  assert.equal(parseDeleteProject("hapuskan project demo"), "demo");
+});
+
+test("parseDeleteProject returns undefined for unrelated text", () => {
+  assert.equal(parseDeleteProject("hapus project"), undefined);
+  assert.equal(parseDeleteProject("hapus folder demo"), undefined);
+  assert.equal(parseDeleteProject("tambah project demo https://github.com/x/demo.git"), undefined);
 });
 
 test("isAllowedRepoUrl accepts plain https github.com repo URLs", () => {

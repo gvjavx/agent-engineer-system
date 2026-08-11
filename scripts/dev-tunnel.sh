@@ -53,27 +53,36 @@ public_url=""
 # another ngrok agent already running on this machine for something
 # unrelated, in which case tunnels[0] may not be the one this script just
 # started (see the same fix in fix-whatsapp-webhook.sh for the incident that
-# prompted this).
+# prompted this). Worse, if :4040 is already taken, the ngrok process we just
+# started above silently falls back to the next free admin port (4041, 4042,
+# ...) instead of failing — hit this directly, a tunnel to port 3000 was
+# alive and working on :4041 while a script that only checked :4040 reported
+# nothing running at all. Scan a small range instead of a single port.
 for _ in $(seq 1 20); do
-  public_url=$(curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null | node -e "
-    let d = '';
-    process.stdin.on('data', (c) => (d += c));
-    process.stdin.on('end', () => {
-      try {
-        const tunnels = JSON.parse(d).tunnels || [];
-        const match = tunnels.find((t) => {
-          try { return t.proto === 'https' && new URL(t.config.addr).port === '3000'; } catch { return false; }
-        });
-        if (!match) process.exit(1);
-        console.log(match.public_url);
-      } catch { process.exit(1); }
-    });" 2>/dev/null) && [ -n "$public_url" ] && break
+  public_url=$(node -e "
+    const adminPorts = [4040, 4041, 4042, 4043, 4044, 4045];
+    (async () => {
+      for (const adminPort of adminPorts) {
+        try {
+          const res = await fetch('http://127.0.0.1:' + adminPort + '/api/tunnels', { signal: AbortSignal.timeout(1000) });
+          if (!res.ok) continue;
+          const tunnels = (await res.json()).tunnels || [];
+          const match = tunnels.find((t) => {
+            try { return t.proto === 'https' && new URL(t.config.addr).port === '3000'; } catch { return false; }
+          });
+          if (match) { console.log(match.public_url); return; }
+        } catch {
+          // nothing listening on that admin port yet — not every ngrok agent uses it
+        }
+      }
+      process.exit(1);
+    })();" 2>/dev/null) && [ -n "$public_url" ] && break
   sleep 1
 done
 
 if [ -z "$public_url" ]; then
-  echo "ngrok didn't come up in time (or another ngrok agent on this machine is holding :4040" >&2
-  echo "and this tunnel never showed up there) — check /tmp/ngrok-dev.log" >&2
+  echo "ngrok didn't come up in time (checked admin ports 4040-4045 for a tunnel to port 3000)" >&2
+  echo "— check /tmp/ngrok-dev.log" >&2
   exit 1
 fi
 
