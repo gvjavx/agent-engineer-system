@@ -33,6 +33,26 @@ export function isAllowedRepoUrl(repoUrl: string): boolean {
   return ALLOWED_REPO_URL_RE.test(repoUrl);
 }
 
+// Finds a GitHub repo reference anywhere in free text and normalizes it to
+// the canonical https://github.com/<owner>/<repo> form isAllowedRepoUrl
+// expects — for the guided "tambah project" wizard, where the user pastes
+// whatever their browser address bar gave them (often with a trailing
+// /tree/<branch>, a query string, a ".git" suffix, or surrounding words),
+// not the exact string this project's own regex-based direct command
+// requires. Not anchored on purpose, so it matches regardless of protocol/
+// www-prefix/surrounding text; the trailing path/query/hash is simply left
+// out of the capture since "/", "?", and "#" aren't in the character class.
+const GITHUB_URL_EXTRACT_RE = /(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)/i;
+
+export function extractGithubRepoUrl(text: string): string | undefined {
+  const match = text.match(GITHUB_URL_EXTRACT_RE);
+  if (!match) return undefined;
+  const owner = match[1];
+  const repo = match[2].replace(/\.git$/i, "");
+  if (!owner || !repo) return undefined;
+  return `https://github.com/${owner}/${repo}`;
+}
+
 const URL_RE = /https?:\/\//i;
 
 // Cheap zero-AI-cost gate before spending a classification call on a message
@@ -62,6 +82,18 @@ export function parseAddFolder(text: string): AddFolderCommand | undefined {
 export function parseDeleteProject(text: string): string | undefined {
   const match = text.trim().match(DELETE_PROJECT_RE);
   return match?.[2];
+}
+
+// Used to validate a project alias collected turn-by-turn in a guided
+// WhatsApp flow (see handler.ts's guided_git_project/guided_folder pending
+// states) — free-text replies are more error-prone than a single regex-
+// matched token, so this rejects whitespace and path-separator characters
+// that would otherwise resolve outside workspacesDir when joined into a path.
+export function isValidAliasInput(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || /\s/.test(trimmed)) return false;
+  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("..")) return false;
+  return true;
 }
 
 export function parseUseProject(text: string): string | undefined {

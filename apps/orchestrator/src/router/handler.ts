@@ -32,6 +32,7 @@ import {
   parseAddProject,
   parseAddFolder,
   parseDeleteProject,
+  isValidAliasInput,
   parseUseProject,
   parseUseModel,
   parseListModelsForProvider,
@@ -47,6 +48,7 @@ import {
   isConnectFigmaCommand,
   isGreetingCommand,
   isAllowedRepoUrl,
+  extractGithubRepoUrl,
   isPlausibleShortCommand,
 } from "./parse.js";
 
@@ -105,6 +107,23 @@ interface PendingDeleteProject {
   alias: string;
 }
 
+// Turn-by-turn collection for the "bantuan" menu's argument-taking rows (tap
+// -> asked one field at a time -> reuses the same registration logic the
+// direct command already uses). WhatsApp can't pre-fill the input box from a
+// button tap, so a tappable option can't hand over a ready-made "tambah
+// project <alias> <url>" — this asks for each piece instead of guessing.
+interface PendingGuidedGitProject {
+  type: "guided_git_project";
+  step: "alias" | "url";
+  alias?: string;
+}
+
+interface PendingGuidedFolder {
+  type: "guided_folder";
+  step: "alias" | "path";
+  alias?: string;
+}
+
 interface PendingPipeline {
   type: "confirm_pipeline";
   alias: string;
@@ -112,7 +131,12 @@ interface PendingPipeline {
   phases: PhaseSpec[];
 }
 
-type PendingActionData = PendingAddFolder | PendingDeleteProject | PendingPipeline;
+type PendingActionData =
+  | PendingAddFolder
+  | PendingDeleteProject
+  | PendingGuidedGitProject
+  | PendingGuidedFolder
+  | PendingPipeline;
 
 const YES_NO_OPTIONS: QuickReplyOption[] = [
   { id: "ya", title: "Ya, lanjut" },
@@ -128,43 +152,48 @@ const PLAN_CONFIRM_OPTIONS: QuickReplyOption[] = [
   { id: "tidak", title: "Tidak, batal" },
 ];
 
-// Attached to every "bantuan" reply. Rows for parameter-less commands use the
-// exact phrase as the id, so a tap hits the real command directly (zero AI
-// cost). Rows for commands that need arguments (tambah project, pakai model,
-// dst.) can't be completed by a single tap — WhatsApp sends the tapped id
-// back as a normal message, it doesn't pre-fill the input box — so those use
-// a natural-language question as the id instead. That question doesn't match
-// any exact command, so it falls through to the semantic classifier, which
-// recognizes it as "help" and explainHelp answers it grounded in the real
-// command reference — same flow as if the user had typed the question by hand.
+// Sentinels for the "bantuan" menu rows that need arguments a single tap
+// can't supply (WhatsApp sends the tapped id back as a normal message, it
+// doesn't pre-fill the input box for further editing). Exact-string
+// constants rather than natural-language questions on purpose — an earlier
+// version used questions like "gimana cara tambah project baru?" and relied
+// on the AI classifier to route them to help, which wasn't reliable enough
+// for something a tap must always get right: a misclassification sent it
+// down the free-text task path instead, attempting a "task" with no actual
+// project name/URL to work with. These sentinels never collide with
+// anything a human would type, so matching is exact and requires no AI call.
+const HELP_WIZARD_GIT_PROJECT_ID = "__wizard_tambah_git_project__";
+const HELP_WIZARD_FOLDER_ID = "__wizard_tambah_folder__";
+const HELP_PICKER_DELETE_PROJECT_ID = "__picker_hapus_project__";
+const HELP_TOPIC_START_TASK_ID = "__topik_mulai_kerja__";
+
+// Attached to every "bantuan" reply. Parameter-less commands use the real
+// exact phrase as the id (tap hits the real command directly). "Ganti
+// project aktif"/"ganti model AI" aren't separate rows — "daftar
+// project"/"daftar model" already show a tappable picker for exactly that.
 const HELP_OPTIONS: QuickReplyOption[] = [
-  { id: "daftar project", title: "Daftar project", description: "Lihat semua project yang udah terdaftar" },
+  { id: "daftar project", title: "Daftar project", description: "Lihat atau ganti project aktif" },
   {
-    id: "gimana cara tambah project baru?",
-    title: "Tambah project",
-    description: "Repo GitHub, atau folder lokal di server",
+    id: HELP_WIZARD_GIT_PROJECT_ID,
+    title: "Tambah project (GitHub)",
+    description: "Aku tanya alias & link repo-nya",
   },
   {
-    id: "gimana cara hapus project?",
+    id: HELP_WIZARD_FOLDER_ID,
+    title: "Tambah folder lokal",
+    description: "Aku tanya alias & path foldernya",
+  },
+  {
+    id: HELP_PICKER_DELETE_PROJECT_ID,
     title: "Hapus project",
-    description: "Unregister, gak ngehapus apa pun di server",
+    description: "Pilih dari daftar yang udah ada",
   },
-  {
-    id: "gimana cara ganti project aktif?",
-    title: "Ganti project aktif",
-    description: "Pindah ke project lain buat chat ini",
-  },
-  { id: "daftar model", title: "Daftar model", description: "Cek AI model yang aktif per departemen" },
-  {
-    id: "gimana cara ganti model AI yang dipakai?",
-    title: "Ganti model AI",
-    description: "Pilih model AI default atau khusus satu departemen",
-  },
+  { id: "daftar model", title: "Daftar model", description: "Lihat atau ganti model AI default" },
   { id: "status", title: "Status", description: "Cek task yang lagi jalan" },
   { id: "stop", title: "Stop", description: "Batalin task yang lagi jalan" },
   { id: "hubungkan figma", title: "Hubungkan Figma", description: "Sambungin akun Figma kamu" },
   {
-    id: "gimana cara mulai ngerjain sesuatu?",
+    id: HELP_TOPIC_START_TASK_ID,
     title: "Mulai ngerjain sesuatu",
     description: "Instruksi bebas, link Figma, atau kirim gambar",
   },
@@ -282,33 +311,46 @@ export async function handleInboundMessage(
 
   const addCommand = parseAddProject(trimmed);
   if (addCommand) {
-    const { alias, repoUrl } = addCommand;
-    if (projectsRepo.get(alias)) {
-      await sendWhatsApp(from, `Project "${alias}" udah ada, gak perlu didaftarin lagi.`);
+    await registerGitProject(from, addCommand.alias, addCommand.repoUrl);
+    return;
+  }
+
+  // The three "bantuan" menu rows that need arguments a tap can't supply —
+  // dispatched here deterministically (exact sentinel match, never touching
+  // the AI classifier) so a tap always does what it says, never gets
+  // misread as a free-text task attempt. See the pending-state handling in
+  // handlePendingConfirmation for how each guided flow continues.
+  if (trimmed === HELP_WIZARD_GIT_PROJECT_ID) {
+    const pending: PendingGuidedGitProject = { type: "guided_git_project", step: "alias" };
+    conversationRepo.setPendingAction(from, JSON.stringify(pending));
+    await sendWhatsApp(from, 'Oke, project baru dari repo GitHub. Nama alias-nya apa? (satu kata, misalnya "toko-online")');
+    return;
+  }
+
+  if (trimmed === HELP_WIZARD_FOLDER_ID) {
+    const pending: PendingGuidedFolder = { type: "guided_folder", step: "alias" };
+    conversationRepo.setPendingAction(from, JSON.stringify(pending));
+    await sendWhatsApp(from, 'Oke, project dari folder lokal di server. Nama alias-nya apa? (satu kata, misalnya "toko-lama")');
+    return;
+  }
+
+  if (trimmed === HELP_PICKER_DELETE_PROJECT_ID) {
+    const projects = projectsRepo.list();
+    if (projects.length === 0) {
+      await sendWhatsApp(from, "Belum ada project yang terdaftar buat dihapus.");
       return;
     }
-    if (!isAllowedRepoUrl(repoUrl)) {
-      await sendWhatsApp(
-        from,
-        `URL "${repoUrl}" gak valid. Harus link repo GitHub https://, format https://github.com/owner/repo.`
-      );
-      return;
-    }
-    await sendWhatsApp(from, `Oke, aku daftarin "${alias}" dulu ya, lagi clone repo-nya...`);
-    try {
-      const project = projectsRepo.create(alias, repoUrl);
-      await ensureWorkspace(project);
-      conversationRepo.setActiveProject(from, alias);
-      await sendWhatsApp(
-        from,
-        `Beres, "${alias}" udah terdaftar dan siap dipakai. Sekarang jadi project aktif buat chat ini.`
-      );
-    } catch (err) {
-      await sendWhatsApp(
-        from,
-        `Waduh, gagal daftarin/clone "${alias}": ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+    const options: QuickReplyOption[] = projects.map((p) => ({
+      id: `hapus project ${p.alias}`,
+      title: p.alias,
+      description: p.kind === "local" ? "Folder lokal" : p.repo_url,
+    }));
+    await sendWhatsApp(from, "Project mana yang mau dihapus?", options, "Pilih project");
+    return;
+  }
+
+  if (trimmed === HELP_TOPIC_START_TASK_ID) {
+    await handleHelpCommand(from, "gimana cara mulai ngerjain sebuah task, misalnya bikin aplikasi baru?");
     return;
   }
 
@@ -389,6 +431,38 @@ export async function handleInboundMessage(
 
   // Default: free-text instruction -> classify departments -> confirm -> pipeline.
   await handleFreeTextInstruction(from, trimmed);
+}
+
+// Shared by the direct "tambah project <alias> <url>" command and the
+// guided_git_project wizard's final step, so the two entry points can't
+// silently drift apart.
+async function registerGitProject(from: string, alias: string, repoUrl: string): Promise<void> {
+  if (projectsRepo.get(alias)) {
+    await sendWhatsApp(from, `Project "${alias}" udah ada, gak perlu didaftarin lagi.`);
+    return;
+  }
+  if (!isAllowedRepoUrl(repoUrl)) {
+    await sendWhatsApp(
+      from,
+      `URL "${repoUrl}" gak valid. Harus link repo GitHub https://, format https://github.com/owner/repo.`
+    );
+    return;
+  }
+  await sendWhatsApp(from, `Oke, aku daftarin "${alias}" dulu ya, lagi clone repo-nya...`);
+  try {
+    const project = projectsRepo.create(alias, repoUrl);
+    await ensureWorkspace(project);
+    conversationRepo.setActiveProject(from, alias);
+    await sendWhatsApp(
+      from,
+      `Beres, "${alias}" udah terdaftar dan siap dipakai. Sekarang jadi project aktif buat chat ini.`
+    );
+  } catch (err) {
+    await sendWhatsApp(
+      from,
+      `Waduh, gagal daftarin/clone "${alias}": ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 }
 
 // Each of these three follows the same shape: try an AI-generated reply
@@ -729,6 +803,91 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
   } catch {
     conversationRepo.setPendingAction(from, null);
     return false;
+  }
+
+  if (pending.type === "guided_git_project") {
+    // Plain exact-phrase check, not interpretConfirmationReply — this loop
+    // must stay fully deterministic (see the sentinel comment above
+    // HELP_OPTIONS), so a reply that doesn't exactly say "batal"/"tidak"/etc.
+    // is just treated as the alias/URL itself instead of risking an AI call
+    // here too.
+    if (isConfirmNo(trimmed)) {
+      conversationRepo.setPendingAction(from, null);
+      await sendWhatsApp(from, "Oke, gak jadi ya.");
+      return true;
+    }
+    if (pending.step === "alias") {
+      if (!isValidAliasInput(trimmed)) {
+        await sendWhatsApp(
+          from,
+          'Alias-nya harus satu kata, tanpa spasi/garis miring. Coba lagi, atau ketik "batal".'
+        );
+        return true;
+      }
+      const next: PendingGuidedGitProject = { type: "guided_git_project", step: "url", alias: trimmed };
+      conversationRepo.setPendingAction(from, JSON.stringify(next));
+      await sendWhatsApp(
+        from,
+        `Sip, "${trimmed}". Sekarang kasih link repo GitHub-nya (format https://github.com/owner/repo).`
+      );
+      return true;
+    }
+    // step === "url" — extracted rather than matched exact-format on purpose:
+    // a pasted browser link often carries a trailing /tree/<branch>, a query
+    // string, a ".git" suffix, or surrounding words ("ini reponya <link> ya")
+    // that the direct "tambah project <alias> <url>" command's strict regex
+    // would reject outright. Stays in this step (doesn't clear pending) on a
+    // miss, same retry-in-place behavior as the alias step above.
+    const repoUrl = extractGithubRepoUrl(trimmed);
+    if (!repoUrl) {
+      await sendWhatsApp(
+        from,
+        'Gak nemu link GitHub yang valid di situ. Kirim link repo-nya (mis. https://github.com/owner/repo), atau ketik "batal".'
+      );
+      return true;
+    }
+    conversationRepo.setPendingAction(from, null);
+    await registerGitProject(from, pending.alias ?? "", repoUrl);
+    return true;
+  }
+
+  if (pending.type === "guided_folder") {
+    if (isConfirmNo(trimmed)) {
+      conversationRepo.setPendingAction(from, null);
+      await sendWhatsApp(from, "Oke, gak jadi ya.");
+      return true;
+    }
+    if (pending.step === "alias") {
+      if (!isValidAliasInput(trimmed)) {
+        await sendWhatsApp(
+          from,
+          'Alias-nya harus satu kata, tanpa spasi/garis miring. Coba lagi, atau ketik "batal".'
+        );
+        return true;
+      }
+      if (projectsRepo.get(trimmed)) {
+        await sendWhatsApp(from, `Project "${trimmed}" udah ada. Coba nama lain, atau ketik "batal".`);
+        return true;
+      }
+      const next: PendingGuidedFolder = { type: "guided_folder", step: "path", alias: trimmed };
+      conversationRepo.setPendingAction(from, JSON.stringify(next));
+      await sendWhatsApp(from, `Sip, "${trimmed}". Sekarang kasih path absolut foldernya di server (mis. /home/user/proyek-lama).`);
+      return true;
+    }
+    const alias = pending.alias ?? "";
+    const resolvedPath = path.resolve(trimmed);
+    if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isDirectory()) {
+      await sendWhatsApp(from, `Folder "${resolvedPath}" gak ketemu di server. Cek lagi path-nya, atau ketik "batal".`);
+      return true;
+    }
+    const confirmPending: PendingAddFolder = { type: "confirm_add_folder", alias, path: resolvedPath };
+    conversationRepo.setPendingAction(from, JSON.stringify(confirmPending));
+    await sendWhatsApp(
+      from,
+      `Ini folder lokal di server, bukan repo git — kalau aku daftarin, aku bisa baca, ubah, dan bikin file/folder apapun di dalam "${resolvedPath}" (semua isinya, bukan cuma yang kamu sebut). Boleh lanjut?`,
+      YES_NO_OPTIONS
+    );
+    return true;
   }
 
   if (pending.type === "confirm_add_folder") {

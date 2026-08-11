@@ -4,6 +4,7 @@ import {
   parseAddProject,
   parseAddFolder,
   parseDeleteProject,
+  isValidAliasInput,
   parseUseProject,
   parseUseModel,
   parseListModelsForProvider,
@@ -19,6 +20,7 @@ import {
   isConnectFigmaCommand,
   isGreetingCommand,
   isAllowedRepoUrl,
+  extractGithubRepoUrl,
   isPlausibleShortCommand,
 } from "./parse.js";
 
@@ -52,6 +54,20 @@ test("parseDeleteProject returns undefined for unrelated text", () => {
   assert.equal(parseDeleteProject("tambah project demo https://github.com/x/demo.git"), undefined);
 });
 
+test("isValidAliasInput accepts a single word", () => {
+  assert.ok(isValidAliasInput("toko-online"));
+  assert.ok(isValidAliasInput("  toko_lama  "));
+});
+
+test("isValidAliasInput rejects empty, whitespace, and path-like input", () => {
+  assert.ok(!isValidAliasInput(""));
+  assert.ok(!isValidAliasInput("   "));
+  assert.ok(!isValidAliasInput("toko online"));
+  assert.ok(!isValidAliasInput("../evil"));
+  assert.ok(!isValidAliasInput("a/b"));
+  assert.ok(!isValidAliasInput("a\\b"));
+});
+
 test("isAllowedRepoUrl accepts plain https github.com repo URLs", () => {
   assert.ok(isAllowedRepoUrl("https://github.com/x/toko-online.git"));
   assert.ok(isAllowedRepoUrl("https://github.com/x/toko-online"));
@@ -66,6 +82,50 @@ test("isAllowedRepoUrl rejects non-github hosts, non-https schemes, and git tran
   assert.ok(!isAllowedRepoUrl("file:///etc/passwd"));
   assert.ok(!isAllowedRepoUrl("https://github.com.evil.com/x/y.git"));
   assert.ok(!isAllowedRepoUrl("https://github.com/x/y --upload-pack=touch pwned"));
+});
+
+test("extractGithubRepoUrl finds and normalizes a plain repo URL", () => {
+  assert.equal(extractGithubRepoUrl("https://github.com/facebook/react"), "https://github.com/facebook/react");
+});
+
+test("extractGithubRepoUrl strips a trailing .git suffix", () => {
+  assert.equal(extractGithubRepoUrl("https://github.com/facebook/react.git"), "https://github.com/facebook/react");
+});
+
+test("extractGithubRepoUrl strips a trailing slash", () => {
+  assert.equal(extractGithubRepoUrl("https://github.com/facebook/react/"), "https://github.com/facebook/react");
+});
+
+test("extractGithubRepoUrl ignores a trailing browser path (tree/branch, blob, query string)", () => {
+  assert.equal(
+    extractGithubRepoUrl("https://github.com/facebook/react/tree/main"),
+    "https://github.com/facebook/react"
+  );
+  assert.equal(
+    extractGithubRepoUrl("https://github.com/facebook/react/blob/main/README.md"),
+    "https://github.com/facebook/react"
+  );
+  assert.equal(
+    extractGithubRepoUrl("https://github.com/facebook/react?tab=readme-ov-file"),
+    "https://github.com/facebook/react"
+  );
+});
+
+test("extractGithubRepoUrl works without a protocol or with a www prefix", () => {
+  assert.equal(extractGithubRepoUrl("github.com/facebook/react"), "https://github.com/facebook/react");
+  assert.equal(extractGithubRepoUrl("www.github.com/facebook/react"), "https://github.com/facebook/react");
+});
+
+test("extractGithubRepoUrl finds the link even surrounded by other text", () => {
+  assert.equal(
+    extractGithubRepoUrl("ini reponya https://github.com/facebook/react ya, makasih"),
+    "https://github.com/facebook/react"
+  );
+});
+
+test("extractGithubRepoUrl returns undefined when there's no GitHub link at all", () => {
+  assert.equal(extractGithubRepoUrl("gak ada link apa-apa di sini"), undefined);
+  assert.equal(extractGithubRepoUrl("https://gitlab.com/facebook/react"), undefined);
 });
 
 test("isPlausibleShortCommand accepts short paraphrases", () => {
