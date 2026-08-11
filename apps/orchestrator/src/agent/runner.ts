@@ -29,6 +29,10 @@ export type RunTaskParams = {
 export interface RunTaskResult {
   ok: boolean;
   summary: string;
+  // Mirrors RunAgentLoopResult.cancelled (loop.ts) — passed through as-is
+  // since runTask just returns runAgentLoop's result directly. See
+  // router/handler.ts's executeTask for how this drives work-branch cleanup.
+  cancelled?: boolean;
 }
 
 // "<provider>" or "<provider>/<model>" — the /model suffix overrides the

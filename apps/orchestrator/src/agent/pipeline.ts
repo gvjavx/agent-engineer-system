@@ -112,7 +112,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
 
   for (let i = 0; i < phases.length; i++) {
     if (abortController.signal.aborted) {
-      return { ok: false, summary: "Oke, task-nya udah aku batalin." };
+      return { ok: false, cancelled: true, summary: "Oke, task-nya udah aku batalin." };
     }
 
     const phase = phases[i];
@@ -152,6 +152,14 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
     });
 
     if (!result.ok) {
+      // A mid-phase abort (user typed "stop" while this phase's agent loop
+      // was actively running) surfaces here as result.cancelled, not just at
+      // the top-of-loop/checkpoint boundaries above — must not get lost
+      // inside the generic "fase gagal" wrapper, or executeTask never learns
+      // it should discard the work branch.
+      if (result.cancelled) {
+        return { ok: false, cancelled: true, summary: result.summary };
+      }
       return { ok: false, summary: `Fase "${label}" gagal, jadi aku hentiin di sini: ${result.summary}` };
     }
 
@@ -164,7 +172,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
 
         const resolution = await waitForCheckpoint(taskId, abortController.signal);
         if (resolution.action === "cancel") {
-          return { ok: false, summary: `Dibatalin pas checkpoint fase "${label}".` };
+          return { ok: false, cancelled: true, summary: `Dibatalin pas checkpoint fase "${label}".` };
         }
         if (resolution.action === "continue") break;
 
@@ -197,6 +205,9 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           if (revised.recoverable) {
             await onProgress(revised.summary);
             continue;
+          }
+          if (revised.cancelled) {
+            return { ok: false, cancelled: true, summary: revised.summary };
           }
           return { ok: false, summary: `Revisi fase "${label}" gagal: ${revised.summary}` };
         }

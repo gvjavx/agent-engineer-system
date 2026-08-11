@@ -132,11 +132,12 @@ export const projectsRepo = {
     ).run(alias, localPath);
     return this.get(alias)!;
   },
-  // Only unregisters the project — never touches anything on disk. For
-  // kind='local' projects repo_url IS the user's real folder on the server
-  // (see git/repo.ts), so deleting the row must never cascade into deleting
-  // files; for kind='git' the local clone under workspaces/<alias> is simply
-  // left behind (harmless, re-clonable, and not this method's job to clean up).
+  // Only unregisters the project — never touches anything on disk itself.
+  // For kind='local' projects repo_url IS the user's real folder on the
+  // server, so deleting the row must never cascade into deleting files — the
+  // caller (router/handler.ts) never calls git/repo.ts's removeWorkspace for
+  // those. For kind='git', the caller does clean up the disposable clone
+  // under workspaces/<alias> separately, since re-cloning fully recovers it.
   delete(alias: string): void {
     db.prepare("DELETE FROM projects WHERE alias = ?").run(alias);
   },

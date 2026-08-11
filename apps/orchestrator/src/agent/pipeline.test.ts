@@ -385,8 +385,39 @@ test("cancelling at a checkpoint stops the pipeline before the next phase runs",
 
   const result = await resultPromise;
   assert.equal(result.ok, false);
+  assert.equal(result.cancelled, true);
   assert.match(result.summary, /checkpoint/i);
   assert.equal(devPhaseRan, false);
+});
+
+test("a mid-phase abort (stop command while a phase is actively running) keeps the cancelled flag, doesn't get wrapped as a generic phase failure", async () => {
+  const taskId = "abort-mid-phase";
+  const runAgentLoopFn = async (): Promise<RunAgentLoopResult> => ({
+    ok: false,
+    cancelled: true,
+    summary: "Oke, task-nya udah aku batalin.",
+  });
+
+  const result = await runPipeline({
+    ...baseParams,
+    taskId,
+    instruction: "bikin fitur login",
+    phases: [
+      { department: "manajemen", note: "tentuin scope login" },
+      { department: "dev", note: "implementasi login" },
+    ],
+    abortController: new AbortController(),
+    onProgress: async () => {},
+    checkpoints: false,
+    departmentModelLookup: () => "fake",
+    buildProvidersFn: () => [],
+    runAgentLoopFn,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.cancelled, true);
+  assert.equal(result.summary, "Oke, task-nya udah aku batalin.");
+  assert.doesNotMatch(result.summary, /gagal/i);
 });
 
 test("checkpoints never pause the single-phase 'semua' shortcut", async () => {

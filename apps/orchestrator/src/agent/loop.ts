@@ -41,6 +41,12 @@ export interface RunAgentLoopResult {
   // pipeline.ts's checkpoint revise loop treats this as "still waiting for a
   // usable answer" instead of failing the whole task.
   recoverable?: boolean;
+  // Set when the task ended because the user cancelled it (stop command or
+  // checkpoint "batal"), as opposed to a genuine error — the caller
+  // (router/handler.ts's executeTask) uses this to decide whether to discard
+  // whatever the git work branch accumulated, since a cancelled task's
+  // changes were never asked for in the first place.
+  cancelled?: boolean;
 }
 
 const FIGMA_TOOLS_SYSTEM_NOTE =
@@ -95,7 +101,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
 
     for (let turn = 0; turn < maxTurns; turn++) {
       if (abortController.signal.aborted) {
-        return { ok: false, summary: "Oke, task-nya udah aku batalin." };
+        return { ok: false, cancelled: true, summary: "Oke, task-nya udah aku batalin." };
       }
 
       const provider = providers[providerIndex];
@@ -104,7 +110,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
         response = await provider.chat(messages, toolSchemas, abortController.signal);
       } catch (err) {
         if (abortController.signal.aborted) {
-          return { ok: false, summary: "Oke, task-nya udah aku batalin." };
+          return { ok: false, cancelled: true, summary: "Oke, task-nya udah aku batalin." };
         }
         const message = err instanceof ProviderError ? err.message : String(err);
         auditLog.add(taskId, "error", message);
@@ -146,7 +152,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
             auditLog.add(taskId, "note", `Nunggu konfirmasi WhatsApp buat command berisiko (${dangerReason})`);
             const approved = await onDangerousBash(String(call.input.command ?? ""), dangerReason);
             if (abortController.signal.aborted) {
-              return { ok: false, summary: "Oke, task-nya udah aku batalin." };
+              return { ok: false, cancelled: true, summary: "Oke, task-nya udah aku batalin." };
             }
             if (!approved) {
               auditLog.add(taskId, "note", "Command berisiko gak disetujui, dilewatin.");

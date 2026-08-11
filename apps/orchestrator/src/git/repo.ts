@@ -81,10 +81,38 @@ export async function ensureWorkspace(project: Project): Promise<Workspace> {
   return { dir, branch };
 }
 
+// Called on "hapus project" for kind='git' projects only — the clone is
+// disposable (a re-clone from GitHub fully recovers it), unlike kind='local'
+// projects where repo_url IS the user's real folder and must never be
+// touched (see projectsRepo.delete's comment). Re-checks the resolved path
+// stays inside workspacesDir even though the caller already validates the
+// alias at registration time (isValidAliasInput) — a destructive recursive
+// delete gets its own independent guard, not just a hope upstream held.
+export function removeWorkspace(alias: string): void {
+  const dir = path.resolve(workspacePath(alias));
+  const root = path.resolve(config.workspacesDir);
+  if (dir !== root && !dir.startsWith(root + path.sep)) {
+    throw new Error(`Refusing to delete a path outside the workspaces directory: ${dir}`);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 export async function createWorkBranch(dir: string, taskId: string): Promise<string> {
   const branch = `agent/${taskId.slice(0, 8)}`;
   await simpleGit(dir).checkoutLocalBranch(branch);
   return branch;
+}
+
+// Called when a task ends cancelled (stop command or checkpoint "batal") —
+// safe because nothing is ever merged/pushed into defaultBranch until the
+// pipeline's last phase (see systemPrompt.ts's commitRule), so a cancelled
+// task's work branch, committed or not, is by definition disposable: default
+// branch was never touched, and discarding the branch reverts everything the
+// task did in this workspace.
+export async function discardWorkBranch(dir: string, defaultBranch: string, workBranch: string): Promise<void> {
+  const git = simpleGit(dir);
+  await git.checkout(defaultBranch);
+  await git.raw(["branch", "-D", workBranch]);
 }
 
 // For kind='local' projects: no clone, no branch — the agent edits the folder

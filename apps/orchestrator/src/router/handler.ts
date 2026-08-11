@@ -11,7 +11,7 @@ import {
   type Project,
 } from "../db/index.js";
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
-import { ensureWorkspace, createWorkBranch, ensureLocalFolder } from "../git/repo.js";
+import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch } from "../git/repo.js";
 import { buildProviders, splitProviderSpec } from "../agent/runner.js";
 import { checkProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
@@ -424,7 +424,7 @@ export async function handleInboundMessage(
     const diskNote =
       project.kind === "local"
         ? "cuma ke-unregister dari sini, foldernya di server gak ke-hapus"
-        : "cuma ke-unregister dari sini, clone lokalnya di server gak ke-hapus (repo aslinya di GitHub jelas gak kesentuh)";
+        : "ke-unregister dari sini DAN clone lokalnya di server ikut kehapus (repo aslinya di GitHub jelas gak kesentuh, tinggal clone ulang kalau butuh lagi)";
     await sendWhatsApp(from, `Yakin mau hapus project "${deleteAlias}"? (${diskNote}) Boleh lanjut?`, YES_NO_OPTIONS);
     return;
   }
@@ -533,6 +533,15 @@ interface LastFailedRegisterGitProject {
 // three entry points can't silently drift apart, and a retry re-runs exactly
 // this function with the same args rather than needing its own path.
 async function registerGitProject(from: string, alias: string, repoUrl: string): Promise<void> {
+  // The guided wizard already validates its alias step, but the direct
+  // "tambah project <alias> <url>" command's regex only requires non-
+  // whitespace — without this, an alias like "../../etc" would resolve
+  // workspacePath(alias) outside workspacesDir entirely, which matters a lot
+  // more now that project deletion removes that path from disk.
+  if (!isValidAliasInput(alias)) {
+    await sendWhatsApp(from, 'Alias-nya harus satu kata, tanpa spasi/garis miring. Coba lagi dengan alias lain.');
+    return;
+  }
   if (projectsRepo.get(alias)) {
     await sendWhatsApp(from, `Project "${alias}" udah ada, gak perlu didaftarin lagi.`);
     return;
@@ -1189,9 +1198,25 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
     const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
     if (intent === "yes") {
       conversationRepo.setPendingAction(from, null);
+      const project = projectsRepo.get(pending.alias);
       projectsRepo.delete(pending.alias);
       conversationRepo.clearActiveProjectEverywhere(pending.alias);
-      await sendWhatsApp(from, `Oke, "${pending.alias}" udah ke-unregister.`);
+      // Only for kind='git' — the clone is disposable (re-clonable from
+      // GitHub). Never for kind='local': repo_url there IS the user's real
+      // folder, removeWorkspace is never called on that path.
+      if (project?.kind === "git") {
+        try {
+          removeWorkspace(pending.alias);
+          await sendWhatsApp(from, `Oke, "${pending.alias}" udah ke-unregister dan folder clone-nya di server udah kehapus.`);
+        } catch (err) {
+          await sendWhatsApp(
+            from,
+            `"${pending.alias}" udah ke-unregister, tapi gagal hapus folder clone-nya di server: ${err instanceof Error ? err.message : String(err)}. Mungkin perlu dihapus manual.`
+          );
+        }
+      } else {
+        await sendWhatsApp(from, `Oke, "${pending.alias}" udah ke-unregister.`);
+      }
       return true;
     }
     conversationRepo.setPendingAction(from, null);
@@ -1480,11 +1505,32 @@ async function executeTask(
         mode,
       });
 
-      tasksRepo.setStatus(taskId, result.ok ? "done" : "failed", result.summary);
-      await sendWhatsApp(
-        from,
-        result.ok ? `Udah selesai. ${result.summary}` : `Gagal nih. ${result.summary}`
-      );
+      tasksRepo.setStatus(taskId, result.ok ? "done" : result.cancelled ? "cancelled" : "failed", result.summary);
+
+      if (result.cancelled && mode.kind === "git") {
+        // Safe to always discard: nothing gets merged/pushed into
+        // defaultBranch until the pipeline's last phase, so the work branch
+        // is disposable no matter how far the task got.
+        try {
+          await discardWorkBranch(cwd, mode.defaultBranch, mode.workBranch);
+          await sendWhatsApp(from, `${result.summary} Perubahan yang sempat dibikin udah aku balikin, workspace bersih lagi.`);
+        } catch (err) {
+          await sendWhatsApp(
+            from,
+            `${result.summary} Tapi gagal balikin perubahannya: ${err instanceof Error ? err.message : String(err)}. Mungkin perlu dicek manual di workspace-nya.`
+          );
+        }
+      } else if (result.cancelled && mode.kind === "local") {
+        await sendWhatsApp(
+          from,
+          `${result.summary} Ini folder lokal (bukan git), jadi perubahan file yang sempat dibikin gak bisa otomatis aku balikin — cek manual ya kalau perlu.`
+        );
+      } else {
+        await sendWhatsApp(
+          from,
+          result.ok ? `Udah selesai. ${result.summary}` : `Gagal nih. ${result.summary}`
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       tasksRepo.setStatus(taskId, "failed", message);
