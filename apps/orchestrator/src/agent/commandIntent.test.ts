@@ -32,6 +32,12 @@ test("classifyCommandIntent recognizes a non-technical 'how does this work' ques
   assert.equal(result, "explain");
 });
 
+test("classifyCommandIntent recognizes a question about a past conversation as session_history", async () => {
+  const provider = fakeProvider(async () => ({ type: "text", text: "INTENT: session_history" }));
+  const result = await classifyCommandIntent("apa chat kita sebelumnya?", provider, new AbortController().signal);
+  assert.equal(result, "session_history");
+});
+
 test("classifyCommandIntent falls back to none when no line matches the format", async () => {
   const provider = fakeProvider(async () => ({ type: "text", text: "I'm not sure what you mean." }));
   assert.equal(await classifyCommandIntent("x", provider, new AbortController().signal), "none");

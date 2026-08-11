@@ -79,6 +79,22 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_chat_history_from ON chat_history(from_number);
+
+  -- Full conversation transcript (task instructions, checkpoints, commands,
+  -- casual chat — everything), grouped by session_id. Unlike chat_history
+  -- above (small rolling window, casual-chat only), this is never pruned —
+  -- it's the actual "riwayat chat" record. See router/handler.ts's
+  -- touchAndLogSession for how a session boundary gets decided.
+  CREATE TABLE IF NOT EXISTS session_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL, -- 'user' | 'assistant'
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_session_log_from ON session_log(from_number);
+  CREATE INDEX IF NOT EXISTS idx_session_log_session ON session_log(session_id);
 `);
 
 // Idempotent migrations for DBs created before these columns existed.
@@ -87,6 +103,9 @@ for (const migration of [
   "ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'git'",
   "ALTER TABLE conversation_state ADD COLUMN department_models TEXT",
   "ALTER TABLE conversation_state ADD COLUMN last_failed_action TEXT",
+  "ALTER TABLE conversation_state ADD COLUMN current_session_id TEXT",
+  "ALTER TABLE conversation_state ADD COLUMN last_message_at TEXT",
+  "ALTER TABLE conversation_state ADD COLUMN session_ended_notified INTEGER NOT NULL DEFAULT 0",
 ]) {
   try {
     db.exec(migration);
@@ -208,6 +227,9 @@ export interface ConversationState {
   preferred_provider: string | null;
   department_models: string | null;
   last_failed_action: string | null;
+  current_session_id: string | null;
+  last_message_at: string | null;
+  session_ended_notified: number;
 }
 
 export const conversationRepo = {
@@ -239,6 +261,39 @@ export const conversationRepo = {
       `INSERT INTO conversation_state (from_number, last_failed_action) VALUES (?, ?)
        ON CONFLICT(from_number) DO UPDATE SET last_failed_action = excluded.last_failed_action`
     ).run(fromNumber, action);
+  },
+  // last_message_at is written as an app-level ISO string, never SQL
+  // datetime('now') — it's compared against a JS-computed cutoff in
+  // session/idleNotifier.ts's scanner, and this codebase already has both
+  // timestamp conventions in play elsewhere; mixing them here would silently
+  // break that comparison.
+  touchSession(fromNumber: string, sessionId: string, isNewSession: boolean): void {
+    const nowIso = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO conversation_state (from_number, current_session_id, last_message_at, session_ended_notified)
+       VALUES (?, ?, ?, 0)
+       ON CONFLICT(from_number) DO UPDATE SET
+         current_session_id = excluded.current_session_id,
+         last_message_at = excluded.last_message_at,
+         session_ended_notified = CASE WHEN ? THEN 0 ELSE session_ended_notified END`
+    ).run(fromNumber, sessionId, nowIso, isNewSession ? 1 : 0);
+  },
+  // Guarded by sessionId — the idle scanner reads a batch of idle rows, then
+  // awaits a network send per row before marking notified; if the user sends
+  // a real message in that gap, touchSession rotates current_session_id and
+  // this guard keeps the scanner from wrongly marking the brand-new session
+  // as already-notified.
+  markSessionNotified(fromNumber: string, sessionId: string): void {
+    db.prepare(
+      "UPDATE conversation_state SET session_ended_notified = 1 WHERE from_number = ? AND current_session_id = ?"
+    ).run(fromNumber, sessionId);
+  },
+  listIdleUnnotifiedSessions(cutoffIso: string): ConversationState[] {
+    return db
+      .prepare(
+        "SELECT * FROM conversation_state WHERE current_session_id IS NOT NULL AND session_ended_notified = 0 AND last_message_at < ?"
+      )
+      .all(cutoffIso) as ConversationState[];
   },
   setPreferredProvider(fromNumber: string, providerName: string | null): void {
     db.prepare(
@@ -334,5 +389,54 @@ export const chatHistoryRepo = {
          SELECT id FROM chat_history WHERE from_number = ? ORDER BY created_at DESC LIMIT ?
        )`
     ).run(fromNumber, fromNumber, CHAT_HISTORY_KEEP_PER_USER);
+  },
+};
+
+// How many turns of the recalled session "riwayat chat" shows — capped here
+// at the query level (not just relying on sendWhatsAppMessage's 4096-char
+// defensive truncation) so a long session doesn't get cut off mid-sentence
+// at an arbitrary point.
+const SESSION_HISTORY_TRANSCRIPT_LIMIT = 30;
+
+export interface SessionTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export const sessionRepo = {
+  append(fromNumber: string, sessionId: string, role: "user" | "assistant", content: string): void {
+    db.prepare("INSERT INTO session_log (from_number, session_id, role, content) VALUES (?, ?, ?, ?)").run(
+      fromNumber,
+      sessionId,
+      role,
+      content
+    );
+  },
+  // Excludes the currently-open session, returns the most recent other one
+  // for this user, oldest-first, capped to the last SESSION_HISTORY_TRANSCRIPT_LIMIT turns.
+  getMostRecentCompletedSession(
+    fromNumber: string,
+    excludeSessionId: string | null | undefined
+  ): { sessionId: string; messages: SessionTurn[] } | undefined {
+    // "(? IS NULL OR session_id != ?)" — a plain "!= ?" against a bound NULL
+    // (brand-new user, no current_session_id yet) would exclude every row
+    // under SQLite's three-valued NULL logic, not just none.
+    const prior = db
+      .prepare(
+        `SELECT session_id, MAX(created_at) AS last_ts FROM session_log
+         WHERE from_number = ? AND (? IS NULL OR session_id != ?)
+         GROUP BY session_id ORDER BY last_ts DESC LIMIT 1`
+      )
+      .get(fromNumber, excludeSessionId ?? null, excludeSessionId ?? null) as
+      | { session_id: string; last_ts: string }
+      | undefined;
+    if (!prior) return undefined;
+
+    const rows = db
+      .prepare(
+        "SELECT role, content FROM session_log WHERE from_number = ? AND session_id = ? ORDER BY created_at DESC LIMIT ?"
+      )
+      .all(fromNumber, prior.session_id, SESSION_HISTORY_TRANSCRIPT_LIMIT) as SessionTurn[];
+    return { sessionId: prior.session_id, messages: rows.reverse() };
   },
 };

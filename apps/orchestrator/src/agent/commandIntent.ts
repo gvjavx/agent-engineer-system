@@ -14,6 +14,7 @@ export const COMMAND_INTENTS = [
   "status",
   "stop",
   "connect_figma",
+  "session_history",
   "greeting",
   "none",
 ] as const;
@@ -31,6 +32,7 @@ list_models — asking to see which AI providers/models are currently configured
 status — asking what task is currently running
 stop — asking to cancel/stop the currently running task
 connect_figma — asking to connect/link a Figma account
+session_history — asking what was discussed in a previous conversation/session (e.g. "apa chat kita sebelumnya?", "riwayat obrolan kemarin apa?") — NOT asking about a currently running task's status (that's status)
 greeting — a greeting or small-talk opener with no other content (e.g. "halo", "hi", "apa kabar", "selamat pagi") — nothing else being asked yet
 none — anything else, including any coding/development task or instruction, however short, and anything not confidently one of the above
 

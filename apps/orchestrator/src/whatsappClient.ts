@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { conversationRepo, sessionRepo } from "./db/index.js";
 
 export interface QuickReplyOption {
   // Sent back verbatim as the inbound message text when tapped — should be
@@ -25,7 +26,17 @@ export async function sendWhatsApp(
     });
     if (!res.ok) {
       console.error(`Gateway rejected outbound message (${res.status}): ${await res.text()}`);
+      return;
     }
+    // Only logged on confirmed delivery to the gateway — a failed send
+    // shouldn't leave a transcript entry for something the user never got.
+    // Reads the recipient's current session fresh each call rather than
+    // threading a session id through every sendWhatsApp call site across
+    // handler.ts (dozens of them, including deep inside the async task
+    // pipeline) — see router/handler.ts's touchAndLogSession for how that
+    // session id gets set in the first place.
+    const sessionId = conversationRepo.get(to)?.current_session_id;
+    if (sessionId) sessionRepo.append(to, sessionId, "assistant", text);
   } catch (err) {
     console.error("Failed to reach whatsapp-gateway:", err);
   }

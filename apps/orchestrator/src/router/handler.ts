@@ -8,6 +8,7 @@ import {
   auditLog,
   memoryRepo,
   chatHistoryRepo,
+  sessionRepo,
   type Project,
 } from "../db/index.js";
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
@@ -61,6 +62,7 @@ import {
   isPlausibleShortCommand,
   isListMemoryCommand,
   isClearMemoryCommand,
+  isSessionHistoryCommand,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -254,12 +256,33 @@ const CHAT_HISTORY_TURNS = 12;
 // how many actually exist in the DB — keeps prompt size bounded.
 const MAX_FACTS_IN_PROMPT = 30;
 
+// Decides whether this message continues the sender's current chat session
+// or starts a fresh one (no session yet, or idle longer than
+// config.sessionIdleMinutes), then logs it to session_log either way. Self-
+// healing by design: even if session/idleNotifier.ts's background scanner
+// missed a tick (process restart, etc.), the very next real message still
+// detects the gap correctly here — it just won't have gotten the proactive
+// "sesi berakhir" notice for the old one.
+function touchAndLogSession(from: string, loggedContent: string): void {
+  const state = conversationRepo.get(from);
+  const idleMs = config.sessionIdleMinutes * 60_000;
+  const isNewSession =
+    !state?.current_session_id ||
+    !state.last_message_at ||
+    Date.now() - new Date(state.last_message_at).getTime() > idleMs;
+  const sessionId = isNewSession ? crypto.randomUUID() : state!.current_session_id!;
+  conversationRepo.touchSession(from, sessionId, isNewSession);
+  sessionRepo.append(from, sessionId, "user", loggedContent);
+}
+
 export async function handleInboundMessage(
   from: string,
   text: string,
   image?: { mimeType: string; base64Data: string }
 ): Promise<void> {
   const trimmed = text.trim();
+
+  touchAndLogSession(from, image ? trimmed || "[gambar]" : trimmed);
 
   const bashApprovalReply = await handlePendingBashApproval(from, trimmed);
   if (bashApprovalReply) return;
@@ -484,6 +507,11 @@ export async function handleInboundMessage(
 
   if (isClearMemoryCommand(trimmed)) {
     await handleClearMemoryCommand(from);
+    return;
+  }
+
+  if (isSessionHistoryCommand(trimmed)) {
+    await handleSessionHistoryCommand(from);
     return;
   }
 
@@ -813,6 +841,17 @@ async function handleClearMemoryCommand(from: string): Promise<void> {
   await sendWhatsApp(from, "Yakin mau aku lupain semua yang aku inget soal kamu? Ini gak bisa dibalikin lagi.", YES_NO_OPTIONS);
 }
 
+async function handleSessionHistoryCommand(from: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  const session = sessionRepo.getMostRecentCompletedSession(from, state?.current_session_id);
+  if (!session || session.messages.length === 0) {
+    await sendWhatsApp(from, "Belum ada sesi obrolan sebelumnya yang kesimpen nih.");
+    return;
+  }
+  const transcript = session.messages.map((m) => `${m.role === "user" ? "Kamu" : "Aku"}: ${m.content}`).join("\n");
+  await sendWhatsApp(from, `Ini yang kita bahas di sesi sebelumnya:\n\n${transcript}`);
+}
+
 async function handleImageMessage(
   from: string,
   caption: string,
@@ -894,6 +933,9 @@ async function tryHandleSemanticCommand(from: string, trimmed: string): Promise<
       return true;
     case "connect_figma":
       await handleConnectFigmaCommand(from);
+      return true;
+    case "session_history":
+      await handleSessionHistoryCommand(from);
       return true;
     default:
       return false; // "none"
@@ -978,6 +1020,7 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     isConnectFigmaCommand(trimmed) ||
     isListMemoryCommand(trimmed) ||
     isClearMemoryCommand(trimmed) ||
+    isSessionHistoryCommand(trimmed) ||
     parseAddProject(trimmed) !== undefined ||
     isBareAddProjectCommand(trimmed) ||
     parseAddFolder(trimmed) !== undefined ||

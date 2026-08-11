@@ -71,6 +71,10 @@ if (providerOrder.length === 0) {
 export const config = {
   port: Number(process.env.ORCHESTRATOR_PORT ?? 4000),
 
+  // How long a user can go without sending a message before their current
+  // chat session is considered over — see session/idleNotifier.ts.
+  sessionIdleMinutes: Number(process.env.SESSION_IDLE_MINUTES ?? 30),
+
   githubToken: required("GITHUB_TOKEN"),
 
   internalSharedSecret: required("INTERNAL_SHARED_SECRET"),

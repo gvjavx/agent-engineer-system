@@ -192,6 +192,13 @@ const LIST_MEMORY_PHRASES = new Set([
   "kamu inget apa aja soal saya",
 ]);
 const CLEAR_MEMORY_PHRASES = new Set(["lupain semua", "hapus memori", "lupain semua soal saya"]);
+const SESSION_HISTORY_PHRASES = new Set([
+  "riwayat chat",
+  "riwayat sesi",
+  "sesi sebelumnya",
+  "chat sebelumnya",
+  "lihat riwayat",
+]);
 const INTRO_PHRASES = new Set([
   "siapa kamu",
   "siapa kamu?",
@@ -247,6 +254,10 @@ export function isListMemoryCommand(text: string): boolean {
 
 export function isClearMemoryCommand(text: string): boolean {
   return CLEAR_MEMORY_PHRASES.has(text.trim().toLowerCase());
+}
+
+export function isSessionHistoryCommand(text: string): boolean {
+  return SESSION_HISTORY_PHRASES.has(text.trim().toLowerCase());
 }
 
 export function isIntroCommand(text: string): boolean {

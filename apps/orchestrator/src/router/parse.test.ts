@@ -28,6 +28,7 @@ import {
   isListMemoryCommand,
   isClearMemoryCommand,
   isRetryCommand,
+  isSessionHistoryCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -300,4 +301,11 @@ test("isClearMemoryCommand recognizes the memory-clearing phrases", () => {
   assert.ok(isClearMemoryCommand("lupain semua"));
   assert.ok(isClearMemoryCommand("Hapus Memori"));
   assert.ok(!isClearMemoryCommand("lupain deh"));
+});
+
+test("isSessionHistoryCommand recognizes the session-recall phrases", () => {
+  assert.ok(isSessionHistoryCommand("riwayat chat"));
+  assert.ok(isSessionHistoryCommand("Sesi Sebelumnya"));
+  assert.ok(isSessionHistoryCommand("  chat sebelumnya  "));
+  assert.ok(!isSessionHistoryCommand("apa chat kita sebelumnya?"));
 });

@@ -4,6 +4,7 @@ import { handleInboundMessage } from "./router/handler.js";
 import { exchangeCodeForTokens } from "./agent/mcp/figmaAuth.js";
 import { consumePendingState } from "./agent/mcp/figmaOAuthState.js";
 import { sendWhatsApp } from "./whatsappClient.js";
+import { startIdleSessionScanner } from "./session/idleNotifier.js";
 import "./db/index.js";
 
 const app = express();
@@ -73,4 +74,5 @@ app.get("/healthz", (_req, res) => res.sendStatus(200));
 
 app.listen(config.port, () => {
   console.log(`orchestrator listening on port ${config.port}`);
+  startIdleSessionScanner();
 });
