@@ -16,10 +16,10 @@ Reply with exactly one line, in exactly this format, nothing else:
 KIND: <key>
 
 Use only these exact keys:
-task — an instruction or request to build, fix, change, deploy, or otherwise work on software/code, however short or vague (e.g. "tambahin dark mode", "kenapa error terus", "benerin bug di halaman login")
-chat — general conversation: a question, opinion, comment, or small talk that is NOT asking the bot to build/fix/change anything right now (e.g. asking what the bot thinks about something, venting, catching up, asking for general advice unrelated to a specific coding task)
+task — an instruction or request to build, fix, change, deploy, or otherwise work on software/code, right now, however short or vague (e.g. "tambahin dark mode", "kenapa error terus", "benerin bug di halaman login")
+chat — general conversation: a question, opinion, comment, or small talk that is NOT asking the bot to build/fix/change anything right now. This includes hypothetical or meta questions about what the bot would do or how it works (e.g. "kalau saya minta bikin aplikasi dari nol, apa yang bakal kamu lakukan", "gimana proses kamu kalau saya suruh bikin fitur baru") — these ask ABOUT a process, they are not themselves a request to start one, even though they mention building/fixing software.
 
-If genuinely unsure, prefer "task".
+A message describing a hypothetical task ("kalau saya minta X", "misalnya saya mau Y", "apa yang akan kamu lakukan jika...") without actually requesting it right now is "chat", not "task". If genuinely unsure, prefer "task".
 
 Message: "${text}"`;
 }

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { simpleGit } from "simple-git";
 import { config } from "../config.js";
-import type { Project } from "../db/index.js";
+import { projectsRepo, type Project } from "../db/index.js";
 
 export function workspacePath(alias: string): string {
   return path.join(config.workspacesDir, alias);
@@ -32,7 +32,27 @@ function ensureGithubCredentialHelper(): void {
   credentialHelperReady = true;
 }
 
-export async function ensureWorkspace(project: Project): Promise<string> {
+// A fresh clone always sets refs/remotes/origin/HEAD to whatever branch the
+// remote actually treats as default — reading it back is a local, no-network
+// way to find out the real branch name instead of assuming "main" (which
+// throws a raw "pathspec 'main' did not match any file(s)" error, forwarded
+// straight to WhatsApp, for any repo whose default is e.g. "master"). A repo
+// with zero commits has no branches at all, so this returns undefined there too.
+async function detectDefaultBranch(dir: string): Promise<string | undefined> {
+  try {
+    const ref = await simpleGit(dir).raw(["symbolic-ref", "refs/remotes/origin/HEAD"]);
+    return ref.trim().split("/").pop() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface Workspace {
+  dir: string;
+  branch: string;
+}
+
+export async function ensureWorkspace(project: Project): Promise<Workspace> {
   ensureGithubCredentialHelper();
   const dir = workspacePath(project.alias);
 
@@ -43,9 +63,22 @@ export async function ensureWorkspace(project: Project): Promise<string> {
 
   const git = simpleGit(dir);
   await git.fetch("origin");
-  await git.checkout(project.default_branch);
-  await git.pull("origin", project.default_branch, { "--ff-only": null });
-  return dir;
+
+  const branch = await detectDefaultBranch(dir);
+  if (!branch) {
+    const remoteBranches = await git.branch(["-r"]);
+    if (remoteBranches.all.length === 0) {
+      throw new Error("Repo-nya masih kosong, belum ada commit sama sekali — push isi minimal dulu baru aku bisa kerja di situ.");
+    }
+    throw new Error("Gak bisa nentuin default branch repo ini secara otomatis. Cek lagi repo-nya di GitHub ya.");
+  }
+  if (branch !== project.default_branch) {
+    projectsRepo.setDefaultBranch(project.alias, branch);
+  }
+
+  await git.checkout(branch);
+  await git.pull("origin", branch, { "--ff-only": null });
+  return { dir, branch };
 }
 
 export async function createWorkBranch(dir: string, taskId: string): Promise<string> {

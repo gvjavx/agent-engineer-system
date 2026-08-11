@@ -35,8 +35,11 @@ import { config } from "../config.js";
 import { enqueueProjectTask, cancelActiveTask, getActiveTaskId } from "../queue/taskQueue.js";
 import {
   parseAddProject,
+  isBareAddProjectCommand,
   parseAddFolder,
+  isBareAddFolderCommand,
   parseDeleteProject,
+  isBareDeleteProjectCommand,
   isValidAliasInput,
   parseUseProject,
   parseUseModel,
@@ -214,8 +217,13 @@ const HELP_OPTIONS: QuickReplyOption[] = [
 
 // Cap on how long a message can be before it's not even worth spending an AI
 // call to check whether it's a paraphrase of one of these commands — see
-// isPlausibleShortCommand in parse.ts. Provisional, easy to retune.
-const COMMAND_INTENT_MAX_WORDS = 12;
+// isPlausibleShortCommand in parse.ts. Started at 12 and had to be raised: a
+// real "explain" question like "jika saya meminta bantuan untuk bikin
+// aplikasi dari awal apa yang akan kamu lakukan" is already 14 words, and
+// missing that classification entirely sent it straight into the task
+// pipeline instead of getting an actual explanation. Matches
+// CHAT_INTENT_MAX_WORDS below for the same reason.
+const COMMAND_INTENT_MAX_WORDS = 40;
 // Confirmation replies are inherently short, so a tighter bound is safe here.
 const CONFIRMATION_INTENT_MAX_WORDS = 8;
 // Real conversation runs longer than a command paraphrase does, so this gate
@@ -339,37 +347,36 @@ export async function handleInboundMessage(
     return;
   }
 
+  // "tambah project" with no alias/url — same reasoning as
+  // isBareDeleteProjectCommand: start the guided wizard instead of letting it
+  // fall through to the task classifier.
+  if (isBareAddProjectCommand(trimmed)) {
+    await startGuidedGitProjectWizard(from);
+    return;
+  }
+
+  if (isBareAddFolderCommand(trimmed)) {
+    await startGuidedFolderWizard(from);
+    return;
+  }
+
   // The three "bantuan" menu rows that need arguments a tap can't supply —
   // dispatched here deterministically (exact sentinel match, never touching
   // the AI classifier) so a tap always does what it says, never gets
   // misread as a free-text task attempt. See the pending-state handling in
   // handlePendingConfirmation for how each guided flow continues.
   if (trimmed === HELP_WIZARD_GIT_PROJECT_ID) {
-    const pending: PendingGuidedGitProject = { type: "guided_git_project", step: "alias" };
-    conversationRepo.setPendingAction(from, JSON.stringify(pending));
-    await sendWhatsApp(from, 'Oke, project baru dari repo GitHub. Nama alias-nya apa? (satu kata, misalnya "toko-online")');
+    await startGuidedGitProjectWizard(from);
     return;
   }
 
   if (trimmed === HELP_WIZARD_FOLDER_ID) {
-    const pending: PendingGuidedFolder = { type: "guided_folder", step: "alias" };
-    conversationRepo.setPendingAction(from, JSON.stringify(pending));
-    await sendWhatsApp(from, 'Oke, project dari folder lokal di server. Nama alias-nya apa? (satu kata, misalnya "toko-lama")');
+    await startGuidedFolderWizard(from);
     return;
   }
 
   if (trimmed === HELP_PICKER_DELETE_PROJECT_ID) {
-    const projects = projectsRepo.list();
-    if (projects.length === 0) {
-      await sendWhatsApp(from, "Belum ada project yang terdaftar buat dihapus.");
-      return;
-    }
-    const options: QuickReplyOption[] = projects.map((p) => ({
-      id: `hapus project ${p.alias}`,
-      title: p.alias,
-      description: p.kind === "local" ? "Folder lokal" : p.repo_url,
-    }));
-    await sendWhatsApp(from, "Project mana yang mau dihapus?", options, "Pilih project");
+    await showDeleteProjectPicker(from);
     return;
   }
 
@@ -418,6 +425,11 @@ export async function handleInboundMessage(
         ? "cuma ke-unregister dari sini, foldernya di server gak ke-hapus"
         : "cuma ke-unregister dari sini, clone lokalnya di server gak ke-hapus (repo aslinya di GitHub jelas gak kesentuh)";
     await sendWhatsApp(from, `Yakin mau hapus project "${deleteAlias}"? (${diskNote}) Boleh lanjut?`, YES_NO_OPTIONS);
+    return;
+  }
+
+  if (isBareDeleteProjectCommand(trimmed)) {
+    await showDeleteProjectPicker(from);
     return;
   }
 
@@ -471,6 +483,39 @@ export async function handleInboundMessage(
   await handleFreeTextInstruction(from, trimmed);
 }
 
+// Shared by the "bantuan" menu's "Tambah project (GitHub)" row and "tambah
+// project" typed with no alias/url.
+async function startGuidedGitProjectWizard(from: string): Promise<void> {
+  const pending: PendingGuidedGitProject = { type: "guided_git_project", step: "alias" };
+  conversationRepo.setPendingAction(from, JSON.stringify(pending));
+  await sendWhatsApp(from, 'Oke, project baru dari repo GitHub. Nama alias-nya apa? (satu kata, misalnya "toko-online")');
+}
+
+// Shared by the "bantuan" menu's "Tambah folder lokal" row and "tambah
+// folder" typed with no alias/path.
+async function startGuidedFolderWizard(from: string): Promise<void> {
+  const pending: PendingGuidedFolder = { type: "guided_folder", step: "alias" };
+  conversationRepo.setPendingAction(from, JSON.stringify(pending));
+  await sendWhatsApp(from, 'Oke, project dari folder lokal di server. Nama alias-nya apa? (satu kata, misalnya "toko-lama")');
+}
+
+// Shared by the "bantuan" menu's delete-project row and "hapus project"
+// typed with no alias — both need to ask which project, not guess or fall
+// through to the task pipeline.
+async function showDeleteProjectPicker(from: string): Promise<void> {
+  const projects = projectsRepo.list();
+  if (projects.length === 0) {
+    await sendWhatsApp(from, "Belum ada project yang terdaftar buat dihapus.");
+    return;
+  }
+  const options: QuickReplyOption[] = projects.map((p) => ({
+    id: `hapus project ${p.alias}`,
+    title: p.alias,
+    description: p.kind === "local" ? "Folder lokal" : p.repo_url,
+  }));
+  await sendWhatsApp(from, "Project mana yang mau dihapus?", options, "Pilih project");
+}
+
 // Shared by the direct "tambah project <alias> <url>" command and the
 // guided_git_project wizard's final step, so the two entry points can't
 // silently drift apart.
@@ -496,6 +541,10 @@ async function registerGitProject(from: string, alias: string, repoUrl: string):
       `Beres, "${alias}" udah terdaftar dan siap dipakai. Sekarang jadi project aktif buat chat ini.`
     );
   } catch (err) {
+    // Roll back the row create() just inserted — otherwise the next "tambah
+    // project" attempt for this alias hits "udah ada" even though the clone
+    // never actually succeeded, and the user has no way to retry.
+    projectsRepo.delete(alias);
     await sendWhatsApp(
       from,
       `Waduh, gagal daftarin/clone "${alias}": ${err instanceof Error ? err.message : String(err)}`
@@ -862,8 +911,11 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     isListMemoryCommand(trimmed) ||
     isClearMemoryCommand(trimmed) ||
     parseAddProject(trimmed) !== undefined ||
+    isBareAddProjectCommand(trimmed) ||
     parseAddFolder(trimmed) !== undefined ||
+    isBareAddFolderCommand(trimmed) ||
     parseDeleteProject(trimmed) !== undefined ||
+    isBareDeleteProjectCommand(trimmed) ||
     parseUseProject(trimmed) !== undefined ||
     parseUseModel(trimmed) !== undefined ||
     parseListModelsForProvider(trimmed) !== undefined
@@ -1274,9 +1326,10 @@ async function executeTask(
         cwd = await ensureLocalFolder(project);
         mode = { kind: "local", folderPath: cwd };
       } else {
-        cwd = await ensureWorkspace(project);
+        const workspace = await ensureWorkspace(project);
+        cwd = workspace.dir;
         const workBranch = await createWorkBranch(cwd, taskId);
-        mode = { kind: "git", defaultBranch: project.default_branch, workBranch, autoMerge: project.auto_merge };
+        mode = { kind: "git", defaultBranch: workspace.branch, workBranch, autoMerge: project.auto_merge };
       }
 
       const sendDocument = async (relPath: string, caption: string | undefined): Promise<string> => {

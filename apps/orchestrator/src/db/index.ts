@@ -113,6 +113,13 @@ export const projectsRepo = {
     ).run(alias, repoUrl, defaultBranch);
     return this.get(alias)!;
   },
+  // Registration always inserts 'main' as a placeholder (see create() above)
+  // — git/repo.ts's ensureWorkspace detects the repo's actual default branch
+  // off origin/HEAD after cloning and self-heals it here, since a repo whose
+  // real default is e.g. "master" would otherwise fail every checkout forever.
+  setDefaultBranch(alias: string, branch: string): void {
+    db.prepare("UPDATE projects SET default_branch = ? WHERE alias = ?").run(branch, alias);
+  },
   createLocal(alias: string, localPath: string): Project {
     db.prepare(
       "INSERT INTO projects (alias, repo_url, default_branch, kind) VALUES (?, ?, '', 'local')"

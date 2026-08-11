@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   parseAddProject,
+  isBareAddProjectCommand,
   parseAddFolder,
+  isBareAddFolderCommand,
   parseDeleteProject,
+  isBareDeleteProjectCommand,
   isValidAliasInput,
   parseUseProject,
   parseUseModel,
@@ -44,6 +47,20 @@ test("parseAddProject returns undefined for unrelated text", () => {
   assert.equal(parseAddProject("tambah project cuma-satu-kata"), undefined);
 });
 
+test("isBareAddProjectCommand recognizes 'tambah project' with no alias/url", () => {
+  assert.ok(isBareAddProjectCommand("tambah project"));
+  assert.ok(isBareAddProjectCommand("  Tambah Project  "));
+  assert.ok(!isBareAddProjectCommand("tambah project toko-online https://github.com/x/toko-online"));
+  assert.ok(!isBareAddProjectCommand("tambah folder"));
+});
+
+test("isBareAddFolderCommand recognizes 'tambah folder' with no alias/path", () => {
+  assert.ok(isBareAddFolderCommand("tambah folder"));
+  assert.ok(isBareAddFolderCommand("  Tambah Folder  "));
+  assert.ok(!isBareAddFolderCommand("tambah folder kerja D:/my-product"));
+  assert.ok(!isBareAddFolderCommand("tambah project"));
+});
+
 test("parseDeleteProject extracts the alias", () => {
   assert.equal(parseDeleteProject("hapus project toko-online"), "toko-online");
   assert.equal(parseDeleteProject("  Hapus Project  demo  "), "demo");
@@ -54,6 +71,13 @@ test("parseDeleteProject returns undefined for unrelated text", () => {
   assert.equal(parseDeleteProject("hapus project"), undefined);
   assert.equal(parseDeleteProject("hapus folder demo"), undefined);
   assert.equal(parseDeleteProject("tambah project demo https://github.com/x/demo.git"), undefined);
+});
+
+test("isBareDeleteProjectCommand recognizes 'hapus project' with no alias", () => {
+  assert.ok(isBareDeleteProjectCommand("hapus project"));
+  assert.ok(isBareDeleteProjectCommand("  Hapuskan Project  "));
+  assert.ok(!isBareDeleteProjectCommand("hapus project toko-online"));
+  assert.ok(!isBareDeleteProjectCommand("hapus folder demo"));
 });
 
 test("isValidAliasInput accepts a single word", () => {

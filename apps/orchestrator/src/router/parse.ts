@@ -22,6 +22,16 @@ export function parseAddProject(text: string): AddProjectCommand | undefined {
   return { alias: match[1], repoUrl: match[2] };
 }
 
+// "tambah project" with no alias/url doesn't match ADD_PROJECT_RE at all, so
+// it used to fall straight through to the task classifier — same failure
+// mode as isBareDeleteProjectCommand below, just for registration instead of
+// deletion. Caught here so it starts the guided wizard instead.
+const BARE_ADD_PROJECT_PHRASES = new Set(["tambah project"]);
+
+export function isBareAddProjectCommand(text: string): boolean {
+  return BARE_ADD_PROJECT_PHRASES.has(text.trim().toLowerCase());
+}
+
 // Restricts repoUrl to plain https:// GitHub URLs. Two things this blocks
 // that a bare "non-empty string" check wouldn't: git transport helpers like
 // "ext::sh -c ..." (git runs that shell command on clone — instant RCE), and
@@ -79,9 +89,27 @@ export function parseAddFolder(text: string): AddFolderCommand | undefined {
   return { alias: match[1], path: match[2] };
 }
 
+// Same gap as isBareAddProjectCommand above, for the local-folder variant.
+const BARE_ADD_FOLDER_PHRASES = new Set(["tambah folder"]);
+
+export function isBareAddFolderCommand(text: string): boolean {
+  return BARE_ADD_FOLDER_PHRASES.has(text.trim().toLowerCase());
+}
+
 export function parseDeleteProject(text: string): string | undefined {
   const match = text.trim().match(DELETE_PROJECT_RE);
   return match?.[2];
+}
+
+// "hapus project" with no alias doesn't match DELETE_PROJECT_RE at all, so it
+// used to fall straight through to the task classifier — which read it as an
+// instruction to build project-deletion functionality in the codebase rather
+// than a command missing its argument. Caught here so it can be answered with
+// a picker instead.
+const BARE_DELETE_PROJECT_PHRASES = new Set(["hapus project", "hapuskan project"]);
+
+export function isBareDeleteProjectCommand(text: string): boolean {
+  return BARE_DELETE_PROJECT_PHRASES.has(text.trim().toLowerCase());
 }
 
 // Used to validate a project alias collected turn-by-turn in a guided
