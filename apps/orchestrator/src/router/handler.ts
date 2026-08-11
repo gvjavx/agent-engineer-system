@@ -169,6 +169,21 @@ const PLAN_CONFIRM_OPTIONS: QuickReplyOption[] = [
   { id: "tidak", title: "Tidak, batal" },
 ];
 
+// Offered instead of YES_NO_OPTIONS at a manajemen-phase checkpoint. The
+// three role taps just re-enter the existing revise/question loop with that
+// exact text as the instruction (see MANAJEMEN_CHECKPOINT_REPLY_RULE in
+// systemPrompt.ts) — no new pending-state machine. "Lanjutkan"/"Batal" reuse
+// the same "ya"/"tidak" ids YES_NO_OPTIONS already uses, zero new logic.
+const MANAJEMEN_CHECKPOINT_OPTIONS: QuickReplyOption[] = [
+  { id: "Tanya Product Owner?", title: "Tanya Product Owner?" },
+  { id: "Tanya Project Manager?", title: "Tanya Project Manager?" },
+  { id: "Tanya System Analyst?", title: "Tanya System Analyst?" },
+  { id: "ya", title: "Lanjutkan" },
+  { id: "tidak", title: "Batal" },
+];
+
+const MANAJEMEN_ROLE_QUESTIONS = new Set(["Tanya Product Owner?", "Tanya Project Manager?", "Tanya System Analyst?"]);
+
 // Sentinels for the "bantuan" menu rows that need arguments a single tap
 // can't supply (WhatsApp sends the tapped id back as a normal message, it
 // doesn't pre-fill the input box for further editing). Exact-string
@@ -1024,6 +1039,16 @@ async function handlePendingCheckpoint(
     return true;
   }
 
+  // Same reasoning as the hubungkan figma carve-out above: these 3 tap ids
+  // (MANAJEMEN_CHECKPOINT_OPTIONS) are fully deterministic, so skip
+  // interpretConfirmationReply's AI call entirely instead of paying for a
+  // classification whose answer is already known — goes straight into the
+  // existing revise/question loop with the exact tap text as the instruction.
+  if (!image && MANAJEMEN_ROLE_QUESTIONS.has(trimmed)) {
+    resolveCheckpoint(taskId, { action: "revise", instruction: trimmed });
+    return true;
+  }
+
   if (image) {
     const providers = buildProviders(state?.preferred_provider ?? undefined);
     if (providers.length === 0) {
@@ -1434,8 +1459,9 @@ async function executeTask(
       const onProgress = async (msg: string): Promise<void> => {
         await sendWhatsApp(from, msg).catch(() => {});
       };
-      const onCheckpoint = async (msg: string): Promise<void> => {
-        await sendWhatsApp(from, msg, YES_NO_OPTIONS).catch(() => {});
+      const onCheckpoint = async (msg: string, department: string): Promise<void> => {
+        const options = department === "manajemen" ? MANAJEMEN_CHECKPOINT_OPTIONS : YES_NO_OPTIONS;
+        await sendWhatsApp(from, msg, options).catch(() => {});
       };
 
       let cwd: string;

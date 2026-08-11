@@ -268,6 +268,43 @@ test("a failing phase stops the pipeline before later phases run", async () => {
   assert.equal(devPhaseRan, false, "dev phase must not run after manajemen phase fails");
 });
 
+test("onCheckpoint receives the phase's department, so the caller can pick manajemen-specific options", async () => {
+  const taskId = "checkpoint-department-arg";
+  const seenDepartments: string[] = [];
+  const providersByDept: Record<string, Provider> = {
+    manajemen: textProvider("manajemen-model", "Scope-nya: tambahin login."),
+    dev: textProvider("dev-model", "Login diimplementasi."),
+    qa: textProvider("qa-model", "Login udah dites."),
+  };
+
+  const resultPromise = runPipeline({
+    ...baseParams,
+    taskId,
+    instruction: "bikin fitur login",
+    phases: [
+      { department: "manajemen", note: "tentuin scope login" },
+      { department: "dev", note: "implementasi login" },
+      { department: "qa", note: "tes fitur login" },
+    ],
+    abortController: new AbortController(),
+    onProgress: async () => {},
+    checkpoints: true,
+    onCheckpoint: async (_msg, department) => {
+      seenDepartments.push(department);
+    },
+    departmentModelLookup: (dept) => (dept in providersByDept ? dept : undefined),
+    buildProvidersFn: (preferredProvider) => (preferredProvider ? [providersByDept[preferredProvider]] : []),
+  });
+
+  await waitUntilCheckpointPending(taskId);
+  resolveCheckpoint(taskId, { action: "continue" });
+  await waitUntilCheckpointPending(taskId);
+  resolveCheckpoint(taskId, { action: "continue" });
+
+  await resultPromise;
+  assert.deepEqual(seenDepartments, ["manajemen", "dev"]);
+});
+
 test("checkpoint pauses after a non-last phase and resumes when the user approves", async () => {
   const taskId = "checkpoint-continue";
   const checkpointMessages: string[] = [];

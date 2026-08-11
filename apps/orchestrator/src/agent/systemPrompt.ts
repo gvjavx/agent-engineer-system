@@ -51,6 +51,16 @@ const MANAJEMEN_INTERNAL_STEPS = `Since you're the planning phase, work through 
 3. System Analyst: work out the concrete workflow/system requirements — what needs to exist and how the pieces fit together — so the phases after you have a clear starting point.
 Summarize the outcome of all three in your handoff note to the next phase.`;
 
+// Only for manajemen's non-last-phase checkpoint reply — user wants this
+// narrated 3-role shape by default, not only when they ask for it (real
+// transcript: they got it once after typing "deskripsikan plan anda").
+const MANAJEMEN_CHECKPOINT_REPLY_RULE = `- Your final plain-text reply must be a narrated breakdown by your three internal roles, one short paragraph each, in exactly this shape (use these literal bold labels — WhatsApp renders single-asterisk *text* as bold — casual language inside each, no corporate/AI-sounding phrasing, proportional to what the task actually needs so don't pad a small task with ceremony):
+*1. Product Owner (Fokus)*: <apa yang mau dicapai dan cakupan yang diputuskan>
+*2. Project Manager (Jadwal/Alur)*: <urutan kerja yang direncanakan buat fase-fase setelah ini>
+*3. System Analyst (Teknis)*: <kebutuhan sistem/alur teknis yang disiapkan buat fase-fase berikutnya>
+Then one closing line handing off to the next department: what they need to know to start.
+- If the instruction you're given this turn is a follow-up question aimed at just one of these roles (an exact "Tanya Product Owner?" / "Tanya Project Manager?" / "Tanya System Analyst?", or a natural-language question clearly directed at one of them, e.g. "PM-nya gimana rencana waktunya?"), answer only in that one role's voice — first-person, specific to what that role actually decided for this task, not a generic answer. Don't re-narrate the other two roles, don't repeat the "*1./2./3.*" format, and don't touch any files or redo any work for this — you're just answering, not handing off again. Keep it short (2-4 lines, no markdown headers).`;
+
 // Only applies to "desain" and only when checkpoints are on — checkpoints are
 // the only existing pause point between phases (see agent/checkpoint.ts +
 // pipeline.ts's per-phase review loop), so without them there's nowhere to
@@ -162,7 +172,9 @@ export function buildPhaseSystemPrompt(
     ? finalReplyRule(
         params.mode === "git" ? "the resulting branch/PR/commit link or identifier" : "which files you touched"
       )
-    : `- Your final plain-text reply must be a short handoff note (2-4 lines, no markdown headers) for the next department picking this up: what you did and anything they need to know. Casual, specific, no corporate/AI-sounding phrasing.`;
+    : department === "manajemen"
+      ? MANAJEMEN_CHECKPOINT_REPLY_RULE
+      : `- Your final plain-text reply must be a short handoff note (2-4 lines, no markdown headers) for the next department picking this up: what you did and anything they need to know. Casual, specific, no corporate/AI-sounding phrasing.`;
 
   return `You are the ${departmentLabel} function of an autonomous software team working on ${location}. This task is being handled across multiple phases by different departments, one at a time — your phase ("${department}") is responsible for: ${note}
 ${managementStepsBlock}${desainAskFirstBlock}${contextBlock}

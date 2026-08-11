@@ -137,3 +137,37 @@ test("buildPhaseSystemPrompt adds the design-source ask-first block only for des
   });
   assert.doesNotMatch(notDesain, /don't generate or write any design/);
 });
+
+test("buildPhaseSystemPrompt requires the narrated role breakdown + Tanya-role handling only for manajemen non-last phases", () => {
+  const base = {
+    projectAlias: "demo",
+    isLastPhase: false,
+    previousPhases: [],
+    instruction: "bikin fitur checkout",
+    checkpoints: true,
+    mode: "git" as const,
+    defaultBranch: "main",
+    workBranch: "agent/abc123",
+    autoMerge: "direct" as const,
+  };
+
+  const manajemenPrompt = buildPhaseSystemPrompt({
+    ...base,
+    department: "manajemen",
+    departmentLabel: "Manajemen Proyek & Produk",
+    note: "scope out the new checkout feature",
+  });
+  assert.match(manajemenPrompt, /\*1\. Product Owner \(Fokus\)\*/);
+  assert.match(manajemenPrompt, /\*2\. Project Manager \(Jadwal\/Alur\)\*/);
+  assert.match(manajemenPrompt, /\*3\. System Analyst \(Teknis\)\*/);
+  assert.match(manajemenPrompt, /Tanya Product Owner\?/);
+
+  const devPrompt = buildPhaseSystemPrompt({
+    ...base,
+    department: "dev",
+    departmentLabel: "Tim Pengembangan",
+    note: "implement the checkout feature",
+  });
+  assert.doesNotMatch(devPrompt, /Product Owner \(Fokus\)/);
+  assert.match(devPrompt, /short handoff note/);
+});

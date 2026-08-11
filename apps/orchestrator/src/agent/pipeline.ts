@@ -36,7 +36,7 @@ export interface RunPipelineParams {
   // Separate from onProgress (plain text) because a checkpoint prompt needs
   // to go out with Ya/Tidak buttons attached. Falls back to onProgress
   // (as plain text, no buttons) if checkpoints is used without this set.
-  onCheckpoint?: (message: string) => Promise<void>;
+  onCheckpoint?: (message: string, department: string) => Promise<void>;
   // Backs the send_document tool — see loop.ts for why this is a callback.
   sendDocument?: (relPath: string, caption: string | undefined) => Promise<string>;
   // Backs the WhatsApp confirmation gate for risky bash commands — see loop.ts.
@@ -166,7 +166,8 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
     if (checkpoints && !isLastPhase) {
       for (;;) {
         await onCheckpoint(
-          `Fase "${label}" kelar:\n${result.summary}\n\nLanjut ke fase berikutnya, atau ketik apa yang mau diubah/ditanyain dulu.`
+          `Fase "${label}" kelar:\n${result.summary}\n\nLanjut ke fase berikutnya, atau ketik apa yang mau diubah/ditanyain dulu.`,
+          phase.department
         );
         auditLog.add(taskId, "note", `Checkpoint: nunggu review buat fase "${label}"`);
 
