@@ -53,6 +53,16 @@ export interface RunPipelineParams {
 
 const PHASE_MAX_TURNS = 15;
 
+// Tap ids from MANAJEMEN_CHECKPOINT_OPTIONS (router/handler.ts) mapped to the
+// role's display name. Shared here (not duplicated in handler.ts) since both
+// the deterministic AI-classifier-bypass check there and the role-Q&A
+// state machine below need the exact same set.
+export const MANAJEMEN_ROLE_QUESTIONS: Record<string, string> = {
+  "Tanya Product Owner?": "Product Owner",
+  "Tanya Project Manager?": "Project Manager",
+  "Tanya System Analyst?": "System Analyst",
+};
+
 export async function runPipeline(params: RunPipelineParams): Promise<RunTaskResult> {
   const {
     taskId,
@@ -164,11 +174,22 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
     }
 
     if (checkpoints && !isLastPhase) {
+      // Set while waiting specifically for the follow-up question after a
+      // "Tanya <Role>?" tap — see below. A local variable rather than any
+      // persisted state, since its whole lifetime is this one loop.
+      let pendingRoleQuestion: string | undefined;
+
       for (;;) {
-        await onCheckpoint(
-          `Fase "${label}" kelar:\n${result.summary}\n\nLanjut ke fase berikutnya, atau ketik apa yang mau diubah/ditanyain dulu.`,
-          phase.department
-        );
+        // Skipped while waiting for a role-specific follow-up — re-showing
+        // the full "fase kelar" summary + 5-option menu mid-Q&A would read
+        // as if the checkpoint had reset, when it's really just waiting on
+        // the question the user already said they wanted to ask.
+        if (!pendingRoleQuestion) {
+          await onCheckpoint(
+            `Fase "${label}" kelar:\n${result.summary}\n\nLanjut ke fase berikutnya, atau ketik apa yang mau diubah/ditanyain dulu.`,
+            phase.department
+          );
+        }
         auditLog.add(taskId, "note", `Checkpoint: nunggu review buat fase "${label}"`);
 
         const resolution = await waitForCheckpoint(taskId, abortController.signal);
@@ -177,17 +198,37 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
         }
         if (resolution.action === "continue") break;
 
+        // A "Tanya <Role>?" tap isn't itself a question the model can answer
+        // — it's the user asking for the chance to ask one. Don't run the
+        // agent loop yet; just invite the real question and loop back to
+        // wait again (also handles switching roles mid-flow: tapping a
+        // different role before asking just re-targets pendingRoleQuestion).
+        const tappedRole = MANAJEMEN_ROLE_QUESTIONS[resolution.instruction];
+        if (tappedRole) {
+          pendingRoleQuestion = tappedRole;
+          await onProgress(`Oke, mau nanya apa ke ${tappedRole}? Tinggal ketik langsung.`);
+          continue;
+        }
+
+        const askedAsRole = pendingRoleQuestion;
+        pendingRoleQuestion = undefined; // consumed either way — answered or not, we're out of role-Q&A mode next
+
         // Not "aku revisi ... : X" — X isn't necessarily an edit request. A
         // checkpoint reply that isn't yes/no could just as easily be "tunjukkan
         // plan nya" (a question) as "tambahin fitur X" (an actual revision);
         // labeling both as "revisi" upfront both misleads the user about what's
         // happening and primes the model to treat a plain question as an edit
-        // instruction. Left to the model to tell apart via the instruction below.
+        // instruction. Left to the model to tell apart via the instruction below
+        // — except when askedAsRole is set, where the framing is explicit
+        // instead of relying on the model to infer which role is being asked.
         await onProgress(`Oke, aku tindak lanjuti dulu ya: ${resolution.instruction}`);
+        const instructionForModel = askedAsRole
+          ? `Instruksi awal buat fase ini: ${phase.note}\n\nHasil sebelumnya: ${result.summary}\n\nUser lagi nanya spesifik ke ${askedAsRole}: "${resolution.instruction}"\n\nJawab pertanyaan ini spesifik dari sudut pandang ${askedAsRole} — first-person, sesuai apa yang udah diputusin ${askedAsRole} buat task ini, bukan jawaban umum. Jangan ubah hasil sebelumnya, jangan narasi ulang role lain, jangan pakai format "*1./2./3.*" lagi. Singkat aja (2-4 baris, tanpa markdown header).`
+          : `Instruksi awal buat fase ini: ${phase.note}\n\nHasil sebelumnya: ${result.summary}\n\nUser bilang: "${resolution.instruction}"\n\nKalau ini permintaan buat mengubah atau menambah sesuatu di hasil sebelumnya, revisi hasilnya sesuai itu. Kalau ini cuma pertanyaan atau minta ditunjukin/dijelasin sesuatu (mis. isi sebuah file yang udah dibikin), jawab langsung — jangan ubah hasil sebelumnya kalau memang nggak diminta.`;
         const revised = await runAgentLoopFn({
           providers: buildProvidersFn(providerName),
           systemPrompt,
-          instruction: `Instruksi awal buat fase ini: ${phase.note}\n\nHasil sebelumnya: ${result.summary}\n\nUser bilang: "${resolution.instruction}"\n\nKalau ini permintaan buat mengubah atau menambah sesuatu di hasil sebelumnya, revisi hasilnya sesuai itu. Kalau ini cuma pertanyaan atau minta ditunjukin/dijelasin sesuatu (mis. isi sebuah file yang udah dibikin), jawab langsung — jangan ubah hasil sebelumnya kalau memang nggak diminta.`,
+          instruction: instructionForModel,
           cwd,
           taskId,
           abortController,

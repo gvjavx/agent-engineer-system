@@ -24,7 +24,7 @@ import { generateChatReply } from "../agent/chatAssistant.js";
 import type { Provider } from "../agent/types.js";
 import { explainInSimpleTerms, introduceYourself, respondToGreeting, explainHelp } from "../agent/dynamicReplies.js";
 import { listGeminiModels, listOpenAiCompatibleModels } from "../agent/modelCatalog.js";
-import { runPipeline, type PhaseSpec, type PipelineMode } from "../agent/pipeline.js";
+import { runPipeline, MANAJEMEN_ROLE_QUESTIONS, type PhaseSpec, type PipelineMode } from "../agent/pipeline.js";
 import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment } from "../agent/departments.js";
 import { buildAuthorizeUrl } from "../agent/mcp/figmaAuth.js";
 import { createPendingState } from "../agent/mcp/figmaOAuthState.js";
@@ -172,19 +172,17 @@ const PLAN_CONFIRM_OPTIONS: QuickReplyOption[] = [
 ];
 
 // Offered instead of YES_NO_OPTIONS at a manajemen-phase checkpoint. The
-// three role taps just re-enter the existing revise/question loop with that
-// exact text as the instruction (see MANAJEMEN_CHECKPOINT_REPLY_RULE in
-// systemPrompt.ts) — no new pending-state machine. "Lanjutkan"/"Batal" reuse
-// the same "ya"/"tidak" ids YES_NO_OPTIONS already uses, zero new logic.
+// three role-tap ids come straight from pipeline.ts's MANAJEMEN_ROLE_QUESTIONS
+// (single source of truth — see the state machine in that file's checkpoint
+// loop for how a tap turns into an actual role-specific answer) so the
+// button labels and the detection logic can't silently drift apart.
+// "Lanjutkan"/"Batal" reuse the same "ya"/"tidak" ids YES_NO_OPTIONS already
+// uses, zero new logic there.
 const MANAJEMEN_CHECKPOINT_OPTIONS: QuickReplyOption[] = [
-  { id: "Tanya Product Owner?", title: "Tanya Product Owner?" },
-  { id: "Tanya Project Manager?", title: "Tanya Project Manager?" },
-  { id: "Tanya System Analyst?", title: "Tanya System Analyst?" },
+  ...Object.keys(MANAJEMEN_ROLE_QUESTIONS).map((id) => ({ id, title: id })),
   { id: "ya", title: "Lanjutkan" },
   { id: "tidak", title: "Batal" },
 ];
-
-const MANAJEMEN_ROLE_QUESTIONS = new Set(["Tanya Product Owner?", "Tanya Project Manager?", "Tanya System Analyst?"]);
 
 // Sentinels for the "bantuan" menu rows that need arguments a single tap
 // can't supply (WhatsApp sends the tapped id back as a normal message, it
@@ -1087,7 +1085,7 @@ async function handlePendingCheckpoint(
   // interpretConfirmationReply's AI call entirely instead of paying for a
   // classification whose answer is already known — goes straight into the
   // existing revise/question loop with the exact tap text as the instruction.
-  if (!image && MANAJEMEN_ROLE_QUESTIONS.has(trimmed)) {
+  if (!image && MANAJEMEN_ROLE_QUESTIONS[trimmed] !== undefined) {
     resolveCheckpoint(taskId, { action: "revise", instruction: trimmed });
     return true;
   }

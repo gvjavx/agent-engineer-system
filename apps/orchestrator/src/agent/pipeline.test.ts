@@ -268,6 +268,64 @@ test("a failing phase stops the pipeline before later phases run", async () => {
   assert.equal(devPhaseRan, false, "dev phase must not run after manajemen phase fails");
 });
 
+test("tapping 'Tanya <Role>?' invites the real question first instead of answering the tap itself, then answers with explicit role framing once asked", async () => {
+  const taskId = "checkpoint-role-question";
+  const progressMessages: string[] = [];
+  let checkpointCalls = 0;
+  const agentLoopCalls: string[] = [];
+
+  const runAgentLoopFn = async (params: { instruction: string }): Promise<RunAgentLoopResult> => {
+    agentLoopCalls.push(params.instruction);
+    return agentLoopCalls.length === 1
+      ? { ok: true, summary: "Fokusnya landing page minimalis." }
+      : { ok: true, summary: "Fokusnya gitu biar cepat rilis, sesuai keputusan awal." };
+  };
+
+  const resultPromise = runPipeline({
+    ...baseParams,
+    taskId,
+    instruction: "bikin landing page",
+    phases: [
+      { department: "manajemen", note: "tentuin scope landing page" },
+      { department: "dev", note: "implementasi landing page" },
+    ],
+    abortController: new AbortController(),
+    onProgress: async (msg) => {
+      progressMessages.push(msg);
+    },
+    checkpoints: true,
+    onCheckpoint: async () => {
+      checkpointCalls++;
+    },
+    departmentModelLookup: () => "fake",
+    buildProvidersFn: () => [],
+    runAgentLoopFn,
+  });
+
+  await waitUntilCheckpointPending(taskId);
+  assert.equal(checkpointCalls, 1);
+  assert.equal(agentLoopCalls.length, 1);
+
+  // Tap: should invite the question, NOT run the agent loop or re-show the checkpoint.
+  resolveCheckpoint(taskId, { action: "revise", instruction: "Tanya Product Owner?" });
+  await waitUntilCheckpointPending(taskId);
+  assert.equal(checkpointCalls, 1, "checkpoint should not re-fire while waiting for the follow-up question");
+  assert.equal(agentLoopCalls.length, 1, "the tap itself should not run the agent loop");
+  assert.ok(progressMessages.some((m) => m.includes("Product Owner")));
+
+  // The real follow-up question: now the agent loop runs, with explicit role framing.
+  resolveCheckpoint(taskId, { action: "revise", instruction: "kenapa fokusnya gitu?" });
+  await waitUntilCheckpointPending(taskId);
+  assert.equal(checkpointCalls, 2, "checkpoint (with the full menu) should reappear once the role Q&A is answered");
+  assert.equal(agentLoopCalls.length, 2);
+  assert.match(agentLoopCalls[1], /User lagi nanya spesifik ke Product Owner/);
+  assert.match(agentLoopCalls[1], /kenapa fokusnya gitu\?/);
+
+  resolveCheckpoint(taskId, { action: "continue" });
+  const result = await resultPromise;
+  assert.equal(result.ok, true);
+});
+
 test("onCheckpoint receives the phase's department, so the caller can pick manajemen-specific options", async () => {
   const taskId = "checkpoint-department-arg";
   const seenDepartments: string[] = [];
