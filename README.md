@@ -208,6 +208,14 @@ Batasan:
 - Maksimal 5MB per gambar (limit bawaan WhatsApp buat gambar masuk).
 - Butuh provider AI yang model-nya bisa vision — dari default `AI_PROVIDER_ORDER=gemini,openrouter,qwen`, cuma Gemini yang vision-capable; model coder default OpenRouter/Qwen gak bisa "lihat" gambar. Kalau semua provider yang aktif gak bisa, agent bilang jelas dan nyaranin ganti model, gak diam-diam nebak.
 
+## Ngobrol santai + memori
+
+Pesan yang bukan command dan bukan instruksi kerjaan (pertanyaan, komentar, basa-basi) gak lagi otomatis dipaksa jadi task koding — agent ngenalin dulu ini ngobrol biasa atau bukan, terus jawab kayak asisten AI beneran, bukan nyoba nebak-nebak departemen mana yang ngerjain. Balasannya pakai konteks obrolan terakhir (beberapa pesan terakhir, bukan seluruh riwayat) plus hal-hal yang udah dipelajari soal kamu dari obrolan sebelumnya — dan itu kesimpen permanen lintas sesi, bukan cuma selama chat masih kebuka.
+
+- Ketik *lihat memori* buat liat semua yang udah aku inget soal kamu, atau *lupain semua* buat hapus itu semua (dikonfirmasi dulu, gak bisa dibalikin lagi).
+- Fitur ini nambah satu panggilan AI ekstra per pesan ngobrol biasa (buat nentuin ini ngobrol atau kerjaan) — masih murah di rantai provider free-tier yang udah dipakai, tapi disebut di sini biar gak kaget kalau kerasa.
+- Pesan yang panjangnya lebih dari ~40 kata langsung dianggap task seperti biasa, gak dicek dulu ini ngobrol atau bukan — biar gak nambah biaya buat instruksi kerjaan yang emang udah jelas panjang.
+
 ## Catatan keamanan
 
 - Hanya nomor di `ALLOWED_SENDERS` yang perintahnya diproses.

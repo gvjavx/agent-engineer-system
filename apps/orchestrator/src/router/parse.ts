@@ -150,6 +150,14 @@ const HELP_PHRASES = new Set(["help", "bantuan", "menu"]);
 const STATUS_PHRASES = new Set(["status"]);
 const STOP_PHRASES = new Set(["stop", "batalkan"]);
 const CONNECT_FIGMA_PHRASES = new Set(["hubungkan figma", "sambungkan figma", "connect figma"]);
+const LIST_MEMORY_PHRASES = new Set([
+  "lihat memori",
+  "apa yang kamu inget",
+  "apa yang kamu inget soal saya",
+  "inget apa aja soal saya",
+  "kamu inget apa aja soal saya",
+]);
+const CLEAR_MEMORY_PHRASES = new Set(["lupain semua", "hapus memori", "lupain semua soal saya"]);
 const INTRO_PHRASES = new Set([
   "siapa kamu",
   "siapa kamu?",
@@ -193,6 +201,14 @@ export function isStopCommand(text: string): boolean {
 
 export function isConnectFigmaCommand(text: string): boolean {
   return CONNECT_FIGMA_PHRASES.has(text.trim().toLowerCase());
+}
+
+export function isListMemoryCommand(text: string): boolean {
+  return LIST_MEMORY_PHRASES.has(text.trim().toLowerCase());
+}
+
+export function isClearMemoryCommand(text: string): boolean {
+  return CLEAR_MEMORY_PHRASES.has(text.trim().toLowerCase());
 }
 
 export function isIntroCommand(text: string): boolean {

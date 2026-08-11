@@ -22,6 +22,8 @@ import {
   isAllowedRepoUrl,
   extractGithubRepoUrl,
   isPlausibleShortCommand,
+  isListMemoryCommand,
+  isClearMemoryCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -252,4 +254,17 @@ test("isConnectFigmaCommand recognizes the Figma linking phrases", () => {
   assert.ok(isConnectFigmaCommand("Connect Figma"));
   assert.ok(isConnectFigmaCommand("  sambungkan figma  "));
   assert.ok(!isConnectFigmaCommand("liat desain figma dong"));
+});
+
+test("isListMemoryCommand recognizes the memory-listing phrases", () => {
+  assert.ok(isListMemoryCommand("lihat memori"));
+  assert.ok(isListMemoryCommand("Apa Yang Kamu Inget"));
+  assert.ok(isListMemoryCommand("  inget apa aja soal saya  "));
+  assert.ok(!isListMemoryCommand("kamu inget gak soal kucing"));
+});
+
+test("isClearMemoryCommand recognizes the memory-clearing phrases", () => {
+  assert.ok(isClearMemoryCommand("lupain semua"));
+  assert.ok(isClearMemoryCommand("Hapus Memori"));
+  assert.ok(!isClearMemoryCommand("lupain deh"));
 });

@@ -53,6 +53,27 @@ db.exec(`
     refresh_token TEXT NOT NULL,
     expires_at TEXT NOT NULL
   );
+
+  -- Facts learned about a user during casual chat (see agent/chatAssistant.ts),
+  -- kept across sessions so the bot doesn't start from zero every conversation.
+  CREATE TABLE IF NOT EXISTS user_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
+    fact TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_memory_from ON user_memory(from_number);
+
+  -- Recent chat turns (only the casual-conversation path, not tasks/commands)
+  -- kept for context, not a full transcript — see chatHistoryRepo.append's pruning.
+  CREATE TABLE IF NOT EXISTS chat_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_number TEXT NOT NULL,
+    role TEXT NOT NULL, -- 'user' | 'assistant'
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_history_from ON chat_history(from_number);
 `);
 
 // Idempotent migrations for DBs created before these columns existed.
@@ -246,5 +267,51 @@ export const figmaOAuthRepo = {
   },
   clear(): void {
     db.prepare("DELETE FROM figma_oauth WHERE id = 1").run();
+  },
+};
+
+export const memoryRepo = {
+  list(fromNumber: string): string[] {
+    const rows = db
+      .prepare("SELECT fact FROM user_memory WHERE from_number = ? ORDER BY created_at ASC")
+      .all(fromNumber) as { fact: string }[];
+    return rows.map((r) => r.fact);
+  },
+  add(fromNumber: string, fact: string): void {
+    db.prepare("INSERT INTO user_memory (from_number, fact) VALUES (?, ?)").run(fromNumber, fact);
+  },
+  clear(fromNumber: string): void {
+    db.prepare("DELETE FROM user_memory WHERE from_number = ?").run(fromNumber);
+  },
+};
+
+// How many past chat turns to keep per sender — bounds the table without
+// needing a separate cleanup job; old turns are dropped as new ones come in.
+const CHAT_HISTORY_KEEP_PER_USER = 40;
+
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export const chatHistoryRepo = {
+  // Oldest-first, as a real Provider expects a conversation to read.
+  recent(fromNumber: string, limit: number): ChatTurn[] {
+    const rows = db
+      .prepare("SELECT role, content FROM chat_history WHERE from_number = ? ORDER BY created_at DESC LIMIT ?")
+      .all(fromNumber, limit) as ChatTurn[];
+    return rows.reverse();
+  },
+  append(fromNumber: string, role: "user" | "assistant", content: string): void {
+    db.prepare("INSERT INTO chat_history (from_number, role, content) VALUES (?, ?, ?)").run(
+      fromNumber,
+      role,
+      content
+    );
+    db.prepare(
+      `DELETE FROM chat_history WHERE from_number = ? AND id NOT IN (
+         SELECT id FROM chat_history WHERE from_number = ? ORDER BY created_at DESC LIMIT ?
+       )`
+    ).run(fromNumber, fromNumber, CHAT_HISTORY_KEEP_PER_USER);
   },
 };

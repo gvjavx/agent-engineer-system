@@ -16,7 +16,7 @@ async function generateReply(prompt: string, provider: Provider, signal: AbortSi
   }
 }
 
-const STYLE_RULES = `Answer in casual, simple Indonesian, like texting a friend — no formal tone, no technical jargon unless the question is explicitly technical, no emoji. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame things as easy — describe them plainly instead. Keep it short — a couple of sentences to a short paragraph, not an essay.`;
+export const STYLE_RULES = `Answer in casual, simple Indonesian, like texting a friend — no formal tone, no technical jargon unless the question is explicitly technical, no emoji. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame things as easy — describe them plainly instead. Keep it short — a couple of sentences to a short paragraph, not an essay.`;
 
 function buildIntroPrompt(question: string): string {
   return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is asking who/what you are. ${STYLE_RULES}

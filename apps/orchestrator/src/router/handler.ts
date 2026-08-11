@@ -6,6 +6,8 @@ import {
   projectsRepo,
   tasksRepo,
   auditLog,
+  memoryRepo,
+  chatHistoryRepo,
   type Project,
 } from "../db/index.js";
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
@@ -14,8 +16,11 @@ import { buildProviders, splitProviderSpec } from "../agent/runner.js";
 import { checkProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
 import { classifyCommandIntent } from "../agent/commandIntent.js";
+import { classifyMessageKind } from "../agent/messageKind.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
 import { describeImage } from "../agent/imageDescription.js";
+import { generateChatReply } from "../agent/chatAssistant.js";
+import type { Provider } from "../agent/types.js";
 import { explainInSimpleTerms, introduceYourself, respondToGreeting, explainHelp } from "../agent/dynamicReplies.js";
 import { listGeminiModels, listOpenAiCompatibleModels } from "../agent/modelCatalog.js";
 import { runPipeline, type PhaseSpec, type PipelineMode } from "../agent/pipeline.js";
@@ -50,6 +55,8 @@ import {
   isAllowedRepoUrl,
   extractGithubRepoUrl,
   isPlausibleShortCommand,
+  isListMemoryCommand,
+  isClearMemoryCommand,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -92,6 +99,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *status* — cek task yang lagi jalan
 - *stop* — batalin task yang lagi jalan di project aktif
 - *hubungkan figma* — sambungin akun Figma kamu (sekali aja) biar aku bisa baca desainnya
+- Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
 - Tempel link Figma langsung di instruksi (mis. "bikin komponen dari desain ini: https://figma.com/design/...") — aku bakal baca layer/style/variabel-nya, cuma baca aja, gak pernah aku ubah
 - Kirim gambar (screenshot, mockup, dsb) bareng caption instruksinya (mis. "perbaiki tampilan sesuai screenshot ini") — aku bakal liat gambarnya dulu baru mulai kerjain. Kirim tanpa caption juga boleh, nanti aku ceritain apa yang aku liat terus tanya mau diapain.
 - Atau langsung ketik aja apa yang mau dikerjain (mis. "tambahin endpoint health check"). Aku bakal tebak departemen mana yang perlu ngerjain, kasih tau rencananya, baru mulai setelah kamu konfirmasi — kalau rencananya lebih dari satu fase, kamu bisa pilih "review tiap fase" biar aku pause dulu abis tiap fase kelar, nunggu kamu approve atau minta revisi sebelum lanjut.`;
@@ -131,12 +139,17 @@ interface PendingPipeline {
   phases: PhaseSpec[];
 }
 
+interface PendingClearMemory {
+  type: "confirm_clear_memory";
+}
+
 type PendingActionData =
   | PendingAddFolder
   | PendingDeleteProject
   | PendingGuidedGitProject
   | PendingGuidedFolder
-  | PendingPipeline;
+  | PendingPipeline
+  | PendingClearMemory;
 
 const YES_NO_OPTIONS: QuickReplyOption[] = [
   { id: "ya", title: "Ya, lanjut" },
@@ -205,6 +218,17 @@ const HELP_OPTIONS: QuickReplyOption[] = [
 const COMMAND_INTENT_MAX_WORDS = 12;
 // Confirmation replies are inherently short, so a tighter bound is safe here.
 const CONFIRMATION_INTENT_MAX_WORDS = 8;
+// Real conversation runs longer than a command paraphrase does, so this gate
+// (agent/messageKind.ts) is much more generous than COMMAND_INTENT_MAX_WORDS
+// above — messages longer than this skip straight to the task pipeline,
+// same as today, rather than spending an extra AI call on every long message.
+const CHAT_INTENT_MAX_WORDS = 40;
+// How many past chat turns to load as context for a reply — a handful of
+// exchanges, not the full history (see chatHistoryRepo.recent).
+const CHAT_HISTORY_TURNS = 12;
+// Caps how many stored facts get folded into the chat prompt, independent of
+// how many actually exist in the DB — keeps prompt size bounded.
+const MAX_FACTS_IN_PROMPT = 30;
 
 export async function handleInboundMessage(
   from: string,
@@ -425,9 +449,23 @@ export async function handleInboundMessage(
     return;
   }
 
+  if (isListMemoryCommand(trimmed)) {
+    await handleListMemoryCommand(from);
+    return;
+  }
+
+  if (isClearMemoryCommand(trimmed)) {
+    await handleClearMemoryCommand(from);
+    return;
+  }
+
   // Nothing matched exactly — before assuming it's a coding task, check
   // whether it's actually a paraphrase of one of the 7 commands above.
   if (await tryHandleSemanticCommand(from, trimmed)) return;
+
+  // Still nothing — before assuming it's a coding task, check whether it's
+  // just conversation instead (a question, a comment, small talk).
+  if (await tryHandleConversational(from, trimmed)) return;
 
   // Default: free-text instruction -> classify departments -> confirm -> pipeline.
   await handleFreeTextInstruction(from, trimmed);
@@ -641,6 +679,26 @@ async function handleConnectFigmaCommand(from: string): Promise<void> {
   );
 }
 
+async function handleListMemoryCommand(from: string): Promise<void> {
+  const facts = memoryRepo.list(from);
+  if (facts.length === 0) {
+    await sendWhatsApp(from, "Belum ada yang aku inget soal kamu nih.");
+    return;
+  }
+  const list = facts.map((fact, i) => `${i + 1}. ${fact}`).join("\n");
+  await sendWhatsApp(from, `Ini yang aku inget soal kamu:\n${list}`);
+}
+
+async function handleClearMemoryCommand(from: string): Promise<void> {
+  if (memoryRepo.list(from).length === 0) {
+    await sendWhatsApp(from, "Belum ada yang aku inget soal kamu, jadi gak ada yang perlu dilupain.");
+    return;
+  }
+  const pending: PendingClearMemory = { type: "confirm_clear_memory" };
+  conversationRepo.setPendingAction(from, JSON.stringify(pending));
+  await sendWhatsApp(from, "Yakin mau aku lupain semua yang aku inget soal kamu? Ini gak bisa dibalikin lagi.", YES_NO_OPTIONS);
+}
+
 async function handleImageMessage(
   from: string,
   caption: string,
@@ -729,6 +787,39 @@ async function tryHandleSemanticCommand(from: string, trimmed: string): Promise<
   }
 }
 
+// Runs after every fixed command and paraphrase has missed — checks whether
+// this is actually just conversation (a question, a comment, small talk)
+// rather than a coding task, so it gets a real reply instead of being forced
+// through department classification. Own, more generous word-count gate than
+// tryHandleSemanticCommand above (see CHAT_INTENT_MAX_WORDS) since real
+// conversation runs longer than a command paraphrase does.
+async function tryHandleConversational(from: string, trimmed: string): Promise<boolean> {
+  if (!isPlausibleShortCommand(trimmed, CHAT_INTENT_MAX_WORDS)) return false;
+
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  if (providers.length === 0) return false; // let handleFreeTextInstruction give its own "no provider" message
+
+  const kind = await classifyMessageKind(trimmed, providers[0], new AbortController().signal);
+  if (kind !== "chat") return false;
+
+  await handleChatMessage(from, trimmed, providers[0]);
+  return true;
+}
+
+async function handleChatMessage(from: string, message: string, provider: Provider): Promise<void> {
+  const history = chatHistoryRepo.recent(from, CHAT_HISTORY_TURNS);
+  const facts = memoryRepo.list(from).slice(-MAX_FACTS_IN_PROMPT);
+  const result = await generateChatReply(message, history, facts, provider, new AbortController().signal);
+  const reply = result?.reply ?? "Provider yang aktif lagi susah diajak mikir buat ini, coba lagi bentar ya.";
+  await sendWhatsApp(from, reply);
+  if (result) {
+    chatHistoryRepo.append(from, "user", message);
+    chatHistoryRepo.append(from, "assistant", reply);
+    if (result.newFact) memoryRepo.add(from, result.newFact);
+  }
+}
+
 // Shared by the three pending-handlers below. Fail-closed is structural, not
 // something each caller audits: this only ever runs when both isConfirmYes
 // and isConfirmNo already missed, and its "yes"/"no" results take exactly
@@ -748,6 +839,37 @@ async function interpretConfirmationReply(
   return classifyConfirmationIntent(trimmed, providers[0], new AbortController().signal);
 }
 
+// Catches the case a real user actually hit: mid-wizard/mid-confirmation,
+// they send something that's obviously a different, unrelated real command
+// ("halo" while the "tambah project" wizard is waiting on a GitHub URL) —
+// not their answer to what was asked, just them moving on. Without this,
+// that message gets swallowed by whatever's pending and comes back as a
+// non-sequitur (e.g. a "no valid GitHub link found" retry prompt in reply to
+// a plain greeting). Checked ahead of every pending-flow branch below except
+// handlePendingCheckpoint, which deliberately treats *any* non-yes/no text as
+// the revision instruction itself — that's the documented, intentional
+// behavior there, not a case this should override.
+function looksLikeAnotherCommand(trimmed: string): boolean {
+  return (
+    isIntroCommand(trimmed) ||
+    isGreetingCommand(trimmed) ||
+    isHelpCommand(trimmed) ||
+    isListProjectsCommand(trimmed) ||
+    isListModelsCommand(trimmed) ||
+    isStatusCommand(trimmed) ||
+    isStopCommand(trimmed) ||
+    isConnectFigmaCommand(trimmed) ||
+    isListMemoryCommand(trimmed) ||
+    isClearMemoryCommand(trimmed) ||
+    parseAddProject(trimmed) !== undefined ||
+    parseAddFolder(trimmed) !== undefined ||
+    parseDeleteProject(trimmed) !== undefined ||
+    parseUseProject(trimmed) !== undefined ||
+    parseUseModel(trimmed) !== undefined ||
+    parseListModelsForProvider(trimmed) !== undefined
+  );
+}
+
 // Checked before everything else: same in-memory-pending-per-taskId pattern
 // as handlePendingCheckpoint below, but for a single risky bash command
 // rather than a whole pipeline phase. Fails closed on anything but an
@@ -757,6 +879,12 @@ async function handlePendingBashApproval(from: string, trimmed: string): Promise
   const state = conversationRepo.get(from);
   const taskId = state?.active_project_alias ? getActiveTaskId(state.active_project_alias) : undefined;
   if (!taskId || !hasPendingBashApproval(taskId)) return false;
+
+  if (looksLikeAnotherCommand(trimmed)) {
+    resolveBashApproval(taskId, false);
+    await sendWhatsApp(from, "Oke, aku skip command itu, cari cara lain dulu.");
+    return false;
+  }
 
   const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
   const approved = intent === "yes";
@@ -802,6 +930,12 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
     pending = JSON.parse(state.pending_action);
   } catch {
     conversationRepo.setPendingAction(from, null);
+    return false;
+  }
+
+  if (looksLikeAnotherCommand(trimmed)) {
+    conversationRepo.setPendingAction(from, null);
+    await sendWhatsApp(from, "Oke, yang tadi aku batalin dulu ya.");
     return false;
   }
 
@@ -925,6 +1059,20 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
       await sendWhatsApp(from, "Oke, gak jadi ya.");
     } else {
       await sendWhatsApp(from, 'Gak jelas jawabannya, jadi aku batalin dulu. Ulangi "hapus project" lagi kalau masih mau.');
+    }
+    return true;
+  }
+
+  if (pending.type === "confirm_clear_memory") {
+    const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+    conversationRepo.setPendingAction(from, null);
+    if (intent === "yes") {
+      memoryRepo.clear(from);
+      await sendWhatsApp(from, "Oke, udah aku lupain semua ya.");
+    } else if (intent === "no") {
+      await sendWhatsApp(from, "Oke, gak jadi ya.");
+    } else {
+      await sendWhatsApp(from, 'Gak jelas jawabannya, jadi aku batalin dulu. Ulangi "lupain semua" lagi kalau masih mau.');
     }
     return true;
   }
