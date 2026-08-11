@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   extractInboundMessages,
+  sendWhatsAppMessage,
   sendWhatsAppOptions,
   uploadMedia,
   sendWhatsAppDocument,
@@ -210,6 +211,31 @@ test("sendWhatsAppOptions caps list rows at 10", async () => {
   const interactive = body.interactive as Record<string, unknown>;
   const action = interactive.action as { sections: { rows: unknown[] }[] };
   assert.equal(action.sections[0].rows.length, 10);
+});
+
+// Regression: an AI-generated checkpoint summary long enough to cross
+// WhatsApp's 1024-char interactive body limit made the whole send fail
+// outright (400, code 131009) — and since callers fire-and-forget these
+// sends, the user just never got the checkpoint message at all.
+test("sendWhatsAppOptions truncates a body text past WhatsApp's 1024-char interactive limit", async () => {
+  const longBody = "x".repeat(2000);
+  const buttonBody = await captureRequestBody(() =>
+    sendWhatsAppOptions("628123", longBody, [{ id: "ya", title: "Ya" }])
+  );
+  const buttonInteractive = buttonBody.interactive as { body: { text: string } };
+  assert.ok(buttonInteractive.body.text.length <= 1024, `button body too long: ${buttonInteractive.body.text.length}`);
+
+  const options = Array.from({ length: 4 }, (_, i) => ({ id: `opt-${i}`, title: `Option ${i}` }));
+  const listBody = await captureRequestBody(() => sendWhatsAppOptions("628123", longBody, options));
+  const listInteractive = listBody.interactive as { body: { text: string } };
+  assert.ok(listInteractive.body.text.length <= 1024, `list body too long: ${listInteractive.body.text.length}`);
+});
+
+test("sendWhatsAppMessage truncates a body text past WhatsApp's 4096-char text limit", async () => {
+  const longBody = "x".repeat(5000);
+  const body = await captureRequestBody(() => sendWhatsAppMessage("628123", longBody));
+  const text = body.text as { body: string };
+  assert.ok(text.body.length <= 4096, `text body too long: ${text.body.length}`);
 });
 
 test("uploadMedia posts the file as multipart form data and returns the media id", async () => {

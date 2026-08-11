@@ -27,6 +27,7 @@ import {
   isPlausibleShortCommand,
   isListMemoryCommand,
   isClearMemoryCommand,
+  isRetryCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -78,6 +79,14 @@ test("isBareDeleteProjectCommand recognizes 'hapus project' with no alias", () =
   assert.ok(isBareDeleteProjectCommand("  Hapuskan Project  "));
   assert.ok(!isBareDeleteProjectCommand("hapus project toko-online"));
   assert.ok(!isBareDeleteProjectCommand("hapus folder demo"));
+});
+
+test("isRetryCommand recognizes retry phrases with no other content", () => {
+  assert.ok(isRetryCommand("coba lagi"));
+  assert.ok(isRetryCommand("  Ulangi  "));
+  assert.ok(isRetryCommand("Retry"));
+  assert.ok(!isRetryCommand("coba lagi tambahin fitur login"));
+  assert.ok(!isRetryCommand("coba deh liat file ini"));
 });
 
 test("isValidAliasInput accepts a single word", () => {

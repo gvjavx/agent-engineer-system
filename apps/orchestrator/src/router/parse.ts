@@ -172,6 +172,12 @@ export function parseListModelsForProvider(text: string): ListModelsForProviderC
   return { provider: match[2], query: match[3] };
 }
 
+// A phrase like "coba lagi" has no fixed meaning on its own — it only makes
+// sense as a reply to whatever just failed. Caught deterministically so it
+// never reaches the task classifier, which used to read it as a request to
+// build a "retry" feature in the codebase instead of retrying the failed
+// action itself (see handleRetryCommand in handler.ts).
+const RETRY_PHRASES = new Set(["coba lagi", "coba lagi dong", "ulangi", "ulang", "coba ulang", "retry"]);
 const LIST_PROJECTS_PHRASES = new Set(["daftar project", "list project", "projects"]);
 const LIST_MODELS_PHRASES = new Set(["daftar model", "list model", "models"]);
 const HELP_PHRASES = new Set(["help", "bantuan", "menu"]);
@@ -206,6 +212,10 @@ const INTRO_PHRASES = new Set([
   "introduce yourself",
   "what are you",
 ]);
+
+export function isRetryCommand(text: string): boolean {
+  return RETRY_PHRASES.has(text.trim().toLowerCase());
+}
 
 export function isListProjectsCommand(text: string): boolean {
   return LIST_PROJECTS_PHRASES.has(text.trim().toLowerCase());

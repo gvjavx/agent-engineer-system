@@ -1,5 +1,18 @@
 import type { Provider } from "./types.js";
 
+// Shared between handler.ts's handleImageMessage and handlePendingCheckpoint
+// so both produce the exact same merge shape — systemPrompt.ts's desain
+// "ask first" block pattern-matches this literal marker to detect that a
+// design source was already provided, so the two sides can't be allowed to
+// drift apart.
+export const IMAGE_DESCRIPTION_MARKER = "(Gambar yang dikirim bareng ini nunjukkin:";
+
+export function mergeImageDescription(caption: string | undefined, description: string): string {
+  return caption
+    ? `${caption}\n\n${IMAGE_DESCRIPTION_MARKER} ${description})`
+    : `${IMAGE_DESCRIPTION_MARKER} ${description})`;
+}
+
 function buildImageDescriptionPrompt(caption: string | undefined): string {
   const base = `Describe this image thoroughly for a software engineer who cannot see it and needs to act on it. Cover, as relevant:
 - What kind of image this is (screenshot, UI mockup, error dialog, sketch, diagram, photo, etc.)

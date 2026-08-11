@@ -1,3 +1,6 @@
+import { extractFigmaFileRefs } from "./mcp/figmaLink.js";
+import { IMAGE_DESCRIPTION_MARKER } from "./imageDescription.js";
+
 const SHARED_ROLE_INTRO = `You act as the whole team for every request — there is no human reviewer in the loop, so be the reviewer yourself:
 
 1. Product Manager / Business Analyst: interpret the user's request, clarify the actual requirement in your own head, and decide the smallest correct scope that satisfies it.
@@ -47,6 +50,16 @@ const MANAJEMEN_INTERNAL_STEPS = `Since you're the planning phase, work through 
 2. Project Manager: plan the order of work for the phases after you (design, then coding, then QA, plus infra/business if relevant) and note anything they need to know upfront.
 3. System Analyst: work out the concrete workflow/system requirements — what needs to exist and how the pieces fit together — so the phases after you have a clear starting point.
 Summarize the outcome of all three in your handoff note to the next phase.`;
+
+// Only applies to "desain" and only when checkpoints are on — checkpoints are
+// the only existing pause point between phases (see agent/checkpoint.ts +
+// pipeline.ts's per-phase review loop), so without them there's nowhere to
+// actually collect the user's answer. Real request from a WhatsApp transcript:
+// the design phase auto-generated a design with zero input, when the user had
+// a specific design in mind and wanted to supply it (image or Figma).
+const DESAIN_ASK_FIRST_BLOCK = `Before generating or writing any design, check the instruction you're given this turn for a design source: a Figma link, an already-described image (usually appears as text like "${IMAGE_DESCRIPTION_MARKER} ...)"), or the user explicitly saying they want you to auto-generate / that they don't have their own design. If any of that is already there, go ahead and use it — don't ask again.
+
+If none of that is present yet, don't generate or write any design and don't touch any files this turn. Your entire reply should just be one short, casual question asking whether the user already has their own design or wants you to auto-generate one — and if they have their own, mention they can send a screenshot/image directly in the chat, or share a Figma link (typing "hubungkan figma" first if they haven't connected it yet). Wait for their answer before doing any actual work.`;
 
 function finalReplyRule(resultLine: string): string {
   return `- Your final plain-text reply must be a short summary (3-6 lines max, no markdown headers) suitable for sending directly over WhatsApp: what changed, what you verified, and ${resultLine}. Write it the way a person would casually text a friend, not like a formal status report — skip stiff openers like "I have..." or "This change has been...", skip corporate/AI-sounding phrasing entirely, and don't restate these instructions.`;
@@ -109,9 +122,13 @@ export function buildPhaseSystemPrompt(
     projectAlias: string;
     isLastPhase: boolean;
     previousPhases: { label: string; summary: string }[];
+    // Top-level task instruction — used only to detect whether a design
+    // source (Figma link/image) was already provided, see desainAskFirstBlock.
+    instruction: string;
+    checkpoints: boolean;
   } & ({ mode: "git"; defaultBranch: string; workBranch: string; autoMerge: "direct" | "pr" } | { mode: "local"; folderPath: string })
 ): string {
-  const { department, departmentLabel, note, projectAlias, isLastPhase, previousPhases } = params;
+  const { department, departmentLabel, note, projectAlias, isLastPhase, previousPhases, instruction, checkpoints } = params;
 
   const location =
     params.mode === "git"
@@ -124,6 +141,9 @@ export function buildPhaseSystemPrompt(
       : "";
 
   const managementStepsBlock = department === "manajemen" ? `\n${MANAJEMEN_INTERNAL_STEPS}\n` : "";
+
+  const hasDesignSource = extractFigmaFileRefs(instruction).length > 0 || instruction.includes(IMAGE_DESCRIPTION_MARKER);
+  const desainAskFirstBlock = department === "desain" && checkpoints && !hasDesignSource ? `\n${DESAIN_ASK_FIRST_BLOCK}\n` : "";
 
   const workAreaRule =
     params.mode === "git"
@@ -145,7 +165,7 @@ export function buildPhaseSystemPrompt(
     : `- Your final plain-text reply must be a short handoff note (2-4 lines, no markdown headers) for the next department picking this up: what you did and anything they need to know. Casual, specific, no corporate/AI-sounding phrasing.`;
 
   return `You are the ${departmentLabel} function of an autonomous software team working on ${location}. This task is being handled across multiple phases by different departments, one at a time — your phase ("${department}") is responsible for: ${note}
-${managementStepsBlock}${contextBlock}
+${managementStepsBlock}${desainAskFirstBlock}${contextBlock}
 ${SHARED_ROLE_INTRO}
 
 ${SHARED_TOOLS_NOTE}

@@ -4,6 +4,7 @@ import { runPipeline } from "./pipeline.js";
 import { hasPendingCheckpoint, resolveCheckpoint } from "./checkpoint.js";
 import type { Provider, ChatMessage, ProviderResponse } from "./types.js";
 import type { RunTaskParams, RunTaskResult } from "./runner.js";
+import type { RunAgentLoopResult } from "./loop.js";
 
 async function waitUntilCheckpointPending(taskId: string, timeoutMs = 1000): Promise<void> {
   const start = Date.now();
@@ -65,7 +66,7 @@ test("a single 'semua' phase delegates straight to runTaskFn, no phase loop", as
     instruction: "tambahin health check",
     phases: [{ department: "semua", note: "tambahin health check" }],
     abortController: new AbortController(),
-    onProgress: () => {},
+    onProgress: async () => {},
     departmentModelLookup: () => undefined,
     runTaskFn: fakeRunTask,
     buildProvidersFn: () => {
@@ -98,7 +99,7 @@ test("multi-phase pipeline runs phases in order and hands summaries forward as c
       { department: "dev", note: "implementasi endpoint-nya" },
     ],
     abortController: new AbortController(),
-    onProgress: () => {},
+    onProgress: async () => {},
     departmentModelLookup: (dept) => (dept in providersByDept ? dept : undefined),
     buildProvidersFn: (preferredProvider) => (preferredProvider ? [providersByDept[preferredProvider]] : []),
   });
@@ -112,6 +113,137 @@ test("multi-phase pipeline runs phases in order and hands summaries forward as c
   assert.match(seenSystemPrompts[1], /Scope-nya: cuma tambahin endpoint \/health\./);
 });
 
+// Regression: onProgress used to be fire-and-forget, so a phase's "beres"
+// message and the next phase's "start" message raced with no guaranteed
+// delivery order — WhatsApp could show "start" before "beres". A slow
+// onProgress here proves the pipeline now actually waits for one send to
+// finish before raising the next one.
+test("onProgress is awaited before the pipeline moves on, so messages can't arrive out of order", async () => {
+  const seen: string[] = [];
+  const onProgress = async (msg: string): Promise<void> => {
+    if (msg.includes("beres")) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    seen.push(msg);
+  };
+
+  const providersByDept: Record<string, Provider> = {
+    manajemen: textProvider("manajemen-model", "Scope-nya: cuma tambahin endpoint /health."),
+    dev: textProvider("dev-model", "Endpoint /health udah ditambahin."),
+  };
+
+  const result = await runPipeline({
+    ...baseParams,
+    instruction: "tambahin endpoint health check",
+    phases: [
+      { department: "manajemen", note: "tentuin scope endpoint health check" },
+      { department: "dev", note: "implementasi endpoint-nya" },
+    ],
+    abortController: new AbortController(),
+    onProgress,
+    departmentModelLookup: (dept) => (dept in providersByDept ? dept : undefined),
+    buildProvidersFn: (preferredProvider) => (preferredProvider ? [providersByDept[preferredProvider]] : []),
+  });
+
+  assert.equal(result.ok, true);
+  const beresIndex = seen.findIndex((m) => m.includes("beres"));
+  const phase2StartIndex = seen.findIndex((m) => m.startsWith("Fase 2/2"));
+  assert.ok(beresIndex !== -1 && phase2StartIndex !== -1);
+  assert.ok(beresIndex < phase2StartIndex, `expected "beres" (${beresIndex}) before phase 2 start (${phase2StartIndex})`);
+});
+
+test("a desain phase's system prompt gets the ask-first block when checkpoints are on and no design source was given", async () => {
+  const taskId = "desain-ask-first-wiring";
+  let desainSystemPrompt = "";
+  const providersByDept: Record<string, Provider> = {
+    desain: textProvider("desain-model", "Oke, mau auto-generate atau kamu punya desain sendiri?", (msgs) => {
+      desainSystemPrompt = String(msgs[0]?.content);
+    }),
+    dev: textProvider("dev-model", "Landing page diimplementasi."),
+  };
+
+  const resultPromise = runPipeline({
+    ...baseParams,
+    taskId,
+    instruction: "buatkan website landing page",
+    phases: [
+      { department: "desain", note: "rancang tampilan landing page" },
+      { department: "dev", note: "implementasi landing page" },
+    ],
+    abortController: new AbortController(),
+    onProgress: async () => {},
+    checkpoints: true,
+    onCheckpoint: async () => {},
+    departmentModelLookup: (dept) => (dept in providersByDept ? dept : undefined),
+    buildProvidersFn: (preferredProvider) => (preferredProvider ? [providersByDept[preferredProvider]] : []),
+  });
+
+  await waitUntilCheckpointPending(taskId);
+  resolveCheckpoint(taskId, { action: "continue" });
+  await resultPromise;
+
+  assert.match(desainSystemPrompt, /don't generate or write any design/);
+});
+
+test("a recoverable revise failure (e.g. Figma not linked) re-prompts at the same checkpoint instead of failing the task", async () => {
+  const taskId = "checkpoint-recoverable";
+  const checkpointMessages: string[] = [];
+  const progressMessages: string[] = [];
+
+  let callCount = 0;
+  const runAgentLoopFn = async (): Promise<RunAgentLoopResult> => {
+    callCount++;
+    if (callCount === 1) return { ok: true, summary: "Desain awal, nunggu sumber desain." };
+    if (callCount === 2) {
+      return { ok: false, recoverable: true, summary: 'Figma belum kesambung. Ketik "hubungkan figma" dulu ya.' };
+    }
+    if (callCount === 3) return { ok: true, summary: "Desain udah dibikin pakai link Figma." };
+    return { ok: true, summary: "Landing page diimplementasi." };
+  };
+
+  const resultPromise = runPipeline({
+    ...baseParams,
+    taskId,
+    instruction: "buatkan website landing page",
+    phases: [
+      { department: "desain", note: "rancang tampilan landing page" },
+      { department: "dev", note: "implementasi landing page" },
+    ],
+    abortController: new AbortController(),
+    onProgress: async (msg) => {
+      progressMessages.push(msg);
+    },
+    checkpoints: true,
+    onCheckpoint: async (msg) => {
+      checkpointMessages.push(msg);
+    },
+    departmentModelLookup: () => "fake",
+    buildProvidersFn: () => [],
+    runAgentLoopFn,
+  });
+
+  await waitUntilCheckpointPending(taskId);
+  assert.equal(checkpointMessages.length, 1);
+  resolveCheckpoint(taskId, { action: "revise", instruction: "https://figma.com/design/abc123" });
+
+  // The recoverable failure must not end the task — it re-prompts at the
+  // same checkpoint, still showing the last-good ("Desain awal...") summary.
+  await waitUntilCheckpointPending(taskId);
+  assert.equal(checkpointMessages.length, 2);
+  assert.match(checkpointMessages[1], /Desain awal, nunggu sumber desain\./);
+  assert.ok(progressMessages.some((m) => m.includes("hubungkan figma")));
+
+  resolveCheckpoint(taskId, { action: "revise", instruction: "udah connect, ini link Figma-nya lagi" });
+  await waitUntilCheckpointPending(taskId);
+  assert.equal(checkpointMessages.length, 3);
+  assert.match(checkpointMessages[2], /Desain udah dibikin pakai link Figma\./);
+
+  resolveCheckpoint(taskId, { action: "continue" });
+  const result = await resultPromise;
+  assert.equal(result.ok, true);
+  assert.match(result.summary, /Landing page diimplementasi\./);
+});
+
 test("a failing phase stops the pipeline before later phases run", async () => {
   let devPhaseRan = false;
 
@@ -123,7 +255,7 @@ test("a failing phase stops the pipeline before later phases run", async () => {
       { department: "dev", note: "implementasi" },
     ],
     abortController: new AbortController(),
-    onProgress: () => {},
+    onProgress: async () => {},
     departmentModelLookup: (dept) => dept,
     buildProvidersFn: (preferredProvider) => {
       if (preferredProvider === "dev") devPhaseRan = true;
@@ -153,9 +285,11 @@ test("checkpoint pauses after a non-last phase and resumes when the user approve
       { department: "dev", note: "implementasi login" },
     ],
     abortController: new AbortController(),
-    onProgress: () => {},
+    onProgress: async () => {},
     checkpoints: true,
-    onCheckpoint: (msg) => checkpointMessages.push(msg),
+    onCheckpoint: async (msg) => {
+      checkpointMessages.push(msg);
+    },
     departmentModelLookup: (dept) => (dept in providersByDept ? dept : undefined),
     buildProvidersFn: (preferredProvider) => (preferredProvider ? [providersByDept[preferredProvider]] : []),
   });
@@ -195,9 +329,11 @@ test("checkpoint revision re-runs the same phase with the revision as context, t
       { department: "dev", note: "implementasi login" },
     ],
     abortController: new AbortController(),
-    onProgress: () => {},
+    onProgress: async () => {},
     checkpoints: true,
-    onCheckpoint: (msg) => checkpointMessages.push(msg),
+    onCheckpoint: async (msg) => {
+      checkpointMessages.push(msg);
+    },
     departmentModelLookup: (dept) => (dept in providersByDept ? dept : undefined),
     buildProvidersFn: (preferredProvider) => (preferredProvider ? [providersByDept[preferredProvider]] : []),
   });
@@ -234,9 +370,9 @@ test("cancelling at a checkpoint stops the pipeline before the next phase runs",
       { department: "dev", note: "implementasi login" },
     ],
     abortController: new AbortController(),
-    onProgress: () => {},
+    onProgress: async () => {},
     checkpoints: true,
-    onCheckpoint: () => {},
+    onCheckpoint: async () => {},
     departmentModelLookup: (dept) => (dept in providersByDept ? dept : undefined),
     buildProvidersFn: (preferredProvider) => {
       if (preferredProvider === "dev") devPhaseRan = true;
@@ -260,7 +396,7 @@ test("checkpoints never pause the single-phase 'semua' shortcut", async () => {
     instruction: "fix typo",
     phases: [{ department: "semua", note: "fix typo" }],
     abortController: new AbortController(),
-    onProgress: () => {},
+    onProgress: async () => {},
     checkpoints: true,
     onCheckpoint: () => {
       throw new Error("checkpoint should never fire for the semua shortcut");

@@ -18,7 +18,7 @@ import { classifyDepartments } from "../agent/classifier.js";
 import { classifyCommandIntent } from "../agent/commandIntent.js";
 import { classifyMessageKind } from "../agent/messageKind.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
-import { describeImage } from "../agent/imageDescription.js";
+import { describeImage, mergeImageDescription } from "../agent/imageDescription.js";
 import { generateChatReply } from "../agent/chatAssistant.js";
 import type { Provider } from "../agent/types.js";
 import { explainInSimpleTerms, introduceYourself, respondToGreeting, explainHelp } from "../agent/dynamicReplies.js";
@@ -40,6 +40,7 @@ import {
   isBareAddFolderCommand,
   parseDeleteProject,
   isBareDeleteProjectCommand,
+  isRetryCommand,
   isValidAliasInput,
   parseUseProject,
   parseUseModel,
@@ -248,7 +249,7 @@ export async function handleInboundMessage(
   const bashApprovalReply = await handlePendingBashApproval(from, trimmed);
   if (bashApprovalReply) return;
 
-  const checkpointReply = await handlePendingCheckpoint(from, trimmed);
+  const checkpointReply = await handlePendingCheckpoint(from, trimmed, image);
   if (checkpointReply) return;
 
   const pendingReply = await handlePendingConfirmation(from, trimmed);
@@ -471,6 +472,11 @@ export async function handleInboundMessage(
     return;
   }
 
+  if (isRetryCommand(trimmed)) {
+    await handleRetryCommand(from);
+    return;
+  }
+
   // Nothing matched exactly — before assuming it's a coding task, check
   // whether it's actually a paraphrase of one of the 7 commands above.
   if (await tryHandleSemanticCommand(from, trimmed)) return;
@@ -516,9 +522,16 @@ async function showDeleteProjectPicker(from: string): Promise<void> {
   await sendWhatsApp(from, "Project mana yang mau dihapus?", options, "Pilih project");
 }
 
-// Shared by the direct "tambah project <alias> <url>" command and the
-// guided_git_project wizard's final step, so the two entry points can't
-// silently drift apart.
+interface LastFailedRegisterGitProject {
+  type: "register_git_project";
+  alias: string;
+  repoUrl: string;
+}
+
+// Shared by the direct "tambah project <alias> <url>" command, the
+// guided_git_project wizard's final step, and handleRetryCommand below — all
+// three entry points can't silently drift apart, and a retry re-runs exactly
+// this function with the same args rather than needing its own path.
 async function registerGitProject(from: string, alias: string, repoUrl: string): Promise<void> {
   if (projectsRepo.get(alias)) {
     await sendWhatsApp(from, `Project "${alias}" udah ada, gak perlu didaftarin lagi.`);
@@ -536,6 +549,7 @@ async function registerGitProject(from: string, alias: string, repoUrl: string):
     const project = projectsRepo.create(alias, repoUrl);
     await ensureWorkspace(project);
     conversationRepo.setActiveProject(from, alias);
+    conversationRepo.setLastFailedAction(from, null);
     await sendWhatsApp(
       from,
       `Beres, "${alias}" udah terdaftar dan siap dipakai. Sekarang jadi project aktif buat chat ini.`
@@ -545,11 +559,38 @@ async function registerGitProject(from: string, alias: string, repoUrl: string):
     // project" attempt for this alias hits "udah ada" even though the clone
     // never actually succeeded, and the user has no way to retry.
     projectsRepo.delete(alias);
+    // Remembered so a plain "coba lagi" right after can retry this exact
+    // registration — without it, "coba lagi" has no fixed meaning at all and
+    // used to get read by the task classifier as a request to build a "retry
+    // feature" in the codebase instead of retrying what just failed.
+    const failed: LastFailedRegisterGitProject = { type: "register_git_project", alias, repoUrl };
+    conversationRepo.setLastFailedAction(from, JSON.stringify(failed));
     await sendWhatsApp(
       from,
       `Waduh, gagal daftarin/clone "${alias}": ${err instanceof Error ? err.message : String(err)}`
     );
   }
+}
+
+async function handleRetryCommand(from: string): Promise<void> {
+  const raw = conversationRepo.get(from)?.last_failed_action;
+  if (!raw) {
+    await sendWhatsApp(from, "Coba lagi apa ya? Nggak ada yang gagal barusan yang bisa aku ulang.");
+    return;
+  }
+  let failed: LastFailedRegisterGitProject;
+  try {
+    failed = JSON.parse(raw);
+  } catch {
+    conversationRepo.setLastFailedAction(from, null);
+    await sendWhatsApp(from, "Coba lagi apa ya? Nggak ada yang gagal barusan yang bisa aku ulang.");
+    return;
+  }
+  if (failed.type === "register_git_project") {
+    await registerGitProject(from, failed.alias, failed.repoUrl);
+    return;
+  }
+  await sendWhatsApp(from, "Coba lagi apa ya? Nggak ada yang gagal barusan yang bisa aku ulang.");
 }
 
 // Each of these three follows the same shape: try an AI-generated reply
@@ -779,8 +820,7 @@ async function handleImageMessage(
   }
 
   if (caption) {
-    const mergedInstruction = `${caption}\n\n(Gambar yang dikirim bareng ini nunjukkin: ${description})`;
-    await handleFreeTextInstruction(from, mergedInstruction);
+    await handleFreeTextInstruction(from, mergeImageDescription(caption, description));
     return;
   }
 
@@ -897,7 +937,11 @@ async function interpretConfirmationReply(
 // a plain greeting). Checked ahead of every pending-flow branch below except
 // handlePendingCheckpoint, which deliberately treats *any* non-yes/no text as
 // the revision instruction itself — that's the documented, intentional
-// behavior there, not a case this should override.
+// behavior there, not a case this should override. (handlePendingCheckpoint
+// does carve out its own single, narrow exception inline — an exact
+// "hubungkan figma" — since the agent loop has no tool to act on that itself;
+// unlike this function it doesn't cancel/end the pending state, it just sends
+// the OAuth link as a side reply and leaves the checkpoint waiting.)
 function looksLikeAnotherCommand(trimmed: string): boolean {
   return (
     isIntroCommand(trimmed) ||
@@ -951,10 +995,54 @@ async function handlePendingBashApproval(from: string, trimmed: string): Promise
 // Checked before handlePendingConfirmation: a checkpoint pause is tied to a
 // task that's currently mid-run (in-memory, see agent/checkpoint.ts), not to
 // conversation_state.pending_action like the other confirmation flows below.
-async function handlePendingCheckpoint(from: string, trimmed: string): Promise<boolean> {
+async function handlePendingCheckpoint(
+  from: string,
+  trimmed: string,
+  image?: { mimeType: string; base64Data: string }
+): Promise<boolean> {
   const state = conversationRepo.get(from);
   const taskId = state?.active_project_alias ? getActiveTaskId(state.active_project_alias) : undefined;
   if (!taskId || !hasPendingCheckpoint(taskId)) return false;
+
+  // One deliberate, narrow exception to "anything non-yes/no is the
+  // revision/question itself" (see looksLikeAnotherCommand's comment): the
+  // agent loop has no tool to act on "hubungkan figma" itself, so left to the
+  // usual path it'd just become inert revision text. Handled here directly
+  // instead — sends the OAuth link but leaves the checkpoint pending, so the
+  // user comes back afterward to actually answer/paste the Figma link.
+  if (!image && isConnectFigmaCommand(trimmed)) {
+    await handleConnectFigmaCommand(from);
+    return true;
+  }
+
+  if (image) {
+    const providers = buildProviders(state?.preferred_provider ?? undefined);
+    if (providers.length === 0) {
+      await sendWhatsApp(from, "Belum ada AI provider yang aktif, jadi aku belum bisa liat gambarnya.");
+      return true;
+    }
+    await sendWhatsApp(from, "Oke, aku liatin dulu ya gambarnya, bentar...");
+    const description = await describeImage(
+      image.base64Data,
+      image.mimeType,
+      trimmed || undefined,
+      providers,
+      new AbortController().signal
+    );
+    if (description === undefined) {
+      await sendWhatsApp(
+        from,
+        'Waduh, kayaknya model AI yang aktif buat chat ini gak bisa "lihat" gambar. Coba ganti model dulu (ketik "daftar model" buat lihat pilihannya, terus "pakai model <nama>"), habis itu kirim ulang gambarnya ya.'
+      );
+      return true;
+    }
+    // No captionless-image "mau diapain nih?" round-trip here, unlike
+    // handleImageMessage at the top level — the context is already known
+    // (mid-phase, waiting for exactly this), so the image on its own is a
+    // complete, self-explanatory revision.
+    resolveCheckpoint(taskId, { action: "revise", instruction: mergeImageDescription(trimmed || undefined, description) });
+    return true;
+  }
 
   const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
   if (intent === "yes") {
@@ -1313,11 +1401,16 @@ async function executeTask(
     await sendWhatsApp(from, `Oke, mulai aku kerjain: "${instruction}"`);
 
     try {
-      const onProgress = (msg: string) => {
-        sendWhatsApp(from, msg).catch(() => {});
+      // Awaited by every caller in loop.ts/pipeline.ts — used to be
+      // fire-and-forget, which meant two progress messages raised close
+      // together (e.g. a phase's "beres" notice immediately followed by the
+      // next phase's "start" notice) had no guaranteed delivery order and
+      // could arrive on WhatsApp reversed.
+      const onProgress = async (msg: string): Promise<void> => {
+        await sendWhatsApp(from, msg).catch(() => {});
       };
-      const onCheckpoint = (msg: string) => {
-        sendWhatsApp(from, msg, YES_NO_OPTIONS).catch(() => {});
+      const onCheckpoint = async (msg: string): Promise<void> => {
+        await sendWhatsApp(from, msg, YES_NO_OPTIONS).catch(() => {});
       };
 
       let cwd: string;

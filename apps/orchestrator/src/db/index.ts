@@ -42,7 +42,12 @@ db.exec(`
     active_project_alias TEXT,
     pending_action TEXT, -- JSON blob for multi-step flows (e.g. awaiting repo URL)
     preferred_provider TEXT, -- AI provider to try first, set via "pakai model semua <nama>"
-    department_models TEXT -- JSON {department: providerName}, set via "pakai model <departemen> <nama>"
+    department_models TEXT, -- JSON {department: providerName}, set via "pakai model <departemen> <nama>"
+    -- JSON blob for the last action that failed and can be retried with "coba
+    -- lagi" (e.g. a repo clone that failed) — not a pending_action, since
+    -- unlike a wizard step this never intercepts the next message on its own;
+    -- it only fires on an explicit retry phrase. Cleared on success.
+    last_failed_action TEXT
   );
 
   -- Single row (id=1): the one Figma account linked via "hubungkan figma".
@@ -81,6 +86,7 @@ for (const migration of [
   "ALTER TABLE conversation_state ADD COLUMN preferred_provider TEXT",
   "ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'git'",
   "ALTER TABLE conversation_state ADD COLUMN department_models TEXT",
+  "ALTER TABLE conversation_state ADD COLUMN last_failed_action TEXT",
 ]) {
   try {
     db.exec(migration);
@@ -200,6 +206,7 @@ export interface ConversationState {
   pending_action: string | null;
   preferred_provider: string | null;
   department_models: string | null;
+  last_failed_action: string | null;
 }
 
 export const conversationRepo = {
@@ -225,6 +232,12 @@ export const conversationRepo = {
       `INSERT INTO conversation_state (from_number, pending_action) VALUES (?, ?)
        ON CONFLICT(from_number) DO UPDATE SET pending_action = excluded.pending_action`
     ).run(fromNumber, pending);
+  },
+  setLastFailedAction(fromNumber: string, action: string | null): void {
+    db.prepare(
+      `INSERT INTO conversation_state (from_number, last_failed_action) VALUES (?, ?)
+       ON CONFLICT(from_number) DO UPDATE SET last_failed_action = excluded.last_failed_action`
+    ).run(fromNumber, action);
   },
   setPreferredProvider(fromNumber: string, providerName: string | null): void {
     db.prepare(

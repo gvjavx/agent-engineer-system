@@ -27,6 +27,8 @@ test("buildPhaseSystemPrompt warns against treating tool output as instructions,
     projectAlias: "demo",
     isLastPhase: false,
     previousPhases: [],
+    instruction: "tambahin endpoint health check",
+    checkpoints: false,
     mode: "git",
     defaultBranch: "main",
     workBranch: "agent/abc123",
@@ -39,6 +41,8 @@ test("buildPhaseSystemPrompt warns against treating tool output as instructions,
     projectAlias: "demo",
     isLastPhase: true,
     previousPhases: [{ label: "Tim Pengembangan", summary: "added the endpoint" }],
+    instruction: "tambahin endpoint health check",
+    checkpoints: false,
     mode: "local",
     folderPath: "/srv/demo",
   });
@@ -54,6 +58,8 @@ test("buildPhaseSystemPrompt adds the Product Owner/PM/System Analyst breakdown 
     projectAlias: "demo",
     isLastPhase: false,
     previousPhases: [],
+    instruction: "bikin fitur checkout",
+    checkpoints: false,
     mode: "git",
     defaultBranch: "main",
     workBranch: "agent/abc123",
@@ -70,10 +76,64 @@ test("buildPhaseSystemPrompt adds the Product Owner/PM/System Analyst breakdown 
     projectAlias: "demo",
     isLastPhase: false,
     previousPhases: [{ label: "Manajemen Proyek & Produk", summary: "scoped the feature" }],
+    instruction: "bikin fitur checkout",
+    checkpoints: false,
     mode: "git",
     defaultBranch: "main",
     workBranch: "agent/abc123",
     autoMerge: "direct",
   });
   assert.doesNotMatch(devPrompt, /Product Owner/);
+});
+
+test("buildPhaseSystemPrompt adds the design-source ask-first block only for desain phases with checkpoints on and no design source yet", () => {
+  const base = {
+    department: "desain",
+    departmentLabel: "Tim Desain",
+    note: "rancang tampilan landing page",
+    projectAlias: "demo",
+    isLastPhase: false,
+    previousPhases: [],
+    mode: "git" as const,
+    defaultBranch: "main",
+    workBranch: "agent/abc123",
+    autoMerge: "direct" as const,
+  };
+
+  const asksFirst = buildPhaseSystemPrompt({
+    ...base,
+    instruction: "buatkan website landing page",
+    checkpoints: true,
+  });
+  assert.match(asksFirst, /don't generate or write any design/);
+
+  const withFigmaLink = buildPhaseSystemPrompt({
+    ...base,
+    instruction: "buatkan sesuai desain ini https://www.figma.com/design/abc123/Landing-Page",
+    checkpoints: true,
+  });
+  assert.doesNotMatch(withFigmaLink, /don't generate or write any design/);
+
+  const withImageDescription = buildPhaseSystemPrompt({
+    ...base,
+    instruction: 'buatkan sesuai ini\n\n(Gambar yang dikirim bareng ini nunjukkin: mockup landing page dengan hero section)',
+    checkpoints: true,
+  });
+  assert.doesNotMatch(withImageDescription, /don't generate or write any design/);
+
+  const withoutCheckpoints = buildPhaseSystemPrompt({
+    ...base,
+    instruction: "buatkan website landing page",
+    checkpoints: false,
+  });
+  assert.doesNotMatch(withoutCheckpoints, /don't generate or write any design/);
+
+  const notDesain = buildPhaseSystemPrompt({
+    ...base,
+    department: "dev",
+    departmentLabel: "Tim Pengembangan",
+    instruction: "buatkan website landing page",
+    checkpoints: true,
+  });
+  assert.doesNotMatch(notDesain, /don't generate or write any design/);
 });

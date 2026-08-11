@@ -11,7 +11,8 @@ export type RunTaskParams = {
   projectAlias: string;
   instruction: string;
   abortController: AbortController;
-  onProgress: (text: string) => void;
+  // Awaited at every call site — see loop.ts's RunAgentLoopParams.onProgress.
+  onProgress: (text: string) => Promise<void>;
   // Provider name to try first (from "pakai model <nama>"). Falls back to the
   // rest of config.providerOrder if it fails — this only changes which
   // provider goes first, it never narrows the fallback chain.

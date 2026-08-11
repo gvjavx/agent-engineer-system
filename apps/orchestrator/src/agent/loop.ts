@@ -11,7 +11,11 @@ export interface RunAgentLoopParams {
   cwd: string;
   taskId: string;
   abortController: AbortController;
-  onProgress: (text: string) => void;
+  // Awaited at every call site — progress/checkpoint messages must actually
+  // finish sending (or fail) in the order they're raised, or WhatsApp can
+  // deliver them out of order (e.g. a "fase beres" notice arriving after the
+  // next phase's "start" notice, since two fire-and-forget sends race).
+  onProgress: (text: string) => Promise<void>;
   maxTurns?: number;
   // DI seam for tests — real callers never pass this. Detects a Figma link
   // in the instruction and, if the account is linked, connects to Figma's
@@ -32,6 +36,11 @@ export interface RunAgentLoopParams {
 export interface RunAgentLoopResult {
   ok: boolean;
   summary: string;
+  // Set only on failures the caller can reasonably ask the user to fix and
+  // retry without losing pipeline progress (currently: Figma not linked yet).
+  // pipeline.ts's checkpoint revise loop treats this as "still waiting for a
+  // usable answer" instead of failing the whole task.
+  recoverable?: boolean;
 }
 
 const FIGMA_TOOLS_SYSTEM_NOTE =
@@ -64,6 +73,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
   if (figmaTools.kind === "not_linked") {
     return {
       ok: false,
+      recoverable: true,
       summary:
         'Ada link Figma di instruksi, tapi akun Figma belum kesambung. Ketik "hubungkan figma" dulu ya, terus kirim ulang instruksinya.',
     };
@@ -107,7 +117,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
           // same provider (see runner.ts's multi-key expansion), not an
           // actual provider switch — say so, "pindah ke gemini" after
           // failing on "gemini" reads like nothing changed.
-          onProgress(
+          await onProgress(
             failedName === nextName
               ? `API key "${failedName}" yang ini lagi bermasalah (mungkin abis kuotanya), aku coba API key lain buat provider yang sama.`
               : `"${failedName}" lagi bermasalah, aku coba pindah ke "${nextName}" ya.`
@@ -128,7 +138,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
       for (const call of response.calls) {
         auditLog.add(taskId, "tool_use", briefToolDescription(call.name, call.input));
         const milestone = detectMilestone(call.name, call.input);
-        if (milestone) onProgress(milestone);
+        if (milestone) await onProgress(milestone);
 
         if (call.name === "bash") {
           const dangerReason = isDangerousBashCommand(String(call.input.command ?? ""));

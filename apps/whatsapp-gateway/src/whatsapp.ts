@@ -79,12 +79,23 @@ export function extractInboundMessages(payload: unknown): InboundMessage[] {
   return messages;
 }
 
+// Meta's documented body-text ceilings — a plain text message allows up to
+// 4096 characters, but an interactive (button/list) message's body is capped
+// much tighter at 1024. Nothing enforced this before: an AI-generated phase
+// summary or task result long enough to cross either limit made the whole
+// send fail outright (400, code 131009) instead of just arriving trimmed —
+// and since callers fire-and-forget these sends, that failure was invisible
+// to the user, not just cosmetic (a pipeline checkpoint waiting on a message
+// that never arrived looks like the bot silently hung).
+const TEXT_BODY_MAX = 4096;
+const INTERACTIVE_BODY_MAX = 1024;
+
 export async function sendWhatsAppMessage(to: string, text: string): Promise<void> {
   await postMessage({
     messaging_product: "whatsapp",
     to,
     type: "text",
-    text: { body: text },
+    text: { body: truncate(text, TEXT_BODY_MAX) },
   });
 }
 
@@ -128,7 +139,7 @@ export async function sendWhatsAppOptions(
       type: "interactive",
       interactive: {
         type: "button",
-        body: { text: bodyText },
+        body: { text: truncate(bodyText, INTERACTIVE_BODY_MAX) },
         action: {
           buttons: options.map((opt) => ({
             type: "reply",
@@ -152,7 +163,7 @@ export async function sendWhatsAppOptions(
     type: "interactive",
     interactive: {
       type: "list",
-      body: { text: bodyText },
+      body: { text: truncate(bodyText, INTERACTIVE_BODY_MAX) },
       action: {
         button: truncate(listButtonLabel, LIST_BUTTON_LABEL_MAX),
         sections: [{ rows }],

@@ -12,7 +12,7 @@ function baseParams(overrides: Partial<Parameters<typeof runAgentLoop>[0]> = {})
     cwd: "/does/not/matter",
     taskId: "test-task",
     abortController: new AbortController(),
-    onProgress: () => {},
+    onProgress: async () => {},
     ...overrides,
   };
 }
