@@ -24,7 +24,13 @@ import { generateChatReply } from "../agent/chatAssistant.js";
 import type { Provider } from "../agent/types.js";
 import { explainInSimpleTerms, introduceYourself, respondToGreeting, explainHelp } from "../agent/dynamicReplies.js";
 import { listGeminiModels, listOpenAiCompatibleModels } from "../agent/modelCatalog.js";
-import { runPipeline, MANAJEMEN_ROLE_QUESTIONS, type PhaseSpec, type PipelineMode } from "../agent/pipeline.js";
+import {
+  runPipeline,
+  MANAJEMEN_ROLE_QUESTIONS,
+  DESAIN_SOURCE_UPLOAD_IMAGE_TAP,
+  type PhaseSpec,
+  type PipelineMode,
+} from "../agent/pipeline.js";
 import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment } from "../agent/departments.js";
 import { buildAuthorizeUrl } from "../agent/mcp/figmaAuth.js";
 import { createPendingState } from "../agent/mcp/figmaOAuthState.js";
@@ -180,6 +186,23 @@ const PLAN_CONFIRM_OPTIONS: QuickReplyOption[] = [
 // uses, zero new logic there.
 const MANAJEMEN_CHECKPOINT_OPTIONS: QuickReplyOption[] = [
   ...Object.keys(MANAJEMEN_ROLE_QUESTIONS).map((id) => ({ id, title: id })),
+  { id: "ya", title: "Lanjutkan" },
+  { id: "tidak", title: "Batal" },
+];
+
+// Offered at a desain-phase checkpoint specifically when no design source
+// has been given yet (pipeline.ts's designSourceStillNeeded). "Upload
+// gambar"'s id comes from pipeline.ts's DESAIN_SOURCE_UPLOAD_IMAGE_TAP
+// (single source of truth with the state machine that intercepts it).
+// "Hubungkan Figma"'s id is deliberately the exact phrase
+// isConnectFigmaCommand already matches (router/parse.ts) — reuses the
+// existing carve-out in handlePendingCheckpoint instead of needing a new
+// one. "Serahkan ke AI" needs no special id — it's a complete answer on its
+// own, so it just flows into the normal revise path as typed text would.
+const DESAIN_SOURCE_CHECKPOINT_OPTIONS: QuickReplyOption[] = [
+  { id: DESAIN_SOURCE_UPLOAD_IMAGE_TAP, title: DESAIN_SOURCE_UPLOAD_IMAGE_TAP },
+  { id: "hubungkan figma", title: "Hubungkan Figma" },
+  { id: "Serahkan ke AI, aku gak punya desain sendiri, auto-generate aja", title: "Serahkan ke AI" },
   { id: "ya", title: "Lanjutkan" },
   { id: "tidak", title: "Batal" },
 ];
@@ -1077,6 +1100,11 @@ async function handlePendingCheckpoint(
   // user comes back afterward to actually answer/paste the Figma link.
   if (!image && isConnectFigmaCommand(trimmed)) {
     await handleConnectFigmaCommand(from);
+    // Generic enough to send regardless of which phase/checkpoint triggered
+    // this — the desain "ask first" flow is the main reason it's here (a
+    // link alone doesn't say which file/frame to use), but it's harmless
+    // advice at any other checkpoint too.
+    await sendWhatsApp(from, 'Abis itu, tempel link Figma file/frame yang mau dipakai ya.');
     return true;
   }
 
@@ -1500,8 +1528,12 @@ async function executeTask(
       const onProgress = async (msg: string): Promise<void> => {
         await sendWhatsApp(from, msg).catch(() => {});
       };
-      const onCheckpoint = async (msg: string, department: string): Promise<void> => {
-        const options = department === "manajemen" ? MANAJEMEN_CHECKPOINT_OPTIONS : YES_NO_OPTIONS;
+      const onCheckpoint = async (msg: string, department: string, offerDesignSourceChoice: boolean): Promise<void> => {
+        const options = offerDesignSourceChoice
+          ? DESAIN_SOURCE_CHECKPOINT_OPTIONS
+          : department === "manajemen"
+            ? MANAJEMEN_CHECKPOINT_OPTIONS
+            : YES_NO_OPTIONS;
         await sendWhatsApp(from, msg, options).catch(() => {});
       };
 

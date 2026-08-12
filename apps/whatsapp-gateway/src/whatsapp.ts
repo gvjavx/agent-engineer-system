@@ -188,6 +188,29 @@ async function postMessage(body: Record<string, unknown>): Promise<void> {
   }
 }
 
+// Marks the inbound message read (blue ticks) and shows the "typing..."
+// bubble — dismissed automatically after we actually send a reply, or after
+// ~25s, whichever comes first (Meta's own behavior, not something we track).
+// Purely cosmetic/best-effort: called fire-and-forget from index.ts right
+// after a message is accepted, before the (often multi-second, sometimes
+// AI-classifier-heavy) work of actually handling it — without this, the user
+// sees nothing at all while that happens, which reads as the bot being stuck
+// rather than thinking. A failure here should never block/break the real
+// message handling, so this intentionally doesn't throw — same fire-and-
+// forget spirit as orchestrator's whatsappClient.ts sendWhatsApp.
+export async function markReadAndShowTyping(messageId: string): Promise<void> {
+  try {
+    await postMessage({
+      messaging_product: "whatsapp",
+      status: "read",
+      message_id: messageId,
+      typing_indicator: { type: "text" },
+    });
+  } catch (err) {
+    console.error("Failed to mark message read / show typing indicator:", err);
+  }
+}
+
 // Two-step process for sending a file: upload it to get a media id, then
 // reference that id in a "document" message. WhatsApp has no way to send
 // raw bytes directly in the message itself.

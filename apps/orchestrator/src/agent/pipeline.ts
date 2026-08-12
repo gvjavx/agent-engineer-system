@@ -4,6 +4,7 @@ import { buildPhaseSystemPrompt } from "./systemPrompt.js";
 import { runTask as realRunTask, buildProviders as realBuildProviders, type RunTaskResult, type RunTaskParams } from "./runner.js";
 import { DEPARTMENT_LABELS, type DepartmentKey } from "./departments.js";
 import { waitForCheckpoint } from "./checkpoint.js";
+import { hasDesignSource } from "./designSource.js";
 import type { Provider } from "./types.js";
 
 export interface PhaseSpec {
@@ -36,7 +37,11 @@ export interface RunPipelineParams {
   // Separate from onProgress (plain text) because a checkpoint prompt needs
   // to go out with Ya/Tidak buttons attached. Falls back to onProgress
   // (as plain text, no buttons) if checkpoints is used without this set.
-  onCheckpoint?: (message: string, department: string) => Promise<void>;
+  // Third param: true when this specific checkpoint should offer the
+  // design-source tappable options (Upload gambar/Hubungkan Figma/Serahkan
+  // ke AI) instead of the department-default options — see
+  // designSourceStillNeeded in the checkpoint loop below.
+  onCheckpoint?: (message: string, department: string, offerDesignSourceChoice: boolean) => Promise<void>;
   // Backs the send_document tool — see loop.ts for why this is a callback.
   sendDocument?: (relPath: string, caption: string | undefined) => Promise<string>;
   // Backs the WhatsApp confirmation gate for risky bash commands — see loop.ts.
@@ -62,6 +67,17 @@ export const MANAJEMEN_ROLE_QUESTIONS: Record<string, string> = {
   "Tanya Project Manager?": "Project Manager",
   "Tanya System Analyst?": "System Analyst",
 };
+
+// Tap id from router/handler.ts's DESAIN_SOURCE_CHECKPOINT_OPTIONS. The
+// other two options there ("Hubungkan Figma" / "Serahkan ke AI") need no
+// equivalent constant: "Hubungkan Figma" reuses router/parse.ts's existing
+// isConnectFigmaCommand phrase match (its id is literally "hubungkan figma"),
+// and "Serahkan ke AI" needs no special handling at all — it's a complete
+// answer on its own, so it just flows through the normal revise path below
+// like any other typed reply. Only "Upload gambar" needs code-level
+// interception, since tapping it isn't itself an answer — the actual image
+// has to arrive as a separate message afterward.
+export const DESAIN_SOURCE_UPLOAD_IMAGE_TAP = "Upload gambar";
 
 export async function runPipeline(params: RunPipelineParams): Promise<RunTaskResult> {
   const {
@@ -178,16 +194,30 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
       // "Tanya <Role>?" tap — see below. A local variable rather than any
       // persisted state, since its whole lifetime is this one loop.
       let pendingRoleQuestion: string | undefined;
+      // Set while waiting specifically for the image after an "Upload
+      // gambar" tap — same reasoning as pendingRoleQuestion above.
+      let awaitingDesignImage = false;
+      // True only for the desain department's first checkpoint, and only
+      // when the task instruction didn't already carry a design source
+      // (Figma link / image description) — same check systemPrompt.ts uses
+      // to decide whether to inject the "ask first" instruction at all, so
+      // the tappable options and the model's own instructions stay in sync.
+      // Flips to false the moment we actually run the agent loop for this
+      // phase again, whatever the resolution turned out to be — once the
+      // model's had a real shot at the answer, this checkpoint behaves like
+      // any other from then on, whether or not the answer was perfect.
+      let designSourceStillNeeded = phase.department === "desain" && !hasDesignSource(instruction);
 
       for (;;) {
-        // Skipped while waiting for a role-specific follow-up — re-showing
-        // the full "fase kelar" summary + 5-option menu mid-Q&A would read
-        // as if the checkpoint had reset, when it's really just waiting on
-        // the question the user already said they wanted to ask.
-        if (!pendingRoleQuestion) {
+        // Skipped while waiting for a role-specific follow-up or the
+        // promised image — re-showing the full "fase kelar" summary + menu
+        // mid-exchange would read as if the checkpoint had reset, when it's
+        // really just waiting on what the user already said they'd send.
+        if (!pendingRoleQuestion && !awaitingDesignImage) {
           await onCheckpoint(
             `Fase "${label}" kelar:\n${result.summary}\n\nLanjut ke fase berikutnya, atau ketik apa yang mau diubah/ditanyain dulu.`,
-            phase.department
+            phase.department,
+            designSourceStillNeeded
           );
         }
         auditLog.add(taskId, "note", `Checkpoint: nunggu review buat fase "${label}"`);
@@ -197,6 +227,19 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           return { ok: false, cancelled: true, summary: `Dibatalin pas checkpoint fase "${label}".` };
         }
         if (resolution.action === "continue") break;
+
+        // "Upload gambar" isn't itself a design source — it's the user
+        // saying the actual image is coming next. Don't run the agent loop
+        // yet (there's nothing to design from until the image arrives);
+        // just say so and wait. The image itself, once sent, already flows
+        // in as a normal revise instruction (router/handler.ts's
+        // handlePendingCheckpoint describes it and merges it in) — no
+        // special handling needed for that part.
+        if (designSourceStillNeeded && resolution.instruction === DESAIN_SOURCE_UPLOAD_IMAGE_TAP) {
+          awaitingDesignImage = true;
+          await onProgress("Oke, kirim gambarnya sekarang ya.");
+          continue;
+        }
 
         // A "Tanya <Role>?" tap isn't itself a question the model can answer
         // — it's the user asking for the chance to ask one. Don't run the
@@ -212,6 +255,8 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
 
         const askedAsRole = pendingRoleQuestion;
         pendingRoleQuestion = undefined; // consumed either way — answered or not, we're out of role-Q&A mode next
+        awaitingDesignImage = false;
+        designSourceStillNeeded = false;
 
         // Not "aku revisi ... : X" — X isn't necessarily an edit request. A
         // checkpoint reply that isn't yes/no could just as easily be "tunjukkan

@@ -8,6 +8,7 @@ import {
   sendWhatsAppDocument,
   downloadMedia,
   verifySignature,
+  markReadAndShowTyping,
   type QuickReplyOption,
 } from "./whatsapp.js";
 import { isAllowedInboundImageMimeType, MAX_INBOUND_IMAGE_BYTES } from "./imageGuard.js";
@@ -60,6 +61,12 @@ app.post(
         console.warn(`Ignoring message from non-allowlisted sender: ${message.from}`);
         continue;
       }
+
+      // Fire-and-forget, not awaited — this is what the user actually sees
+      // *while* the (often multi-second, sometimes AI-classifier-heavy) work
+      // below happens; blocking on it here would just delay that work by
+      // exactly the latency this is trying to hide.
+      markReadAndShowTyping(message.waMessageId);
 
       let image: { mimeType: string; base64Data: string } | undefined;
       if (message.imageId) {

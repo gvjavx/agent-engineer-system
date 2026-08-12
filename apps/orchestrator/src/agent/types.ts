@@ -41,6 +41,16 @@ export interface ToolSchema {
   parameters: JsonSchema;
 }
 
+// Every provider call in this codebase (classifiers included) used to have
+// no timeout at all: Gemini's SDK is unbounded unless httpOptions.timeout is
+// set, and the openai SDK defaults to 10 minutes per attempt with 2 retries
+// (~30 min worst case). A slow/hung provider silently stalled the whole
+// message — no fallback to the next provider, no feedback to the user. Both
+// provider adapters bound every request to this, converting a hang into a
+// fast, bounded failure that existing fail-safe defaults (classifiers) or
+// the fallback chain (agent loop) already handle gracefully.
+export const PROVIDER_REQUEST_TIMEOUT_MS = 60_000;
+
 export type ProviderResponse =
   | { type: "tool_calls"; calls: ToolCallRequest[]; text?: string }
   | { type: "text"; text: string };

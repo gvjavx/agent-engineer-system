@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { GoogleGenAI, type Content, type Part } from "@google/genai";
 import type { ChatMessage, Provider, ProviderResponse, ToolCallRequest, ToolSchema } from "../types.js";
-import { ProviderError } from "../types.js";
+import { ProviderError, PROVIDER_REQUEST_TIMEOUT_MS } from "../types.js";
 
 export interface GeminiProviderOptions {
   apiKey: string;
@@ -93,6 +93,7 @@ export class GeminiProvider implements Provider {
           systemInstruction: systemMessage?.content,
           tools: toGeminiTools(tools),
           abortSignal: signal,
+          httpOptions: { timeout: PROVIDER_REQUEST_TIMEOUT_MS },
         },
       });
     } catch (err) {
@@ -125,7 +126,7 @@ export class GeminiProvider implements Provider {
       response = await this.client.models.generateContent({
         model: this.model,
         contents: buildGeminiVisionContents(base64Data, mimeType, prompt),
-        config: { abortSignal: signal },
+        config: { abortSignal: signal, httpOptions: { timeout: PROVIDER_REQUEST_TIMEOUT_MS } },
       });
     } catch (err) {
       throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err);

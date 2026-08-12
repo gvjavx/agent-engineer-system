@@ -7,6 +7,7 @@ import {
   uploadMedia,
   sendWhatsAppDocument,
   downloadMedia,
+  markReadAndShowTyping,
 } from "./whatsapp.js";
 
 // sendWhatsAppOptions hits the real Graph API via global fetch — swap it out
@@ -258,6 +259,23 @@ test("sendWhatsAppDocument sends a document message referencing the media id", a
   const body = await captureRequestBody(() => sendWhatsAppDocument("628123", "media-123", "FSD.md", "ini dia"));
   assert.equal(body.type, "document");
   assert.deepEqual(body.document, { id: "media-123", filename: "FSD.md", caption: "ini dia" });
+});
+
+test("markReadAndShowTyping marks the message read and requests a typing indicator", async () => {
+  const body = await captureRequestBody(() => markReadAndShowTyping("wamid.abc123"));
+  assert.equal(body.status, "read");
+  assert.equal(body.message_id, "wamid.abc123");
+  assert.deepEqual(body.typing_indicator, { type: "text" });
+});
+
+test("markReadAndShowTyping never throws, even when the Graph API call fails", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("server error", { status: 500 })) as typeof fetch;
+  try {
+    await assert.doesNotReject(markReadAndShowTyping("wamid.abc123"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("downloadMedia resolves the media id then fetches the bytes", async () => {

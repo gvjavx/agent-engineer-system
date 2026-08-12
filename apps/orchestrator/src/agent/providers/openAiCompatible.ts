@@ -4,7 +4,7 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import type { ChatMessage, Provider, ProviderResponse, ToolCallRequest, ToolSchema } from "../types.js";
-import { ProviderError } from "../types.js";
+import { ProviderError, PROVIDER_REQUEST_TIMEOUT_MS } from "../types.js";
 
 export interface OpenAiCompatibleProviderOptions {
   name: string;
@@ -69,7 +69,12 @@ export class OpenAiCompatibleProvider implements Provider {
 
   constructor(options: OpenAiCompatibleProviderOptions) {
     this.name = options.name;
-    this.client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL });
+    // maxRetries: 0 — the SDK's own default (2 retries) would silently
+    // multiply PROVIDER_REQUEST_TIMEOUT_MS below on a timeout/network error;
+    // this codebase's own fallback chain (agent/loop.ts) already handles
+    // retrying, across providers, so a second retry layer inside the SDK
+    // just makes worst-case latency unpredictable for no benefit.
+    this.client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL, maxRetries: 0 });
     this.model = options.model;
   }
 
@@ -81,7 +86,7 @@ export class OpenAiCompatibleProvider implements Provider {
     try {
       const response = await this.client.chat.completions.create(
         { model: this.model, messages: openAiMessages, tools: openAiTools, tool_choice: "auto" },
-        { signal }
+        { signal, timeout: PROVIDER_REQUEST_TIMEOUT_MS }
       );
       message = response.choices[0]?.message;
     } catch (err) {
@@ -115,7 +120,7 @@ export class OpenAiCompatibleProvider implements Provider {
     try {
       const response = await this.client.chat.completions.create(
         { model: this.model, messages: buildOpenAiVisionMessages(base64Data, mimeType, prompt) },
-        { signal }
+        { signal, timeout: PROVIDER_REQUEST_TIMEOUT_MS }
       );
       message = response.choices[0]?.message;
     } catch (err) {

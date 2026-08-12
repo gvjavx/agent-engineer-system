@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runPipeline } from "./pipeline.js";
+import { runPipeline, DESAIN_SOURCE_UPLOAD_IMAGE_TAP } from "./pipeline.js";
 import { hasPendingCheckpoint, resolveCheckpoint } from "./checkpoint.js";
 import type { Provider, ChatMessage, ProviderResponse } from "./types.js";
 import type { RunTaskParams, RunTaskResult } from "./runner.js";
@@ -320,6 +320,68 @@ test("tapping 'Tanya <Role>?' invites the real question first instead of answeri
   assert.equal(agentLoopCalls.length, 2);
   assert.match(agentLoopCalls[1], /User lagi nanya spesifik ke Product Owner/);
   assert.match(agentLoopCalls[1], /kenapa fokusnya gitu\?/);
+
+  resolveCheckpoint(taskId, { action: "continue" });
+  const result = await resultPromise;
+  assert.equal(result.ok, true);
+});
+
+test("desain checkpoint offers the design-source choice when no source was given, and tapping 'Upload gambar' waits for the actual image instead of running the agent", async () => {
+  const taskId = "checkpoint-design-source";
+  const progressMessages: string[] = [];
+  const checkpointCalls: { department: string; offerDesignSourceChoice: boolean }[] = [];
+  const agentLoopCalls: string[] = [];
+
+  const runAgentLoopFn = async (params: { instruction: string }): Promise<RunAgentLoopResult> => {
+    agentLoopCalls.push(params.instruction);
+    return agentLoopCalls.length === 1
+      ? { ok: true, summary: "Apakah kamu sudah punya desain sendiri, atau mau saya auto-generate?" }
+      : { ok: true, summary: "Desain dibikin sesuai gambar yang dikirim." };
+  };
+
+  const resultPromise = runPipeline({
+    ...baseParams,
+    taskId,
+    instruction: "buatkan website landing page",
+    phases: [
+      { department: "desain", note: "rancang tampilan landing page" },
+      { department: "dev", note: "implementasi landing page" },
+    ],
+    abortController: new AbortController(),
+    onProgress: async (msg) => {
+      progressMessages.push(msg);
+    },
+    checkpoints: true,
+    onCheckpoint: async (_msg, department, offerDesignSourceChoice) => {
+      checkpointCalls.push({ department, offerDesignSourceChoice });
+    },
+    departmentModelLookup: () => "fake",
+    buildProvidersFn: () => [],
+    runAgentLoopFn,
+  });
+
+  await waitUntilCheckpointPending(taskId);
+  assert.equal(checkpointCalls.length, 1);
+  assert.equal(checkpointCalls[0].offerDesignSourceChoice, true);
+
+  // Tap "Upload gambar": should wait for the actual image, NOT run the agent
+  // loop or re-show the checkpoint/menu.
+  resolveCheckpoint(taskId, { action: "revise", instruction: DESAIN_SOURCE_UPLOAD_IMAGE_TAP });
+  await waitUntilCheckpointPending(taskId);
+  assert.equal(checkpointCalls.length, 1, "checkpoint should not re-fire while waiting for the image");
+  assert.equal(agentLoopCalls.length, 1, "the tap itself should not run the agent loop");
+  assert.ok(progressMessages.some((m) => m.includes("kirim gambarnya")));
+
+  // The image arrives (handler.ts's handlePendingCheckpoint would have
+  // already described it and merged it into this exact revise instruction).
+  resolveCheckpoint(taskId, {
+    action: "revise",
+    instruction: "(Gambar yang dikirim bareng ini nunjukkin: mockup landing page dengan hero section)",
+  });
+  await waitUntilCheckpointPending(taskId);
+  assert.equal(checkpointCalls.length, 2, "checkpoint should reappear once a design source was given");
+  assert.equal(checkpointCalls[1].offerDesignSourceChoice, false, "the design-source choice shouldn't be offered again");
+  assert.equal(agentLoopCalls.length, 2);
 
   resolveCheckpoint(taskId, { action: "continue" });
   const result = await resultPromise;

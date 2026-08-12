@@ -1,5 +1,5 @@
-import { extractFigmaFileRefs } from "./mcp/figmaLink.js";
 import { IMAGE_DESCRIPTION_MARKER } from "./imageDescription.js";
+import { hasDesignSource } from "./designSource.js";
 
 const SHARED_ROLE_INTRO = `You act as the whole team for every request — there is no human reviewer in the loop, so be the reviewer yourself:
 
@@ -152,8 +152,8 @@ export function buildPhaseSystemPrompt(
 
   const managementStepsBlock = department === "manajemen" ? `\n${MANAJEMEN_INTERNAL_STEPS}\n` : "";
 
-  const hasDesignSource = extractFigmaFileRefs(instruction).length > 0 || instruction.includes(IMAGE_DESCRIPTION_MARKER);
-  const desainAskFirstBlock = department === "desain" && checkpoints && !hasDesignSource ? `\n${DESAIN_ASK_FIRST_BLOCK}\n` : "";
+  const desainAskFirstBlock =
+    department === "desain" && checkpoints && !hasDesignSource(instruction) ? `\n${DESAIN_ASK_FIRST_BLOCK}\n` : "";
 
   const workAreaRule =
     params.mode === "git"
