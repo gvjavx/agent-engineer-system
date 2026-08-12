@@ -48,11 +48,17 @@ export function splitProviderSpec(spec: string): { name: string; model?: string 
 // One provider instance per API key configured for this name — lets someone
 // register several keys for the same provider (e.g. 5 Gemini keys) so the
 // loop rotates to the next key on a rate-limit/quota error instead of
-// falling straight through to a different provider.
+// falling straight through to a different provider. For Gemini specifically,
+// each key also expands across GEMINI_FALLBACK_MODELS: each model has its own
+// separate free-tier quota bucket, so switching model on the SAME key clears
+// a quota error faster than waiting on a retry or burning through other keys
+// that'll hit the identical per-model limit. Only applies when nothing
+// explicitly pinned a model (modelOverride) — "pakai model .../<model>" is a
+// deliberate choice and shouldn't get silently overridden by a fallback.
 function buildProvidersByName(name: string, modelOverride: string | undefined): Provider[] {
   if (name === "gemini" && config.gemini) {
-    const model = modelOverride ?? config.gemini.model;
-    return config.gemini.apiKeys.map((apiKey) => new GeminiProvider({ apiKey, model }));
+    const models = modelOverride ? [modelOverride] : [config.gemini.model, ...config.gemini.fallbackModels];
+    return config.gemini.apiKeys.flatMap((apiKey) => models.map((model) => new GeminiProvider({ apiKey, model })));
   }
   const openAiCompatible = config.openAiCompatibleProviders[name];
   if (openAiCompatible) {

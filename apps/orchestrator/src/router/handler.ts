@@ -14,7 +14,7 @@ import {
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
 import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch } from "../git/repo.js";
 import { buildProviders, splitProviderSpec } from "../agent/runner.js";
-import { checkProviderStatus } from "../agent/providerStatus.js";
+import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
 import { classifyCommandIntent } from "../agent/commandIntent.js";
 import { classifyMessageKind } from "../agent/messageKind.js";
@@ -105,7 +105,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *hapus project <nama>* — unregister project dari daftar (gak ngehapus apa pun di server — clone/folder aslinya tetap ada)
 - *pakai <nama>* — ganti project aktif buat chat ini
 - *daftar model* — cek AI model yang aku pakai per departemen, masih bisa dipakai atau lagi bermasalah
-- *daftar model <provider> <kata kunci>* — cari model spesifik di provider itu (mis. "daftar model gemini flash") — cuma yang bisa dipakai yang ditampilin
+- *daftar model <provider> <kata kunci>* — cari model spesifik di provider itu (mis. "daftar model gemini flash") — ditampilin semua beserta statusnya (bisa dipakai / kena limit / error)
 - *pakai model <nama>* atau *pakai model <provider>/<model>* — model AI default (dipakai departemen yang belum punya model sendiri)
 - *pakai model <departemen> <nama>* atau *pakai model <departemen> <provider>/<model>* — model AI khusus satu departemen (${DEPARTMENT_LIST_TEXT})
 - *status* — cek task yang lagi jalan
@@ -735,29 +735,39 @@ async function handleListModelsCommand(from: string): Promise<void> {
   const results = await Promise.all(
     providers.map(async (provider) => ({
       name: provider.name,
+      model: provider.model,
       status: await checkProviderStatus(provider),
     }))
   );
 
-  // Multiple API keys for the same provider all share provider.name — number
-  // them ("gemini (key 2/5)") so a dead key among several isn't invisible.
-  const totalPerName = new Map<string, number>();
-  for (const r of results) totalPerName.set(r.name, (totalPerName.get(r.name) ?? 0) + 1);
-  const seenPerName = new Map<string, number>();
+  // Gemini now fans each key out across GEMINI_FALLBACK_MODELS too (see
+  // runner.ts), so "gemini" entries no longer all share one model — show the
+  // model whenever a provider has more than one showing up, and only append
+  // "(key i/n)" when that same model itself has more than one key behind it.
+  const modelsPerName = new Map<string, Set<string>>();
+  for (const r of results) {
+    if (!r.model) continue;
+    const set = modelsPerName.get(r.name) ?? new Set<string>();
+    set.add(r.model);
+    modelsPerName.set(r.name, set);
+  }
+  const seenPerNameModel = new Map<string, number>();
+  const totalPerNameModel = new Map<string, number>();
+  for (const r of results) {
+    const key = `${r.name}:${r.model ?? ""}`;
+    totalPerNameModel.set(key, (totalPerNameModel.get(key) ?? 0) + 1);
+  }
 
-  const providerLines = results.map(({ name, status }) => {
-    const total = totalPerName.get(name) ?? 1;
-    const index = (seenPerName.get(name) ?? 0) + 1;
-    seenPerName.set(name, index);
-    const label = total > 1 ? `${name} (key ${index}/${total})` : name;
+  const providerLines = results.map(({ name, model, status }) => {
+    const distinctModels = modelsPerName.get(name)?.size ?? 0;
+    const key = `${name}:${model ?? ""}`;
+    const totalForModel = totalPerNameModel.get(key) ?? 1;
+    const index = (seenPerNameModel.get(key) ?? 0) + 1;
+    seenPerNameModel.set(key, index);
+    const modelTag = model && distinctModels > 1 ? ` (${model})` : "";
+    const keyTag = totalForModel > 1 ? ` (key ${index}/${totalForModel})` : "";
     const tag = name === state?.preferred_provider ? " (default)" : "";
-    const desc =
-      status.state === "ok"
-        ? "bisa dipakai"
-        : status.state === "rate_limited"
-          ? "lagi kena limit, coba lagi sebentar"
-          : `error — ${status.message.slice(0, 150)}`;
-    return `• ${label}${tag} — ${desc}`;
+    return `• ${name}${modelTag}${keyTag}${tag} — ${describeProviderStatus(status)}`;
   });
 
   const deptModels = conversationRepo.getDepartmentModels(from);
@@ -1411,6 +1421,7 @@ async function handleListModelsForProvider(from: string, providerName: string, q
   }
 
   const toCheck = candidates.slice(0, MODEL_CHECK_LIMIT);
+  const notChecked = candidates.slice(MODEL_CHECK_LIMIT);
   const results = await Promise.all(
     toCheck.map(async (model) => ({
       model,
@@ -1418,31 +1429,26 @@ async function handleListModelsForProvider(from: string, providerName: string, q
     }))
   );
 
-  const usable = results.filter((r) => r.status.state === "ok").map((r) => r.model);
+  const modelLines = [
+    ...results.map((r) => `• ${r.model} — ${describeProviderStatus(r.status)}`),
+    ...notChecked.map((m) => `• ${m} — belum dicek`),
+  ];
   const capNote =
-    candidates.length > MODEL_CHECK_LIMIT
-      ? `\n\n(Ada ${candidates.length} model yang namanya cocok, aku cuma cek ${MODEL_CHECK_LIMIT} pertama biar gak kelamaan.)`
+    notChecked.length > 0
+      ? `\n\n(Ada ${candidates.length} model yang namanya cocok, aku baru cek ${MODEL_CHECK_LIMIT} pertama biar gak kelamaan.)`
       : "";
 
-  if (usable.length === 0) {
-    await sendWhatsApp(
-      from,
-      `Ketemu ${toCheck.length} model yang namanya cocok, tapi semuanya lagi gak bisa dipakai (error/limit).${capNote}`
-    );
-    return;
-  }
-
+  const usable = results.filter((r) => r.status.state === "ok").map((r) => r.model);
   const options: QuickReplyOption[] = usable.map((m) => ({
     id: `pakai model semua ${providerName}/${m}`,
     title: m,
     description: `${providerName}/${m}`,
   }));
-  await sendWhatsApp(
-    from,
-    `Model yang cocok dan bisa dipakai sekarang — tap buat jadiin default, atau ketik "pakai model <departemen> ${providerName}/<nama-model>" buat satu departemen tertentu.${capNote}`,
-    options,
-    "Pilih model"
-  );
+  const tapNote =
+    usable.length > 0
+      ? `Yang "bisa dipakai" bisa langsung di-tap buat jadiin default, atau ketik "pakai model <departemen> ${providerName}/<nama-model>" buat satu departemen tertentu.`
+      : `Lagi gak ada yang bisa dipakai dari yang udah dicek.`;
+  await sendWhatsApp(from, `Model di ${providerName}:\n${modelLines.join("\n")}\n\n${tapNote}${capNote}`, options, "Pilih model");
 }
 
 async function handleFreeTextInstruction(from: string, instruction: string): Promise<void> {

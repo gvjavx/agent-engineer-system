@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runAgentLoop } from "./loop.js";
 import type { FigmaToolsResult } from "./mcp/figmaTools.js";
+import { ProviderError } from "./types.js";
 import type { Provider, ToolSchema, ChatMessage, ProviderResponse } from "./types.js";
 
 function baseParams(overrides: Partial<Parameters<typeof runAgentLoop>[0]> = {}) {
@@ -13,6 +14,7 @@ function baseParams(overrides: Partial<Parameters<typeof runAgentLoop>[0]> = {})
     taskId: "test-task",
     abortController: new AbortController(),
     onProgress: async () => {},
+    rateLimitRetryDelayMs: 0,
     ...overrides,
   };
 }
@@ -261,4 +263,117 @@ test("runAgentLoop skips Figma resolution entirely when there's nothing Figma-re
 
   assert.equal(resolveCalled, true);
   assert.equal(result.ok, true);
+});
+
+test("runAgentLoop retries the same provider on a 429 instead of immediately falling back", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+  const progressMessages: string[] = [];
+
+  let calls = 0;
+  const provider: Provider = {
+    name: "gemini",
+    async chat(): Promise<ProviderResponse> {
+      calls++;
+      if (calls === 1) {
+        throw new ProviderError("gemini", "quota exceeded", undefined, 429);
+      }
+      return { type: "text", text: "done after retry" };
+    },
+  };
+
+  const result = await runAgentLoop(
+    baseParams({
+      providers: [provider],
+      resolveFigmaToolsFn,
+      onProgress: async (text) => {
+        progressMessages.push(text);
+      },
+    })
+  );
+
+  assert.equal(calls, 2);
+  assert.equal(result.ok, true);
+  assert.equal(result.summary, "done after retry");
+  assert.ok(progressMessages.some((m) => /kena limit/.test(m)));
+});
+
+test("runAgentLoop falls back to the next provider once 429 retries on the current one are exhausted", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+
+  let firstCalls = 0;
+  const flaky: Provider = {
+    name: "gemini",
+    async chat(): Promise<ProviderResponse> {
+      firstCalls++;
+      throw new ProviderError("gemini", "quota exceeded", undefined, 429);
+    },
+  };
+  const backup: Provider = {
+    name: "qwen",
+    async chat(): Promise<ProviderResponse> {
+      return { type: "text", text: "done via backup" };
+    },
+  };
+
+  const result = await runAgentLoop(baseParams({ providers: [flaky, backup], resolveFigmaToolsFn }));
+
+  // 1 initial attempt + 2 retries (RATE_LIMIT_MAX_RETRIES) before giving up on this provider
+  assert.equal(firstCalls, 3);
+  assert.equal(result.ok, true);
+  assert.equal(result.summary, "done via backup");
+});
+
+test("runAgentLoop reports a model switch, not a key switch, when the next entry shares a name but not a model", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+  const progressMessages: string[] = [];
+
+  let calls = 0;
+  const primaryModel: Provider = {
+    name: "gemini",
+    model: "gemini-3.1-flash-lite",
+    async chat(): Promise<ProviderResponse> {
+      calls++;
+      throw new ProviderError("gemini", "quota exceeded", undefined, 429);
+    },
+  };
+  const fallbackModel: Provider = {
+    name: "gemini",
+    model: "gemini-3.5-flash-lite",
+    async chat(): Promise<ProviderResponse> {
+      return { type: "text", text: "done on fallback model" };
+    },
+  };
+
+  const result = await runAgentLoop(
+    baseParams({
+      providers: [primaryModel, fallbackModel],
+      resolveFigmaToolsFn,
+      onProgress: async (text) => {
+        progressMessages.push(text);
+      },
+    })
+  );
+
+  // 1 initial attempt + 2 retries exhausted on the primary model before moving on
+  assert.equal(calls, 3);
+  assert.equal(result.ok, true);
+  assert.equal(result.summary, "done on fallback model");
+  assert.ok(progressMessages.some((m) => /Model "gemini-3\.1-flash-lite" lagi kena limit/.test(m)));
+  assert.ok(!progressMessages.some((m) => /API key/.test(m)));
+});
+
+test("runAgentLoop fails the task when a 429 exhausts retries and there's no other provider", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+
+  const provider: Provider = {
+    name: "gemini",
+    async chat(): Promise<ProviderResponse> {
+      throw new ProviderError("gemini", "quota exceeded", undefined, 429);
+    },
+  };
+
+  const result = await runAgentLoop(baseParams({ providers: [provider], resolveFigmaToolsFn }));
+
+  assert.equal(result.ok, false);
+  assert.match(result.summary, /Semua opsi AI lagi gak bisa dipakai/);
 });

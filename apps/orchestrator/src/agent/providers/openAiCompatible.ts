@@ -4,7 +4,7 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import type { ChatMessage, Provider, ProviderResponse, ToolCallRequest, ToolSchema } from "../types.js";
-import { ProviderError, PROVIDER_REQUEST_TIMEOUT_MS } from "../types.js";
+import { ProviderError, PROVIDER_REQUEST_TIMEOUT_MS, extractHttpStatus } from "../types.js";
 
 export interface OpenAiCompatibleProviderOptions {
   name: string;
@@ -64,8 +64,8 @@ export function buildOpenAiVisionMessages(
 // a new one is just a new instance of this class with a different baseURL/key/model.
 export class OpenAiCompatibleProvider implements Provider {
   name: string;
+  model: string;
   private client: OpenAI;
-  private model: string;
 
   constructor(options: OpenAiCompatibleProviderOptions) {
     this.name = options.name;
@@ -90,7 +90,7 @@ export class OpenAiCompatibleProvider implements Provider {
       );
       message = response.choices[0]?.message;
     } catch (err) {
-      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err);
+      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err, extractHttpStatus(err));
     }
 
     if (!message) {
@@ -124,7 +124,7 @@ export class OpenAiCompatibleProvider implements Provider {
       );
       message = response.choices[0]?.message;
     } catch (err) {
-      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err);
+      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err, extractHttpStatus(err));
     }
     if (!message) {
       throw new ProviderError(this.name, "Empty response from provider");

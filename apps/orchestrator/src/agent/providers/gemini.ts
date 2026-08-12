@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { GoogleGenAI, type Content, type Part } from "@google/genai";
 import type { ChatMessage, Provider, ProviderResponse, ToolCallRequest, ToolSchema } from "../types.js";
-import { ProviderError, PROVIDER_REQUEST_TIMEOUT_MS } from "../types.js";
+import { ProviderError, PROVIDER_REQUEST_TIMEOUT_MS, extractHttpStatus } from "../types.js";
 
 export interface GeminiProviderOptions {
   apiKey: string;
@@ -73,8 +73,8 @@ export function toGeminiTools(tools: ToolSchema[]) {
 
 export class GeminiProvider implements Provider {
   name = "gemini";
+  model: string;
   private client: GoogleGenAI;
-  private model: string;
 
   constructor(options: GeminiProviderOptions) {
     this.client = new GoogleGenAI({ apiKey: options.apiKey });
@@ -97,12 +97,14 @@ export class GeminiProvider implements Provider {
         },
       });
     } catch (err) {
-      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err);
+      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err, extractHttpStatus(err));
     }
 
-    // Walk the raw parts (not the response.functionCalls convenience getter)
-    // so we can capture each call's sibling thoughtSignature — Gemini 3.x
-    // requires it to be echoed back verbatim on replay or the next turn errors.
+    // Walk the raw parts (not the response.functionCalls/response.text convenience
+    // getters) so we can capture each call's sibling thoughtSignature — Gemini 3.x
+    // requires it to be echoed back verbatim on replay or the next turn errors —
+    // and so we don't trip the SDK's own console.warn, which fires on response.text
+    // any time a part has a non-text field like functionCall (i.e. on every tool call).
     const rawParts = response.candidates?.[0]?.content?.parts ?? [];
     const calls: ToolCallRequest[] = rawParts
       .filter((p) => p.functionCall)
@@ -112,12 +114,16 @@ export class GeminiProvider implements Provider {
         input: (p.functionCall?.args ?? {}) as Record<string, unknown>,
         providerData: p.thoughtSignature ? { thoughtSignature: p.thoughtSignature } : undefined,
       }));
+    const text = rawParts
+      .filter((p) => typeof p.text === "string" && !p.thought)
+      .map((p) => p.text)
+      .join("");
 
     if (calls.length > 0) {
-      return { type: "tool_calls", calls, text: response.text };
+      return { type: "tool_calls", calls, text };
     }
 
-    return { type: "text", text: response.text ?? "" };
+    return { type: "text", text };
   }
 
   async describeImage(base64Data: string, mimeType: string, prompt: string, signal: AbortSignal): Promise<string> {
@@ -129,7 +135,7 @@ export class GeminiProvider implements Provider {
         config: { abortSignal: signal, httpOptions: { timeout: PROVIDER_REQUEST_TIMEOUT_MS } },
       });
     } catch (err) {
-      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err);
+      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err, extractHttpStatus(err));
     }
     return response.text ?? "";
   }

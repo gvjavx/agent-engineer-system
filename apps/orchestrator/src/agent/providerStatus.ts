@@ -46,3 +46,9 @@ export async function checkProviderStatus(provider: Provider, timeoutMs = 15000)
   clearTimeout(timer!);
   return result;
 }
+
+export function describeProviderStatus(status: ProviderStatus): string {
+  if (status.state === "ok") return "bisa dipakai";
+  if (status.state === "rate_limited") return "lagi kena limit, coba lagi sebentar";
+  return `error — ${status.message.slice(0, 150)}`;
+}

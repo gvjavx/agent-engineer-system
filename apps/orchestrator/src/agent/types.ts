@@ -57,6 +57,11 @@ export type ProviderResponse =
 
 export interface Provider {
   name: string;
+  // Optional: which model this instance talks to. Lets loop.ts's fallback
+  // messaging say "ganti model" instead of "ganti API key" when two entries
+  // in the chain share a name but not a model. Test doubles that don't care
+  // (most of them) just omit it.
+  model?: string;
   chat(messages: ChatMessage[], tools: ToolSchema[], signal: AbortSignal): Promise<ProviderResponse>;
   // Optional: only providers whose underlying API actually supports vision
   // implement this. Absent means "this provider can't see images" —
@@ -67,11 +72,26 @@ export interface Provider {
   describeImage?(base64Data: string, mimeType: string, prompt: string, signal: AbortSignal): Promise<string>;
 }
 
+// Both the Gemini SDK's ApiError and the openai package's APIError expose a
+// numeric .status on the thrown error; this reads it without either provider
+// adapter needing to import the other SDK's types.
+export function extractHttpStatus(err: unknown): number | undefined {
+  if (err && typeof err === "object" && "status" in err && typeof (err as { status?: unknown }).status === "number") {
+    return (err as { status: number }).status;
+  }
+  return undefined;
+}
+
 export class ProviderError extends Error {
   constructor(
     public providerName: string,
     message: string,
-    public cause?: unknown
+    public cause?: unknown,
+    // HTTP status of the underlying API error, when the SDK exposes one
+    // (Gemini's ApiError and the openai package's APIError both do). Lets
+    // callers tell a transient 429 apart from a dead key/auth failure
+    // without string-matching the message.
+    public status?: number
   ) {
     super(`[${providerName}] ${message}`);
   }

@@ -34,6 +34,14 @@ const OPENAI_COMPATIBLE_DEFAULTS: Record<string, { baseUrl?: string; model?: str
 // if this starts erroring.
 const GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite";
 
+// Each Gemini model has its own separate free-tier quota bucket, so a 429 on
+// the default model doesn't mean a 429 on these too — runner.ts tries them,
+// same key, before rotating to the next key/provider. Verified live against
+// a real key while wiring this up; gemini-2.5-flash and gemini-2.5-flash-lite
+// both 404 as "no longer available to new users", which is exactly the kind
+// of quota/availability drift the comment above already warns about.
+const GEMINI_DEFAULT_FALLBACK_MODELS = "gemini-flash-lite-latest,gemini-3.5-flash-lite";
+
 function requiredForProvider(providerName: string, envVar: string): string {
   const value = process.env[envVar];
   if (!value) {
@@ -103,6 +111,7 @@ export const config = {
     ? {
         apiKeys: parseApiKeys(requiredForProvider("gemini", "GEMINI_API_KEY")),
         model: process.env.GEMINI_MODEL ?? GEMINI_DEFAULT_MODEL,
+        fallbackModels: parseApiKeys(process.env.GEMINI_FALLBACK_MODELS ?? GEMINI_DEFAULT_FALLBACK_MODELS),
       }
     : undefined,
 

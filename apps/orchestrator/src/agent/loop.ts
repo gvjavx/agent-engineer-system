@@ -31,6 +31,9 @@ export interface RunAgentLoopParams {
   // auto-deny (fail closed) so a caller that forgets to wire this doesn't
   // silently downgrade to "run it anyway".
   onDangerousBash?: (command: string, reason: string) => Promise<boolean>;
+  // DI seam for tests — real callers never pass this, production always waits
+  // the full RATE_LIMIT_RETRY_DELAY_MS between same-provider retries on a 429.
+  rateLimitRetryDelayMs?: number;
 }
 
 export interface RunAgentLoopResult {
@@ -47,6 +50,25 @@ export interface RunAgentLoopResult {
   // whatever the git work branch accumulated, since a cancelled task's
   // changes were never asked for in the first place.
   cancelled?: boolean;
+}
+
+// A 429 with a free-tier per-minute quota (the case that prompted this) is
+// gone within seconds — worth waiting out on the same key rather than
+// immediately burning through the fallback chain or, with only one provider
+// configured, failing the whole task over something that would've cleared
+// itself up.
+const RATE_LIMIT_MAX_RETRIES = 2;
+const RATE_LIMIT_RETRY_DELAY_MS = 10_000;
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
 }
 
 const FIGMA_TOOLS_SYSTEM_NOTE =
@@ -69,6 +91,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
     resolveFigmaToolsFn = resolveFigmaTools,
     sendDocument = async () => "Fitur kirim dokumen belum tersedia di sini.",
     onDangerousBash = async () => false,
+    rateLimitRetryDelayMs = RATE_LIMIT_RETRY_DELAY_MS,
   } = params;
 
   if (providers.length === 0) {
@@ -98,6 +121,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
 
   try {
     let providerIndex = 0;
+    let rateLimitRetries = 0;
 
     for (let turn = 0; turn < maxTurns; turn++) {
       if (abortController.signal.aborted) {
@@ -108,6 +132,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
       let response;
       try {
         response = await provider.chat(messages, toolSchemas, abortController.signal);
+        rateLimitRetries = 0;
       } catch (err) {
         if (abortController.signal.aborted) {
           return { ok: false, cancelled: true, summary: "Oke, task-nya udah aku batalin." };
@@ -115,20 +140,40 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
         const message = err instanceof ProviderError ? err.message : String(err);
         auditLog.add(taskId, "error", message);
 
-        if (providerIndex + 1 < providers.length) {
-          const failedName = provider.name;
-          providerIndex++;
-          const nextName = providers[providerIndex].name;
-          // Same name back-to-back means it's a different API key of the
-          // same provider (see runner.ts's multi-key expansion), not an
-          // actual provider switch — say so, "pindah ke gemini" after
-          // failing on "gemini" reads like nothing changed.
-          await onProgress(
-            failedName === nextName
-              ? `API key "${failedName}" yang ini lagi bermasalah (mungkin abis kuotanya), aku coba API key lain buat provider yang sama.`
-              : `"${failedName}" lagi bermasalah, aku coba pindah ke "${nextName}" ya.`
+        if (err instanceof ProviderError && err.status === 429 && rateLimitRetries < RATE_LIMIT_MAX_RETRIES) {
+          rateLimitRetries++;
+          auditLog.add(
+            taskId,
+            "note",
+            `Rate limited on ${provider.name}, retry ${rateLimitRetries}/${RATE_LIMIT_MAX_RETRIES} in ${rateLimitRetryDelayMs / 1000}s`
           );
-          auditLog.add(taskId, "note", `Fallback: ${failedName} -> ${nextName} (${message})`);
+          await onProgress(`"${provider.name}" lagi kena limit, nunggu bentar terus coba lagi ya.`);
+          await sleep(rateLimitRetryDelayMs, abortController.signal);
+          if (abortController.signal.aborted) {
+            return { ok: false, cancelled: true, summary: "Oke, task-nya udah aku batalin." };
+          }
+          turn--; // doesn't consume a turn from the budget
+          continue;
+        }
+
+        if (providerIndex + 1 < providers.length) {
+          rateLimitRetries = 0;
+          const failed = provider;
+          providerIndex++;
+          const next = providers[providerIndex];
+          // Same name, different model back-to-back means runner.ts's Gemini
+          // fallback-model expansion kicked in on the same key — distinct
+          // from a same-name/same-model pair (a different API key) and from
+          // an actual provider switch, each of which reads misleadingly as
+          // the other two if worded the same.
+          const progressText =
+            failed.name === next.name
+              ? failed.model && next.model && failed.model !== next.model
+                ? `Model "${failed.model}" lagi kena limit, aku coba model lain: "${next.model}".`
+                : `API key "${failed.name}" yang ini lagi bermasalah (mungkin abis kuotanya), aku coba API key lain buat provider yang sama.`
+              : `"${failed.name}" lagi bermasalah, aku coba pindah ke "${next.name}" ya.`;
+          await onProgress(progressText);
+          auditLog.add(taskId, "note", `Fallback: ${failed.name}${failed.model ? `/${failed.model}` : ""} -> ${next.name}${next.model ? `/${next.model}` : ""} (${message})`);
           turn--; // doesn't consume a turn from the budget
           continue;
         }
