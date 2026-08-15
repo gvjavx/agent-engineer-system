@@ -31,7 +31,7 @@ import {
   type PhaseSpec,
   type PipelineMode,
 } from "../agent/pipeline.js";
-import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment } from "../agent/departments.js";
+import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, normalizeDepartment, type DepartmentKey } from "../agent/departments.js";
 import { buildAuthorizeUrl } from "../agent/mcp/figmaAuth.js";
 import { createPendingState } from "../agent/mcp/figmaOAuthState.js";
 import { resolveCheckpoint, hasPendingCheckpoint } from "../agent/checkpoint.js";
@@ -276,6 +276,21 @@ const CHAT_HISTORY_TURNS = 12;
 // Caps how many stored facts get folded into the chat prompt, independent of
 // how many actually exist in the DB — keeps prompt size bounded.
 const MAX_FACTS_IN_PROMPT = 30;
+
+// Provider spec for every chat/classification call — intro, greeting, help,
+// chat replies, and all the classifiers (department/command/message-kind/
+// confirmation-intent). None of these execute code, so they always resolve
+// through the "manajemen" department lane, never whatever "dev" happens to
+// be pinned to for a running task. Same precedence pipeline.ts's
+// departmentModelLookup uses for real departments: per-department override,
+// then the user's global override, then the system default (config.ts).
+function resolveManajemenProvider(from: string, state: ReturnType<typeof conversationRepo.get>): string | undefined {
+  return (
+    conversationRepo.getDepartmentModel(from, "manajemen") ??
+    state?.preferred_provider ??
+    config.departmentDefaultProviders.manajemen
+  );
+}
 
 // Decides whether this message continues the sender's current chat session
 // or starts a fresh one (no session yet, or idle longer than
@@ -672,7 +687,7 @@ async function handleRetryCommand(from: string): Promise<void> {
 // without an answer just because a provider hiccuped.
 async function handleIntroCommand(from: string, question: string): Promise<void> {
   const state = conversationRepo.get(from);
-  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
   const answer =
     providers.length > 0 ? await introduceYourself(question, providers[0], new AbortController().signal) : undefined;
   await sendWhatsApp(from, answer ?? INTRO_TEXT);
@@ -680,7 +695,7 @@ async function handleIntroCommand(from: string, question: string): Promise<void>
 
 async function handleGreetingCommand(from: string, message: string): Promise<void> {
   const state = conversationRepo.get(from);
-  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
   const answer =
     providers.length > 0 ? await respondToGreeting(message, providers[0], new AbortController().signal) : undefined;
   await sendWhatsApp(from, answer ?? GREETING_TEXT);
@@ -688,7 +703,7 @@ async function handleGreetingCommand(from: string, message: string): Promise<voi
 
 async function handleHelpCommand(from: string, question: string): Promise<void> {
   const state = conversationRepo.get(from);
-  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
   const answer =
     providers.length > 0
       ? await explainHelp(question, HELP_TEXT, providers[0], new AbortController().signal)
@@ -698,7 +713,7 @@ async function handleHelpCommand(from: string, question: string): Promise<void> 
 
 async function handleExplainCommand(from: string, question: string): Promise<void> {
   const state = conversationRepo.get(from);
-  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
   const answer =
     providers.length > 0
       ? await explainInSimpleTerms(question, providers[0], new AbortController().signal)
@@ -772,7 +787,8 @@ async function handleListModelsCommand(from: string): Promise<void> {
 
   const deptModels = conversationRepo.getDepartmentModels(from);
   const deptLines = DEPARTMENT_KEYS.map(
-    (key) => `• ${DEPARTMENT_LABELS[key]}: ${deptModels[key] ?? "(pakai default)"}`
+    (key) =>
+      `• ${DEPARTMENT_LABELS[key]}: ${deptModels[key] ?? state?.preferred_provider ?? config.departmentDefaultProviders[key] ?? "(pakai default)"}`
   );
   const defaultLine = `Default (semua): ${state?.preferred_provider ?? "otomatis, provider pertama yang aktif"}`;
 
@@ -889,7 +905,7 @@ async function handleImageMessage(
   image: { mimeType: string; base64Data: string }
 ): Promise<void> {
   const state = conversationRepo.get(from);
-  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
   if (providers.length === 0) {
     await sendWhatsApp(from, "Belum ada AI provider yang aktif, jadi aku belum bisa liat gambarnya.");
     return;
@@ -933,7 +949,7 @@ async function tryHandleSemanticCommand(from: string, trimmed: string): Promise<
   if (!isPlausibleShortCommand(trimmed, COMMAND_INTENT_MAX_WORDS)) return false;
 
   const state = conversationRepo.get(from);
-  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
   if (providers.length === 0) return false; // let handleFreeTextInstruction give its own "no provider" message
 
   const intent = await classifyCommandIntent(trimmed, providers[0], new AbortController().signal);
@@ -983,7 +999,7 @@ async function tryHandleConversational(from: string, trimmed: string): Promise<b
   if (!isPlausibleShortCommand(trimmed, CHAT_INTENT_MAX_WORDS)) return false;
 
   const state = conversationRepo.get(from);
-  const providers = buildProviders(state?.preferred_provider ?? undefined);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
   if (providers.length === 0) return false; // let handleFreeTextInstruction give its own "no provider" message
 
   const kind = await classifyMessageKind(trimmed, providers[0], new AbortController().signal);
@@ -1014,13 +1030,13 @@ async function handleChatMessage(from: string, message: string, provider: Provid
 // exactly the pre-existing default path each caller already had. No new code
 // paths are introduced, only new ways to reach the existing ones.
 async function interpretConfirmationReply(
-  preferredProvider: string | undefined,
+  providerSpec: string | undefined,
   trimmed: string
 ): Promise<ConfirmationIntent> {
   if (isConfirmYes(trimmed)) return "yes";
   if (isConfirmNo(trimmed)) return "no";
   if (!isPlausibleShortCommand(trimmed, CONFIRMATION_INTENT_MAX_WORDS)) return "unclear";
-  const providers = buildProviders(preferredProvider);
+  const providers = buildProviders(providerSpec);
   if (providers.length === 0) return "unclear";
   return classifyConfirmationIntent(trimmed, providers[0], new AbortController().signal);
 }
@@ -1080,7 +1096,7 @@ async function handlePendingBashApproval(from: string, trimmed: string): Promise
     return false;
   }
 
-  const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+  const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
   const approved = intent === "yes";
   resolveBashApproval(taskId, approved);
   await sendWhatsApp(
@@ -1129,7 +1145,7 @@ async function handlePendingCheckpoint(
   }
 
   if (image) {
-    const providers = buildProviders(state?.preferred_provider ?? undefined);
+    const providers = buildProviders(resolveManajemenProvider(from, state));
     if (providers.length === 0) {
       await sendWhatsApp(from, "Belum ada AI provider yang aktif, jadi aku belum bisa liat gambarnya.");
       return true;
@@ -1157,7 +1173,7 @@ async function handlePendingCheckpoint(
     return true;
   }
 
-  const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+  const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
   if (intent === "yes") {
     resolveCheckpoint(taskId, { action: "continue" });
   } else if (intent === "no") {
@@ -1278,7 +1294,7 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
   }
 
   if (pending.type === "confirm_add_folder") {
-    const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+    const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
     if (intent === "yes") {
       conversationRepo.setPendingAction(from, null);
       projectsRepo.createLocal(pending.alias, pending.path);
@@ -1299,7 +1315,7 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
   }
 
   if (pending.type === "confirm_delete_project") {
-    const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+    const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
     if (intent === "yes") {
       conversationRepo.setPendingAction(from, null);
       const project = projectsRepo.get(pending.alias);
@@ -1333,7 +1349,7 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
   }
 
   if (pending.type === "confirm_clear_memory") {
-    const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+    const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
     conversationRepo.setPendingAction(from, null);
     if (intent === "yes") {
       memoryRepo.clear(from);
@@ -1359,7 +1375,7 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
       await executeTask(from, project, pending.instruction, pending.phases, true);
       return true;
     }
-    const intent = await interpretConfirmationReply(state?.preferred_provider ?? undefined, trimmed);
+    const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
     if (intent === "yes") {
       const project = projectsRepo.get(pending.alias);
       if (!project) {
@@ -1480,7 +1496,7 @@ async function handleFreeTextInstruction(from: string, instruction: string): Pro
 
   const project = projectsRepo.get(alias) as Project;
 
-  const classifierProviders = buildProviders(state?.preferred_provider ?? undefined);
+  const classifierProviders = buildProviders(resolveManajemenProvider(from, state));
   if (classifierProviders.length === 0) {
     await sendWhatsApp(from, "Belum ada AI provider yang aktif, jadi aku belum bisa kerja.");
     return;
@@ -1495,7 +1511,10 @@ async function handleFreeTextInstruction(from: string, instruction: string): Pro
     const model =
       phase.department === "semua"
         ? (state?.preferred_provider ?? "default")
-        : (deptModels[phase.department] ?? state?.preferred_provider ?? "default");
+        : (deptModels[phase.department] ??
+            state?.preferred_provider ??
+            config.departmentDefaultProviders[phase.department] ??
+            "default");
     return `${i + 1}. ${label} — ${phase.note} (model: ${model})`;
   });
 
@@ -1606,7 +1625,9 @@ async function executeTask(
         departmentModelLookup: (department) =>
           department === "semua"
             ? (state?.preferred_provider ?? undefined)
-            : conversationRepo.getDepartmentModel(from, department),
+            : (conversationRepo.getDepartmentModel(from, department) ??
+                state?.preferred_provider ??
+                config.departmentDefaultProviders[department as DepartmentKey]),
         mode,
       });
 

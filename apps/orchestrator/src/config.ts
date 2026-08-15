@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
+import type { DepartmentKey } from "./agent/departments.js";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -41,6 +42,31 @@ const GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite";
 // both 404 as "no longer available to new users", which is exactly the kind
 // of quota/availability drift the comment above already warns about.
 const GEMINI_DEFAULT_FALLBACK_MODELS = "gemini-flash-lite-latest,gemini-3.5-flash-lite";
+
+// Which provider each department uses before anyone ever types "pakai model
+// <departemen>" — qwen/openrouter both default to qwen3-coder* models (see
+// OPENAI_COMPATIBLE_DEFAULTS above), so "dev" gets an actually coding-tuned
+// model out of the box instead of sharing Gemini with every chat reply.
+// Overridable per department (or a whole new department key added) via
+// DEPARTMENT_DEFAULT_PROVIDERS; a name that isn't actually configured in
+// AI_PROVIDER_ORDER just no-ops back to the flat fallback order (see
+// runner.ts's applyPreferredProvider), so this degrades safely.
+const DEPARTMENT_DEFAULT_PROVIDER_DEFAULTS: Partial<Record<DepartmentKey, string>> = {
+  dev: "qwen",
+  manajemen: "gemini",
+};
+
+function parseDepartmentDefaultProviders(raw: string): Partial<Record<DepartmentKey, string>> {
+  const result: Partial<Record<DepartmentKey, string>> = {};
+  for (const pair of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const colonIndex = pair.indexOf(":");
+    if (colonIndex === -1) continue;
+    const dept = pair.slice(0, colonIndex).trim();
+    const spec = pair.slice(colonIndex + 1).trim();
+    if (dept && spec) result[dept as DepartmentKey] = spec;
+  }
+  return result;
+}
 
 function requiredForProvider(providerName: string, envVar: string): string {
   const value = process.env[envVar];
@@ -106,6 +132,14 @@ export const config = {
   // Free AI providers, tried in this order with automatic fallback. Only
   // providers actually listed in AI_PROVIDER_ORDER get validated/built.
   providerOrder,
+
+  // System-level default provider spec per department — see
+  // DEPARTMENT_DEFAULT_PROVIDER_DEFAULTS above for why "dev" and "manajemen"
+  // are set out of the box. Lowest-priority fallback: a user's own "pakai
+  // model <departemen>"/"pakai model semua" always wins over this.
+  departmentDefaultProviders: process.env.DEPARTMENT_DEFAULT_PROVIDERS
+    ? parseDepartmentDefaultProviders(process.env.DEPARTMENT_DEFAULT_PROVIDERS)
+    : DEPARTMENT_DEFAULT_PROVIDER_DEFAULTS,
 
   gemini: providerOrder.includes("gemini")
     ? {
