@@ -5,6 +5,7 @@ import { exchangeCodeForTokens } from "./agent/mcp/figmaAuth.js";
 import { consumePendingState } from "./agent/mcp/figmaOAuthState.js";
 import { sendWhatsApp } from "./whatsappClient.js";
 import { startIdleSessionScanner } from "./session/idleNotifier.js";
+import { isDuplicateInboundMessage } from "./inboundDedup.js";
 import "./db/index.js";
 
 const app = express();
@@ -16,10 +17,11 @@ app.post("/inbound", express.json({ limit: "8mb" }), (req, res) => {
   if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
     return res.sendStatus(401);
   }
-  const { from, text, image } = req.body as {
+  const { from, text, image, waMessageId } = req.body as {
     from?: string;
     text?: string;
     image?: { mimeType?: string; base64Data?: string };
+    waMessageId?: string;
   };
   // text === "" is valid and expected for a captionless image — only reject
   // when there's neither text nor an image at all.
@@ -37,6 +39,13 @@ app.post("/inbound", express.json({ limit: "8mb" }), (req, res) => {
   // Ack immediately; the actual work (cloning, running the agent) can take
   // minutes and is reported back to WhatsApp asynchronously as it progresses.
   res.sendStatus(202);
+
+  // See inboundDedup.ts — a retried delivery of a message we already started
+  // handling must be a no-op, not a second independent run.
+  if (waMessageId && isDuplicateInboundMessage(waMessageId)) {
+    console.warn(`Ignoring duplicate delivery of ${waMessageId} from ${from}`);
+    return;
+  }
 
   const validImage =
     image?.mimeType && image?.base64Data ? { mimeType: image.mimeType, base64Data: image.base64Data } : undefined;
