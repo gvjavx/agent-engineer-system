@@ -1,5 +1,5 @@
 import type { ChatMessage, Provider } from "./types.js";
-import { STYLE_RULES } from "./dynamicReplies.js";
+import { STYLE_RULES, currentDateLine } from "./dynamicReplies.js";
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -23,7 +23,7 @@ function buildSystemPrompt(facts: string[]): string {
       ? `Yang udah kamu tau soal user ini dari obrolan sebelumnya:\n${facts.map((f) => `- ${f}`).join("\n")}`
       : "Belum ada yang kamu tau soal user ini dari obrolan sebelumnya.";
 
-  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES}
+  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES} ${currentDateLine()}
 
 ${factsBlock}
 

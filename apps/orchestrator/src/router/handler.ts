@@ -16,8 +16,7 @@ import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, 
 import { buildProviders, splitProviderSpec } from "../agent/runner.js";
 import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
-import { classifyCommandIntent } from "../agent/commandIntent.js";
-import { classifyMessageKind } from "../agent/messageKind.js";
+import { classifyIntent } from "../agent/commandIntent.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
 import { describeImage, mergeImageDescription } from "../agent/imageDescription.js";
 import { generateChatReply } from "../agent/chatAssistant.js";
@@ -255,21 +254,16 @@ const HELP_OPTIONS: QuickReplyOption[] = [
 ];
 
 // Cap on how long a message can be before it's not even worth spending an AI
-// call to check whether it's a paraphrase of one of these commands — see
-// isPlausibleShortCommand in parse.ts. Started at 12 and had to be raised: a
-// real "explain" question like "jika saya meminta bantuan untuk bikin
-// aplikasi dari awal apa yang akan kamu lakukan" is already 14 words, and
-// missing that classification entirely sent it straight into the task
-// pipeline instead of getting an actual explanation. Matches
-// CHAT_INTENT_MAX_WORDS below for the same reason.
-const COMMAND_INTENT_MAX_WORDS = 40;
+// call to check whether it's a paraphrase of one of the fixed commands, or
+// just chat, rather than a task — see isPlausibleShortCommand in parse.ts.
+// Started at 12 and had to be raised: a real "explain" question like "jika
+// saya meminta bantuan untuk bikin aplikasi dari awal apa yang akan kamu
+// lakukan" is already 14 words, and missing that classification entirely
+// sent it straight into the task pipeline instead of getting an actual
+// explanation.
+const INTENT_MAX_WORDS = 40;
 // Confirmation replies are inherently short, so a tighter bound is safe here.
 const CONFIRMATION_INTENT_MAX_WORDS = 8;
-// Real conversation runs longer than a command paraphrase does, so this gate
-// (agent/messageKind.ts) is much more generous than COMMAND_INTENT_MAX_WORDS
-// above — messages longer than this skip straight to the task pipeline,
-// same as today, rather than spending an extra AI call on every long message.
-const CHAT_INTENT_MAX_WORDS = 40;
 // How many past chat turns to load as context for a reply — a handful of
 // exchanges, not the full history (see chatHistoryRepo.recent).
 const CHAT_HISTORY_TURNS = 12;
@@ -557,12 +551,9 @@ export async function handleInboundMessage(
   }
 
   // Nothing matched exactly — before assuming it's a coding task, check
-  // whether it's actually a paraphrase of one of the 7 commands above.
-  if (await tryHandleSemanticCommand(from, trimmed)) return;
-
-  // Still nothing — before assuming it's a coding task, check whether it's
-  // just conversation instead (a question, a comment, small talk).
-  if (await tryHandleConversational(from, trimmed)) return;
+  // whether it's actually a paraphrase of one of the fixed commands above,
+  // or just conversation (a question, a comment, small talk).
+  if (await tryHandleSemanticIntent(from, trimmed)) return;
 
   // Default: free-text instruction -> classify departments -> confirm -> pipeline.
   await handleFreeTextInstruction(from, trimmed);
@@ -940,19 +931,23 @@ async function handleImageMessage(
   );
 }
 
-// Fallback for when none of the commands above matched exactly — asks an
-// AI provider whether this message means one of them anyway (a paraphrase),
-// before handleFreeTextInstruction assumes it's a coding task. Gated by
-// isPlausibleShortCommand so this never runs (and never costs an AI call)
-// for messages that are clearly full task instructions already.
-async function tryHandleSemanticCommand(from: string, trimmed: string): Promise<boolean> {
-  if (!isPlausibleShortCommand(trimmed, COMMAND_INTENT_MAX_WORDS)) return false;
+// Fallback for when none of the commands above matched exactly — one AI call
+// decides whether this message means one of the fixed commands (a
+// paraphrase), is just conversation (a question, a comment, small talk), or
+// is actually a coding task, before handleFreeTextInstruction takes over for
+// that last case. Used to be two sequential classifier calls (command intent,
+// then message kind) — merged into one round-trip since they're really one
+// decision. Gated by isPlausibleShortCommand so this never runs (and never
+// costs an AI call) for messages that are clearly full task instructions
+// already.
+async function tryHandleSemanticIntent(from: string, trimmed: string): Promise<boolean> {
+  if (!isPlausibleShortCommand(trimmed, INTENT_MAX_WORDS)) return false;
 
   const state = conversationRepo.get(from);
   const providers = buildProviders(resolveManajemenProvider(from, state));
   if (providers.length === 0) return false; // let handleFreeTextInstruction give its own "no provider" message
 
-  const intent = await classifyCommandIntent(trimmed, providers[0], new AbortController().signal);
+  const intent = await classifyIntent(trimmed, providers[0], new AbortController().signal);
   switch (intent) {
     case "intro":
       await handleIntroCommand(from, trimmed);
@@ -984,29 +979,12 @@ async function tryHandleSemanticCommand(from: string, trimmed: string): Promise<
     case "session_history":
       await handleSessionHistoryCommand(from);
       return true;
+    case "chat":
+      await handleChatMessage(from, trimmed, providers[0]);
+      return true;
     default:
-      return false; // "none"
+      return false; // "task"
   }
-}
-
-// Runs after every fixed command and paraphrase has missed — checks whether
-// this is actually just conversation (a question, a comment, small talk)
-// rather than a coding task, so it gets a real reply instead of being forced
-// through department classification. Own, more generous word-count gate than
-// tryHandleSemanticCommand above (see CHAT_INTENT_MAX_WORDS) since real
-// conversation runs longer than a command paraphrase does.
-async function tryHandleConversational(from: string, trimmed: string): Promise<boolean> {
-  if (!isPlausibleShortCommand(trimmed, CHAT_INTENT_MAX_WORDS)) return false;
-
-  const state = conversationRepo.get(from);
-  const providers = buildProviders(resolveManajemenProvider(from, state));
-  if (providers.length === 0) return false; // let handleFreeTextInstruction give its own "no provider" message
-
-  const kind = await classifyMessageKind(trimmed, providers[0], new AbortController().signal);
-  if (kind !== "chat") return false;
-
-  await handleChatMessage(from, trimmed, providers[0]);
-  return true;
 }
 
 async function handleChatMessage(from: string, message: string, provider: Provider): Promise<void> {

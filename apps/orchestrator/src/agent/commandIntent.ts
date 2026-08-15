@@ -1,11 +1,11 @@
 import type { Provider } from "./types.js";
 
-// Fallback for when the exact-phrase matchers in router/parse.ts miss a
-// paraphrase of one of these zero-argument commands ("gimana caranya pake
-// ini" instead of "bantuan"). Argument-taking commands (tambah project,
-// pakai model, dst.) stay exact-syntax — extracting an alias/URL/model name
-// from loose phrasing is a different, riskier problem than recognizing intent.
-export const COMMAND_INTENTS = [
+// One classifier call instead of two back-to-back ones (used to be
+// classifyCommandIntent -> classifyMessageKind, each its own network
+// round-trip to a free-tier provider before the user got any reply at all).
+// "chat"/"task" absorb what used to be commandIntent's "none" catch-all
+// fanning out into a second call — same end behavior, half the latency.
+export const INTENTS = [
   "intro",
   "help",
   "explain",
@@ -16,14 +16,15 @@ export const COMMAND_INTENTS = [
   "connect_figma",
   "session_history",
   "greeting",
-  "none",
+  "chat",
+  "task",
 ] as const;
-export type CommandIntent = (typeof COMMAND_INTENTS)[number];
+export type Intent = (typeof INTENTS)[number];
 
-function buildCommandIntentPrompt(text: string): string {
-  return `The user sent this WhatsApp message to a coding assistant bot. Decide if it means one of these fixed commands, or if it's something else entirely (e.g. a coding/development task instruction, a question, small talk).
+function buildIntentPrompt(text: string): string {
+  return `The user sent this WhatsApp message to a coding assistant bot. Decide what it means.
 
-Commands:
+Fixed commands:
 intro — asking who/what the bot is, asking it to introduce itself
 help — asking specifically for the list of commands, exact command syntax, or a technical usage reference/cheatsheet
 explain — asking in general, non-technical, plain language how the bot works, how it helps them, or what happens when they ask it to build/change something (e.g. "jelaskan bagaimana anda membantu saya membuat aplikasi") — NOT asking for specific command syntax, just a conceptual explanation
@@ -34,40 +35,42 @@ stop — asking to cancel/stop the currently running task
 connect_figma — asking to connect/link a Figma account
 session_history — asking what was discussed in a previous conversation/session (e.g. "apa chat kita sebelumnya?", "riwayat obrolan kemarin apa?") — NOT asking about a currently running task's status (that's status)
 greeting — a greeting or small-talk opener with no other content (e.g. "halo", "hi", "apa kabar", "selamat pagi") — nothing else being asked yet
-none — anything else, including any coding/development task or instruction, however short, and anything not confidently one of the above
+
+Anything that isn't one of the fixed commands above is one of these two:
+chat — general conversation: a question, opinion, comment, or small talk that is NOT asking the bot to build/fix/change anything right now and isn't one of the fixed commands. This includes hypothetical or meta questions about what the bot would do or how it works (e.g. "kalau saya minta bikin aplikasi dari nol, apa yang bakal kamu lakukan") — these ask ABOUT a process, they are not themselves a request to start one.
+task — an instruction or request to build, fix, change, deploy, or otherwise work on software/code, right now, however short or vague (e.g. "tambahin dark mode", "kenapa error terus", "benerin bug di halaman login"), and anything not confidently one of the categories above.
+
+A message describing a hypothetical task ("kalau saya minta X", "misalnya saya mau Y") without actually requesting it right now is "chat", not "task". If genuinely unsure between chat and task, prefer task.
 
 Reply with exactly one line, in exactly this format, nothing else:
 INTENT: <key>
 
-Use only these exact keys: ${COMMAND_INTENTS.join(", ")}.
+Use only these exact keys: ${INTENTS.join(", ")}.
 
 Message: "${text}"`;
 }
 
-const INTENT_LINE_RE = new RegExp(`^\\s*intent\\s*:\\s*(${COMMAND_INTENTS.join("|")})\\s*$`, "i");
+const INTENT_LINE_RE = new RegExp(`^\\s*intent\\s*:\\s*(${INTENTS.join("|")})\\s*$`, "i");
 
-// Line-by-line, forgiving on purpose — same rationale as classifier.ts's
-// parseClassifierResponse: free-tier models don't always follow formatting
-// instructions exactly, and a failed parse should degrade to "none" (treat
-// as before) rather than block anything.
-function parseCommandIntentResponse(text: string): CommandIntent {
+// Line-by-line, forgiving on purpose — free-tier models don't always follow
+// formatting instructions exactly. Falls back to "task" (not one of the
+// fixed commands, not "chat") on any parse miss — the fail-closed property
+// that must never regress: an unparseable response may never resolve to a
+// fixed command or "chat" and skip the real task pipeline.
+function parseIntentResponse(text: string): Intent {
   for (const line of text.split("\n")) {
     const match = line.match(INTENT_LINE_RE);
-    if (match) return match[1].toLowerCase() as CommandIntent;
+    if (match) return match[1].toLowerCase() as Intent;
   }
-  return "none";
+  return "task";
 }
 
-export async function classifyCommandIntent(
-  text: string,
-  provider: Provider,
-  signal: AbortSignal
-): Promise<CommandIntent> {
+export async function classifyIntent(text: string, provider: Provider, signal: AbortSignal): Promise<Intent> {
   try {
-    const response = await provider.chat([{ role: "user", content: buildCommandIntentPrompt(text) }], [], signal);
-    if (response.type !== "text") return "none";
-    return parseCommandIntentResponse(response.text);
+    const response = await provider.chat([{ role: "user", content: buildIntentPrompt(text) }], [], signal);
+    if (response.type !== "text") return "task";
+    return parseIntentResponse(response.text);
   } catch {
-    return "none";
+    return "task";
   }
 }
