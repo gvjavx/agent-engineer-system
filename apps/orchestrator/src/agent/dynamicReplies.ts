@@ -16,7 +16,7 @@ async function generateReply(prompt: string, provider: Provider, signal: AbortSi
   }
 }
 
-export const STYLE_RULES = `Answer in casual, simple Indonesian, like texting a friend — no formal tone, no technical jargon unless the question is explicitly technical, no emoji. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame things as easy — describe them plainly instead. Keep it short — a couple of sentences to a short paragraph, not an essay.`;
+export const STYLE_RULES = `Answer in casual, simple Indonesian, like texting a friend — no formal tone, no technical jargon unless the question is explicitly technical, no emoji. Always refer to yourself as "aku" and the user as "kamu" — never "gue"/"lo" or "saya"/"Anda", so the voice stays consistent across every reply. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame things as easy — describe them plainly instead. Keep it short — a couple of sentences to a short paragraph, not an essay.`;
 
 // Every prompt in this file is built fresh per request, so this is always
 // the real send-time date — without it the model answers a "tanggal berapa

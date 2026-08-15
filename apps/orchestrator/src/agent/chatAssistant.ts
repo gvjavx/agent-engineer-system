@@ -25,6 +25,8 @@ function buildSystemPrompt(facts: string[]): string {
 
   return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES} ${currentDateLine()}
 
+The message history below is context only, to understand what's already been discussed — answer the user's newest message specifically. Don't open by restating, recapping, or re-answering what you said last turn unless the new message actually asks you to.
+
 ${factsBlock}
 
 After your reply, add one final line with exactly this format:
