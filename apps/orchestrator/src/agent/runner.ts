@@ -45,16 +45,25 @@ export function splitProviderSpec(spec: string): { name: string; model?: string 
   return { name: spec.slice(0, slashIndex), model: spec.slice(slashIndex + 1) };
 }
 
+// The model a bare (no /model suffix) provider spec actually resolves to —
+// used by "daftar model" to mark exactly one entry per provider as "(default)"
+// instead of every fallback-model entry that happens to share the name.
+export function primaryModelForProvider(name: string): string | undefined {
+  if (name === "gemini") return config.gemini?.model;
+  return config.openAiCompatibleProviders[name]?.model;
+}
+
 // One provider instance per API key configured for this name — lets someone
 // register several keys for the same provider (e.g. 5 Gemini keys) so the
 // loop rotates to the next key on a rate-limit/quota error instead of
-// falling straight through to a different provider. For Gemini specifically,
-// each key also expands across GEMINI_FALLBACK_MODELS: each model has its own
-// separate free-tier quota bucket, so switching model on the SAME key clears
-// a quota error faster than waiting on a retry or burning through other keys
-// that'll hit the identical per-model limit. Only applies when nothing
-// explicitly pinned a model (modelOverride) — "pakai model .../<model>" is a
-// deliberate choice and shouldn't get silently overridden by a fallback.
+// falling straight through to a different provider. Each key also expands
+// across that provider's *_FALLBACK_MODELS (GEMINI_FALLBACK_MODELS,
+// OPENROUTER_FALLBACK_MODELS, QWEN_FALLBACK_MODELS, ...): each model has its
+// own separate free-tier quota bucket, so switching model on the SAME key
+// clears a quota error faster than waiting on a retry or burning through
+// other keys that'll hit the identical per-model limit. Only applies when
+// nothing explicitly pinned a model (modelOverride) — "pakai model .../<model>"
+// is a deliberate choice and shouldn't get silently overridden by a fallback.
 function buildProvidersByName(name: string, modelOverride: string | undefined): Provider[] {
   if (name === "gemini" && config.gemini) {
     const models = modelOverride ? [modelOverride] : [config.gemini.model, ...config.gemini.fallbackModels];
@@ -62,9 +71,9 @@ function buildProvidersByName(name: string, modelOverride: string | undefined): 
   }
   const openAiCompatible = config.openAiCompatibleProviders[name];
   if (openAiCompatible) {
-    const model = modelOverride ?? openAiCompatible.model;
-    return openAiCompatible.apiKeys.map(
-      (apiKey) => new OpenAiCompatibleProvider({ name, baseURL: openAiCompatible.baseUrl, apiKey, model })
+    const models = modelOverride ? [modelOverride] : [openAiCompatible.model, ...openAiCompatible.fallbackModels];
+    return openAiCompatible.apiKeys.flatMap((apiKey) =>
+      models.map((model) => new OpenAiCompatibleProvider({ name, baseURL: openAiCompatible.baseUrl, apiKey, model }))
     );
   }
   return [];

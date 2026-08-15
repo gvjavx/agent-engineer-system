@@ -89,7 +89,7 @@ function parseApiKeys(raw: string): string[] {
     .filter(Boolean);
 }
 
-function envVarName(providerName: string, suffix: "API_KEY" | "BASE_URL" | "MODEL"): string {
+function envVarName(providerName: string, suffix: "API_KEY" | "BASE_URL" | "MODEL" | "FALLBACK_MODELS"): string {
   return `${providerName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_${suffix}`;
 }
 
@@ -181,7 +181,12 @@ export const config = {
         if (!model) {
           throw new Error(`Provider "${name}" butuh env var ${envVarName(name, "MODEL")} di .env.`);
         }
-        return [name, { apiKeys, baseUrl, model }];
+        // Same idea as GEMINI_FALLBACK_MODELS: no built-in default here since,
+        // unlike Gemini, there's no key on hand to verify a candidate list
+        // actually has working free-tier quota against — empty means no
+        // behavior change until someone fills it in for their own key.
+        const fallbackModels = parseApiKeys(process.env[envVarName(name, "FALLBACK_MODELS")] ?? "");
+        return [name, { apiKeys, baseUrl, model, fallbackModels }];
       })
-  ) as Record<string, { apiKeys: string[]; baseUrl: string; model: string }>,
+  ) as Record<string, { apiKeys: string[]; baseUrl: string; model: string; fallbackModels: string[] }>,
 };

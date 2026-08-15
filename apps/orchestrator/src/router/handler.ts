@@ -13,7 +13,7 @@ import {
 } from "../db/index.js";
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
 import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch } from "../git/repo.js";
-import { buildProviders, splitProviderSpec } from "../agent/runner.js";
+import { buildProviders, splitProviderSpec, primaryModelForProvider } from "../agent/runner.js";
 import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
 import { classifyIntent } from "../agent/commandIntent.js";
@@ -764,6 +764,13 @@ async function handleListModelsCommand(from: string): Promise<void> {
     totalPerNameModel.set(key, (totalPerNameModel.get(key) ?? 0) + 1);
   }
 
+  // The fallback-model entries share a name with the provider's actual
+  // default, so "(default)" needs to land on exactly the one entry that
+  // matches the current spec — its pinned model if one was given, otherwise
+  // that provider's own configured default model — not on every entry that
+  // happens to be the same provider.
+  const preferredSpec = state?.preferred_provider ? splitProviderSpec(state.preferred_provider) : undefined;
+
   const providerLines = results.map(({ name, model, status }) => {
     const distinctModels = modelsPerName.get(name)?.size ?? 0;
     const key = `${name}:${model ?? ""}`;
@@ -772,7 +779,9 @@ async function handleListModelsCommand(from: string): Promise<void> {
     seenPerNameModel.set(key, index);
     const modelTag = model && distinctModels > 1 ? ` (${model})` : "";
     const keyTag = totalForModel > 1 ? ` (key ${index}/${totalForModel})` : "";
-    const tag = name === state?.preferred_provider ? " (default)" : "";
+    const isDefault =
+      preferredSpec?.name === name && model === (preferredSpec.model ?? primaryModelForProvider(name));
+    const tag = isDefault ? " (default)" : "";
     return `• ${name}${modelTag}${keyTag}${tag} — ${describeProviderStatus(status)}`;
   });
 
