@@ -48,9 +48,7 @@ const GEMINI_DEFAULT_FALLBACK_MODELS = "gemini-flash-lite-latest,gemini-3.5-flas
 // OPENAI_COMPATIBLE_DEFAULTS above), so "dev" gets an actually coding-tuned
 // model out of the box instead of sharing Gemini with every chat reply.
 // Overridable per department (or a whole new department key added) via
-// DEPARTMENT_DEFAULT_PROVIDERS; a name that isn't actually configured in
-// AI_PROVIDER_ORDER just no-ops back to the flat fallback order (see
-// runner.ts's applyPreferredProvider), so this degrades safely.
+// DEPARTMENT_DEFAULT_PROVIDERS.
 const DEPARTMENT_DEFAULT_PROVIDER_DEFAULTS: Partial<Record<DepartmentKey, string>> = {
   dev: "qwen",
   manajemen: "gemini",
@@ -66,6 +64,30 @@ function parseDepartmentDefaultProviders(raw: string): Partial<Record<Department
     if (dept && spec) result[dept as DepartmentKey] = spec;
   }
   return result;
+}
+
+// "<provider>" or "<provider>/<model>" -> just the provider name. Duplicated
+// from runner.ts's splitProviderSpec (one line) rather than imported —
+// runner.ts imports config.ts, so importing back would be circular.
+function providerNameOf(spec: string): string {
+  const slashIndex = spec.indexOf("/");
+  return slashIndex === -1 ? spec : spec.slice(0, slashIndex);
+}
+
+// A default pointing at a provider nobody actually configured in
+// AI_PROVIDER_ORDER would still silently no-op at execution time (see
+// runner.ts's applyPreferredProvider), but it would keep showing up in
+// "daftar model" and the task-plan preview as if it were really running —
+// e.g. dev defaulting to "qwen" on a setup that only has Gemini keys filled
+// in. Dropped here instead, so a department with no *usable* default just
+// falls through to the flat provider order like it would with none set.
+function keepOnlyConfiguredProviders(
+  defaults: Partial<Record<DepartmentKey, string>>,
+  configuredProviderNames: string[]
+): Partial<Record<DepartmentKey, string>> {
+  return Object.fromEntries(
+    Object.entries(defaults).filter(([, spec]) => configuredProviderNames.includes(providerNameOf(spec)))
+  ) as Partial<Record<DepartmentKey, string>>;
 }
 
 function requiredForProvider(providerName: string, envVar: string): string {
@@ -137,9 +159,12 @@ export const config = {
   // DEPARTMENT_DEFAULT_PROVIDER_DEFAULTS above for why "dev" and "manajemen"
   // are set out of the box. Lowest-priority fallback: a user's own "pakai
   // model <departemen>"/"pakai model semua" always wins over this.
-  departmentDefaultProviders: process.env.DEPARTMENT_DEFAULT_PROVIDERS
-    ? parseDepartmentDefaultProviders(process.env.DEPARTMENT_DEFAULT_PROVIDERS)
-    : DEPARTMENT_DEFAULT_PROVIDER_DEFAULTS,
+  departmentDefaultProviders: keepOnlyConfiguredProviders(
+    process.env.DEPARTMENT_DEFAULT_PROVIDERS
+      ? parseDepartmentDefaultProviders(process.env.DEPARTMENT_DEFAULT_PROVIDERS)
+      : DEPARTMENT_DEFAULT_PROVIDER_DEFAULTS,
+    providerOrder
+  ),
 
   gemini: providerOrder.includes("gemini")
     ? {
