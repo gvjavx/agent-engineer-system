@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { introduceYourself, respondToGreeting, explainHelp, explainInSimpleTerms } from "./dynamicReplies.js";
+import { introduceYourself, explainHelp, explainInSimpleTerms } from "./dynamicReplies.js";
 import type { Provider, ProviderResponse } from "./types.js";
 
 function fakeProvider(behavior: () => Promise<ProviderResponse>): Provider {
@@ -30,18 +30,6 @@ test("introduceYourself returns undefined when the provider throws", async () =>
     throw new Error("boom");
   });
   const result = await introduceYourself("kamu siapa", provider, new AbortController().signal);
-  assert.equal(result, undefined);
-});
-
-test("respondToGreeting returns the provider's answer on success", async () => {
-  const provider = fakeProvider(async () => ({ type: "text", text: "Halo juga! Ada yang mau dikerjain?" }));
-  const result = await respondToGreeting("met pagi", provider, new AbortController().signal);
-  assert.equal(result, "Halo juga! Ada yang mau dikerjain?");
-});
-
-test("respondToGreeting returns undefined on a tool_calls response", async () => {
-  const provider = fakeProvider(async () => ({ type: "tool_calls", calls: [] }));
-  const result = await respondToGreeting("halo", provider, new AbortController().signal);
   assert.equal(result, undefined);
 });
 

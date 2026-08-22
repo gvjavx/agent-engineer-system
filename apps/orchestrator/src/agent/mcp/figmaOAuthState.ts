@@ -6,21 +6,33 @@ import crypto from "node:crypto";
 
 interface PendingLink {
   fromNumber: string;
+  codeVerifier: string;
   createdAt: number;
 }
 
 const pending = new Map<string, PendingLink>();
 const TTL_MS = 15 * 60 * 1000;
 
-export function createPendingState(fromNumber: string): string {
-  const state = crypto.randomBytes(16).toString("hex");
-  pending.set(state, { fromNumber, createdAt: Date.now() });
-  return state;
+export interface PendingAuthorization {
+  state: string;
+  codeVerifier: string;
 }
 
-export function consumePendingState(state: string): string | undefined {
+// codeVerifier is PKCE's random secret (RFC 7636) — Figma's authorize
+// endpoint rejects the request outright without a matching code_challenge
+// derived from this. Generated alongside state since both are created
+// together right before sending the authorize link, and both only need to
+// survive until the callback lands.
+export function createPendingState(fromNumber: string): PendingAuthorization {
+  const state = crypto.randomBytes(16).toString("hex");
+  const codeVerifier = crypto.randomBytes(32).toString("base64url");
+  pending.set(state, { fromNumber, codeVerifier, createdAt: Date.now() });
+  return { state, codeVerifier };
+}
+
+export function consumePendingState(state: string): { fromNumber: string; codeVerifier: string } | undefined {
   const entry = pending.get(state);
   pending.delete(state);
   if (!entry || Date.now() - entry.createdAt > TTL_MS) return undefined;
-  return entry.fromNumber;
+  return { fromNumber: entry.fromNumber, codeVerifier: entry.codeVerifier };
 }

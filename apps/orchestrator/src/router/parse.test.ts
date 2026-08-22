@@ -20,6 +20,7 @@ import {
   isConfirmNo,
   isConfirmYesWithCheckpoints,
   isIntroCommand,
+  isCreatorCommand,
   isConnectFigmaCommand,
   isGreetingCommand,
   isAllowedRepoUrl,
@@ -273,6 +274,18 @@ test("isIntroCommand recognizes common self-introduction questions", () => {
   assert.ok(!isIntroCommand("tambahin fitur login dong"));
 });
 
+test("isCreatorCommand recognizes questions about who made the bot", () => {
+  assert.ok(isCreatorCommand("siapa penciptamu"));
+  assert.ok(isCreatorCommand("Siapa Pencipta Kamu?"));
+  assert.ok(isCreatorCommand("siapa yang bikin kamu"));
+  assert.ok(isCreatorCommand("who created you"));
+  // Paraphrase path — "pencipta"/"pembuat" appearing anywhere, still bounded
+  // by word count so it can't fire on a long unrelated instruction.
+  assert.ok(isCreatorCommand("eh btw penciptamu siapa sih"));
+  assert.ok(!isCreatorCommand("tambahin fitur login dong"));
+  assert.ok(!isCreatorCommand("siapa kamu"));
+});
+
 test("isGreetingCommand recognizes common greetings", () => {
   assert.ok(isGreetingCommand("halo"));
   assert.ok(isGreetingCommand("Hai!"));
@@ -283,11 +296,41 @@ test("isGreetingCommand recognizes common greetings", () => {
   assert.ok(!isGreetingCommand("tambahin fitur login dong"));
 });
 
+test("isGreetingCommand also recognizes a question word paired with 'kabar' as a paraphrase", () => {
+  assert.ok(isGreetingCommand("bagaimana kabar anda"));
+  assert.ok(isGreetingCommand("Bagaimana kabar Anda?"));
+  assert.ok(isGreetingCommand("piye kabare"));
+  // A bare greeting word mixed with real task content must NOT get
+  // hijacked — this is the regression the narrower "kabar"-only pattern
+  // exists to avoid (a bare halo/hai/hi broadening briefly broke this).
+  assert.ok(!isGreetingCommand("halo, tolong bikinin fitur baru dong"));
+  // "kabar"/question words without both present together still correctly
+  // don't match — an unrelated instruction mentioning "kabar" (news) isn't
+  // a greeting just because it's short.
+  assert.ok(!isGreetingCommand("bikin halaman kabar terkini"));
+  assert.ok(!isGreetingCommand("gimana caranya nambahin fitur login"));
+});
+
 test("isConnectFigmaCommand recognizes the Figma linking phrases", () => {
   assert.ok(isConnectFigmaCommand("hubungkan figma"));
   assert.ok(isConnectFigmaCommand("Connect Figma"));
   assert.ok(isConnectFigmaCommand("  sambungkan figma  "));
   assert.ok(!isConnectFigmaCommand("liat desain figma dong"));
+});
+
+test("isConnectFigmaCommand also recognizes short paraphrases of the exact phrase", () => {
+  assert.ok(isConnectFigmaCommand("fitus sambungkan figma untuk sambungin akun figma saya"));
+  assert.ok(isConnectFigmaCommand("tolong hubungin akun figma aku dong"));
+  assert.ok(isConnectFigmaCommand("figma nya belum ke-connect nih"));
+  // No connect-ish verb at all — still correctly not a match.
+  assert.ok(!isConnectFigmaCommand("liat desain figma dong"));
+  // Mentions both words, but reads as a real task, not a request to link an
+  // account — and is well past the paraphrase word-count bound anyway.
+  assert.ok(
+    !isConnectFigmaCommand(
+      "bikin halaman yang bisa hubungkan desain figma ke katalog produk dan sinkronin otomatis tiap ada perubahan"
+    )
+  );
 });
 
 test("isListMemoryCommand recognizes the memory-listing phrases", () => {

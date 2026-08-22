@@ -107,12 +107,15 @@ test("buildPhaseSystemPrompt adds the design-source ask-first block only for des
   });
   assert.match(asksFirst, /don't generate or write any design/);
 
+  // A bare Figma link doesn't count as a usable source — Figma's own OAuth
+  // restrictions mean nothing can actually read it (see designSource.ts) —
+  // so this still asks first instead of treating the link as sufficient.
   const withFigmaLink = buildPhaseSystemPrompt({
     ...base,
     instruction: "buatkan sesuai desain ini https://www.figma.com/design/abc123/Landing-Page",
     checkpoints: true,
   });
-  assert.doesNotMatch(withFigmaLink, /don't generate or write any design/);
+  assert.match(withFigmaLink, /don't generate or write any design/);
 
   const withImageDescription = buildPhaseSystemPrompt({
     ...base,
@@ -170,4 +173,35 @@ test("buildPhaseSystemPrompt requires the narrated role breakdown + Tanya-role h
   });
   assert.doesNotMatch(devPrompt, /Product Owner \(Fokus\)/);
   assert.match(devPrompt, /short handoff note/);
+});
+
+test("buildPhaseSystemPrompt adds the QA persistence block only for the qa phase", () => {
+  const base = {
+    projectAlias: "demo",
+    isLastPhase: false,
+    previousPhases: [],
+    instruction: "bikin fitur checkout",
+    checkpoints: true,
+    mode: "git" as const,
+    defaultBranch: "main",
+    workBranch: "agent/abc123",
+    autoMerge: "direct" as const,
+  };
+
+  const qaPrompt = buildPhaseSystemPrompt({
+    ...base,
+    department: "qa",
+    departmentLabel: "QA & Testing",
+    note: "test the checkout feature",
+  });
+  assert.match(qaPrompt, /actually exercise the real functionality/);
+  assert.match(qaPrompt, /larger turn budget than other phases/);
+
+  const devPrompt = buildPhaseSystemPrompt({
+    ...base,
+    department: "dev",
+    departmentLabel: "Tim Pengembangan",
+    note: "implement the checkout feature",
+  });
+  assert.doesNotMatch(devPrompt, /actually exercise the real functionality/);
 });

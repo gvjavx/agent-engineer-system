@@ -184,6 +184,16 @@ const HELP_PHRASES = new Set(["help", "bantuan", "menu"]);
 const STATUS_PHRASES = new Set(["status"]);
 const STOP_PHRASES = new Set(["stop", "batalkan"]);
 const CONNECT_FIGMA_PHRASES = new Set(["hubungkan figma", "sambungkan figma", "connect figma"]);
+// Broader than the exact-phrase set above — catches real paraphrases like
+// "fitus sambungkan figma untuk sambungin akun figma saya" or "tolong
+// hubungin akun figma aku dong" that mention both a connect-ish verb and
+// "figma" but aren't the exact canonical phrase. Real transcript: a message
+// like this missed the exact-phrase set, fell through to the AI intent
+// classifier, and got misread as a coding task ("implement Figma
+// integration") instead of the existing "hubungkan figma" command — this
+// catches it deterministically instead, no AI call needed or at risk of
+// misfiring.
+const CONNECT_FIGMA_PARAPHRASE_RE = /\b(hubung(?:kan|in)?|sambung(?:kan|in)?|connect)\b[\s\S]*\bfigma\b|\bfigma\b[\s\S]*\b(?:hubung(?:kan|in)?|sambung(?:kan|in)?|connect)\b/i;
 const LIST_MEMORY_PHRASES = new Set([
   "lihat memori",
   "apa yang kamu inget",
@@ -260,8 +270,17 @@ export function isStopCommand(text: string): boolean {
   return STOP_PHRASES.has(text.trim().toLowerCase());
 }
 
+// Short enough to plausibly be a paraphrase of the command ("sambungin akun
+// figma saya dong"), too short to be a real task instruction that happens to
+// mention both words far apart ("bikin halaman yang bisa hubungkan desain
+// figma ke katalog produk dan sinkronin otomatis tiap ada perubahan" is
+// already past this — stays a task instruction, doesn't get hijacked).
+const CONNECT_FIGMA_PARAPHRASE_MAX_WORDS = 15;
+
 export function isConnectFigmaCommand(text: string): boolean {
-  return CONNECT_FIGMA_PHRASES.has(text.trim().toLowerCase());
+  const trimmed = text.trim();
+  if (CONNECT_FIGMA_PHRASES.has(trimmed.toLowerCase())) return true;
+  return isPlausibleShortCommand(trimmed, CONNECT_FIGMA_PARAPHRASE_MAX_WORDS) && CONNECT_FIGMA_PARAPHRASE_RE.test(trimmed);
 }
 
 export function isListMemoryCommand(text: string): boolean {
@@ -278,6 +297,39 @@ export function isSessionHistoryCommand(text: string): boolean {
 
 export function isIntroCommand(text: string): boolean {
   return INTRO_PHRASES.has(text.trim().toLowerCase());
+}
+
+const CREATOR_PHRASES = new Set([
+  "siapa penciptamu",
+  "siapa pencipta kamu",
+  "siapa pencipta mu",
+  "siapa pembuatmu",
+  "siapa pembuat kamu",
+  "siapa pembuat mu",
+  "siapa developer kamu",
+  "siapa developernya",
+  "siapa yang membuat kamu",
+  "siapa yang membuatmu",
+  "siapa yang bikin kamu",
+  "siapa yang buat kamu",
+  "yang bikin kamu siapa",
+  "yang buat kamu siapa",
+  "who made you",
+  "who created you",
+  "who is your creator",
+  "who is your developer",
+]);
+// "pencipta"/"pembuat" (with any suffix — "penciptamu", "pembuatnya") are
+// specific enough Indonesian words that they essentially never appear in a
+// real coding task instruction, unlike common words ("halo", "kabar") that
+// needed a stricter pairing rule to stay safe — see isGreetingCommand.
+const CREATOR_PARAPHRASE_RE = /\b(pencipta|pembuat)/i;
+const CREATOR_PARAPHRASE_MAX_WORDS = 10;
+
+export function isCreatorCommand(text: string): boolean {
+  const trimmed = text.trim();
+  if (CREATOR_PHRASES.has(trimmed.toLowerCase())) return true;
+  return isPlausibleShortCommand(trimmed, CREATOR_PARAPHRASE_MAX_WORDS) && CREATOR_PARAPHRASE_RE.test(trimmed);
 }
 
 const GREETING_PHRASES = new Set([
@@ -314,8 +366,23 @@ const GREETING_PHRASES = new Set([
   "sehat?",
 ]);
 
+// Broader than the exact-phrase set above, but deliberately narrow — only
+// a question word paired with "kabar" ("bagaimana kabar anda", a more formal
+// phrasing than "apa kabar"/"gimana kabarnya" that missed the exact set).
+// NOT a bare greeting-word match (halo/hai/hi/...): tried that first and it
+// broke a real case this file already tests for — "halo, tambahin endpoint
+// health check dong" is a real task that happens to open with a casual
+// "halo," and must stay routed as a task, not hijacked into a greeting
+// reply. "kabar" paired with a question word doesn't have that ambiguity —
+// nobody opens a real task instruction with "gimana kabar kamu, tolong
+// bikinin...".
+const GREETING_PARAPHRASE_RE = /\b(apa|gimana|bagaimana|piye)\b[\s\S]*\bkabar/i;
+const GREETING_PARAPHRASE_MAX_WORDS = 8;
+
 export function isGreetingCommand(text: string): boolean {
-  return GREETING_PHRASES.has(text.trim().toLowerCase());
+  const trimmed = text.trim();
+  if (GREETING_PHRASES.has(trimmed.toLowerCase())) return true;
+  return isPlausibleShortCommand(trimmed, GREETING_PARAPHRASE_MAX_WORDS) && GREETING_PARAPHRASE_RE.test(trimmed);
 }
 
 const CONFIRM_YES_PHRASES = new Set(["ya", "iya", "yes", "y", "oke", "ok", "boleh", "lanjut", "setuju"]);

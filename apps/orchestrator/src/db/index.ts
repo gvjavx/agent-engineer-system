@@ -59,6 +59,17 @@ db.exec(`
     expires_at TEXT NOT NULL
   );
 
+  -- Figma OAuth app credentials set via the "hubungkan figma" chat wizard —
+  -- lets that first-time setup happen without editing .env. Same single-row
+  -- shape as figma_oauth above; agent/mcp/figmaAuth.ts reads this first and
+  -- falls back to the env-based config.figma if this is empty.
+  CREATE TABLE IF NOT EXISTS figma_app_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    client_id TEXT NOT NULL,
+    client_secret TEXT,
+    redirect_uri TEXT NOT NULL
+  );
+
   -- Facts learned about a user during casual chat (see agent/chatAssistant.ts),
   -- kept across sessions so the bot doesn't start from zero every conversation.
   CREATE TABLE IF NOT EXISTS user_memory (
@@ -203,6 +214,21 @@ export const tasksRepo = {
       )
       .all(fromNumber, limit) as Task[];
   },
+  // The in-memory task queue (queue/taskQueue.ts) that would normally
+  // transition these to done/failed/cancelled dies with the process — a
+  // restart mid-task otherwise leaves the row stuck at 'queued'/'running'
+  // forever, which makes "status" report a task as still running when
+  // nothing is actually executing it anymore. Call once at startup, before
+  // anything new gets enqueued: anything already in that state at that point
+  // is definitionally orphaned. Returns the recovered rows for logging.
+  recoverOrphaned(): Task[] {
+    const orphaned = db.prepare("SELECT * FROM tasks WHERE status IN ('queued','running')").all() as Task[];
+    db.prepare(
+      `UPDATE tasks SET status = 'failed', result_summary = 'Terputus karena server restart sebelum selesai.', finished_at = datetime('now')
+       WHERE status IN ('queued','running')`
+    ).run();
+    return orphaned;
+  },
 };
 
 export const auditLog = {
@@ -343,6 +369,29 @@ export const figmaOAuthRepo = {
   },
   clear(): void {
     db.prepare("DELETE FROM figma_oauth WHERE id = 1").run();
+  },
+};
+
+export interface FigmaAppConfig {
+  client_id: string;
+  client_secret: string | null;
+  redirect_uri: string;
+}
+
+export const figmaAppConfigRepo = {
+  get(): FigmaAppConfig | undefined {
+    return db.prepare("SELECT client_id, client_secret, redirect_uri FROM figma_app_config WHERE id = 1").get() as
+      | FigmaAppConfig
+      | undefined;
+  },
+  save(cfg: { clientId: string; clientSecret?: string; redirectUri: string }): void {
+    db.prepare(
+      `INSERT INTO figma_app_config (id, client_id, client_secret, redirect_uri) VALUES (1, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET client_id = excluded.client_id, client_secret = excluded.client_secret, redirect_uri = excluded.redirect_uri`
+    ).run(cfg.clientId, cfg.clientSecret ?? null, cfg.redirectUri);
+  },
+  clear(): void {
+    db.prepare("DELETE FROM figma_app_config WHERE id = 1").run();
   },
 };
 

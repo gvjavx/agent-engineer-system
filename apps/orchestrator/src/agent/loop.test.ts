@@ -35,7 +35,8 @@ test("runAgentLoop never calls any provider when Figma isn't linked yet", async 
 
   assert.equal(providerCalled, false);
   assert.equal(result.ok, false);
-  assert.match(result.summary, /hubungkan figma/);
+  assert.equal(result.recoverable, undefined);
+  assert.match(result.summary, /Figma/);
 });
 
 test("runAgentLoop surfaces a connection error without running the loop", async () => {

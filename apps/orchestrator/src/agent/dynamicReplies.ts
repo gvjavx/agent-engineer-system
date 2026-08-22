@@ -19,17 +19,26 @@ async function generateReply(prompt: string, provider: Provider, signal: AbortSi
 export const STYLE_RULES = `Answer in casual, simple Indonesian, like texting a friend — no formal tone, no technical jargon unless the question is explicitly technical, no emoji. Always refer to yourself as "aku" and the user as "kamu" — never "gue"/"lo" or "saya"/"Anda", so the voice stays consistent across every reply. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame things as easy — describe them plainly instead. Keep it short — a couple of sentences to a short paragraph, not an essay.`;
 
 // Every prompt in this file is built fresh per request, so this is always
-// the real send-time date — without it the model answers a "tanggal berapa
-// hari ini?" from its training cutoff instead of reality.
+// the real send-time date AND time — without it the model answers a
+// "tanggal berapa hari ini?" from its training cutoff instead of reality
+// (date-only originally; real transcript showed "jam berapa sekarang?" still
+// got a hallucinated clock time, since nothing here ever told it the hour).
 export function currentDateLine(): string {
+  const now = new Date();
   const today = new Intl.DateTimeFormat("id-ID", {
     weekday: "long",
     day: "numeric",
     month: "long",
     year: "numeric",
     timeZone: "Asia/Jakarta",
-  }).format(new Date());
-  return `Today's real date is ${today} (WIB) — if the user asks what day/date/year it is, answer with this, don't guess from training data.`;
+  }).format(now);
+  const time = new Intl.DateTimeFormat("id-ID", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Jakarta",
+  }).format(now);
+  return `Right now it's ${today}, ${time} WIB — if the user asks what day/date/year/time it is, answer with this exactly, don't guess from training data.`;
 }
 
 function buildIntroPrompt(question: string): string {
@@ -50,22 +59,6 @@ export async function introduceYourself(
   signal: AbortSignal
 ): Promise<string | undefined> {
   return generateReply(buildIntroPrompt(question), provider, signal);
-}
-
-function buildGreetingPrompt(message: string): string {
-  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user just sent a casual greeting (hello, how are you, good morning, etc.) with no other request yet. ${STYLE_RULES} ${currentDateLine()}
-
-Reply warmly and briefly, and nudge them toward telling you what they want done, or typing "bantuan" if they want to see what you can do first. Don't re-explain everything you do — that's not what a greeting reply is for.
-
-The user's message: "${message}"`;
-}
-
-export async function respondToGreeting(
-  message: string,
-  provider: Provider,
-  signal: AbortSignal
-): Promise<string | undefined> {
-  return generateReply(buildGreetingPrompt(message), provider, signal);
 }
 
 // Grounded in the literal command reference (passed in, not restated from
@@ -107,7 +100,7 @@ ones actually relevant to that specific request happen, not always all of them):
   1. Product Owner — figures out what the user actually needs and the most sensible scope for it.
   2. Project Manager — plans the order of work and what needs to happen first.
   3. System Analyst — works out the workflow and system requirements needed to match what the user wants.
-  4. UI/UX — the user can connect an existing Figma design, or let you design it automatically.
+  4. UI/UX — you design it automatically, or the user can send a screenshot/reference image of what they want.
   5. Developer — you write the actual software based on what was worked out in the steps above.
   6. QA/Tester — hunts for bugs and checks that everything actually works correctly before it's considered done.
   - Infrastructure/deployment work and business-side work can also join in when the request needs it (e.g. publishing the app somewhere accessible, or handling non-technical business needs) — mention these only if relevant to what was asked, don't force them into every answer.

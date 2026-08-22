@@ -25,10 +25,38 @@ const GITHUB_URL_SCOPE = "https://github.com";
 // for tests, and for not failing orchestrator startup if `git` isn't on PATH
 // for some unrelated reason).
 let credentialHelperReady = false;
+function unsetIfPresent(key: string): void {
+  try {
+    execFileSync("git", ["config", "--global", "--unset-all", key]);
+  } catch {
+    // exits non-zero when the key was never set — nothing to remove
+  }
+}
 function ensureGithubCredentialHelper(): void {
   if (credentialHelperReady) return;
+  const scopedKey = `credential.${GITHUB_URL_SCOPE}.helper`;
+  // Git accumulates every configured credential.helper across
+  // system/global/local scopes and consults all of them for a matching URL —
+  // scoping ours to github.com doesn't exclude a broader system-level one
+  // (e.g. Windows' Git Credential Manager, "manager"), which still gets
+  // tried too. The real failure mode this caused in practice: GCM caches
+  // whatever credential it's handed, so once it's cached both a human login
+  // and this token-based one for github.com, it can no longer auto-pick and
+  // pops an interactive account-selection GUI instead — which just hangs
+  // this headless process forever. Setting credential.helper to the empty
+  // string resets whatever accumulated from earlier-read (system-level)
+  // config files before that point in file-read order — but git config only
+  // appends a NEW key at the end of the file; an already-existing key (e.g.
+  // scopedKey, set by a previous run of this same function) gets updated in
+  // place at its original position instead. Left alone, that silently
+  // reorders the reset to land AFTER the scoped helper and wipe it out too.
+  // Removing both first guarantees a clean, correctly-ordered rewrite every
+  // time regardless of what a previous run already wrote.
+  unsetIfPresent("credential.helper");
+  unsetIfPresent(scopedKey);
+  execFileSync("git", ["config", "--global", "credential.helper", ""]);
   const helper = `!f() { [ "$1" = get ] && echo username=x-access-token && echo "password=$GITHUB_TOKEN"; }; f`;
-  execFileSync("git", ["config", "--global", `credential.${GITHUB_URL_SCOPE}.helper`, helper]);
+  execFileSync("git", ["config", "--global", scopedKey, helper]);
   credentialHelperReady = true;
 }
 

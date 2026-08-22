@@ -6,7 +6,7 @@ import { consumePendingState } from "./agent/mcp/figmaOAuthState.js";
 import { sendWhatsApp } from "./whatsappClient.js";
 import { startIdleSessionScanner } from "./session/idleNotifier.js";
 import { isDuplicateInboundMessage } from "./inboundDedup.js";
-import "./db/index.js";
+import { tasksRepo } from "./db/index.js";
 
 const app = express();
 
@@ -66,13 +66,14 @@ app.post("/internal/figma-oauth-callback", express.json(), (req, res) => {
   }
   res.sendStatus(202);
 
-  const fromNumber = consumePendingState(state);
-  if (!fromNumber) {
+  const resolved = consumePendingState(state);
+  if (!resolved) {
     console.error("Figma OAuth callback with an unknown or expired state");
     return;
   }
+  const { fromNumber, codeVerifier } = resolved;
 
-  exchangeCodeForTokens(code)
+  exchangeCodeForTokens(code, codeVerifier)
     .then(() => sendWhatsApp(fromNumber, "Figma udah kesambung! Tinggal tempel link Figma-nya di instruksi kamu."))
     .catch((err) =>
       sendWhatsApp(fromNumber, `Gagal nyambungin Figma: ${err instanceof Error ? err.message : String(err)}`)
@@ -80,6 +81,18 @@ app.post("/internal/figma-oauth-callback", express.json(), (req, res) => {
 });
 
 app.get("/healthz", (_req, res) => res.sendStatus(200));
+
+// Before accepting any request — anything still 'queued'/'running' at this
+// point belongs to a process that no longer exists (see
+// tasksRepo.recoverOrphaned's comment). No WhatsApp notification: these are
+// stale bookkeeping fixes, not something worth surfacing for tasks that may
+// be long past relevant to the user.
+const recovered = tasksRepo.recoverOrphaned();
+if (recovered.length > 0) {
+  console.warn(
+    `Recovered ${recovered.length} task(s) stuck from a previous run: ${recovered.map((t) => t.id).join(", ")}`
+  );
+}
 
 app.listen(config.port, () => {
   console.log(`orchestrator listening on port ${config.port}`);

@@ -31,7 +31,7 @@ ${factsBlock}
 
 After your reply, add one final line with exactly this format:
 FACT: <one short new fact worth remembering long-term about this user, in Indonesian>
-Only include something genuinely new and worth remembering (preferences, ongoing projects, context about them) — don't repeat anything already listed above. If there's nothing new worth remembering from this message, write exactly:
+Write it in second person ("kamu lagi ngerjain...", "kamu suka...") so it reads naturally if it ever gets quoted back to them in a later reply — not a third-person case note ("user sedang...", "user cenderung..."). Only include something genuinely worth remembering about them as a person — a preference, an ongoing project, real context about them — never a running commentary on how this conversation itself has gone (e.g. "kamu sering nanya X berulang" or "kamu ketauan bingung soal Y") — that's meta-observation about the chat, not a fact about them, and reads strangely if repeated back later. Don't repeat anything already listed above. If there's nothing new worth remembering from this message, write exactly:
 FACT: tidak ada`;
 }
 

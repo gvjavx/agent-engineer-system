@@ -56,7 +56,24 @@ export interface RunPipelineParams {
   runAgentLoopFn?: (params: RunAgentLoopParams) => Promise<RunAgentLoopResult>;
 }
 
-const PHASE_MAX_TURNS = 15;
+// Was 15 — real transcript showed a dev phase burn all 15 turns on 11
+// straight edit_file calls building out one page's sections, never even
+// reaching QA. 15 was tight even for a single-pass phase with no iteration
+// at all; paired with the write-the-whole-file guidance in SHARED_TOOLS_NOTE
+// (systemPrompt.ts) so the extra room gets spent converging, not on more of
+// the same small-edit pattern.
+const PHASE_MAX_TURNS = 25;
+// QA specifically needs room for a real fix-then-retest loop (write/run a
+// check, diagnose a failure, fix it, re-run) on top of that — real
+// transcript: it separately hit the (lower, at the time) turn cap mid-loop
+// on a genuine iteration, not stuck thrashing (see QA_PERSISTENCE_BLOCK in
+// systemPrompt.ts for the other half of this fix — the prompt guidance that
+// makes the extra budget actually converge instead of just delaying the cap).
+const QA_PHASE_MAX_TURNS = 40;
+
+function maxTurnsForDepartment(department: DepartmentKey | "semua"): number {
+  return department === "qa" ? QA_PHASE_MAX_TURNS : PHASE_MAX_TURNS;
+}
 
 // Tap ids from MANAJEMEN_CHECKPOINT_OPTIONS (router/handler.ts) mapped to the
 // role's display name. Shared here (not duplicated in handler.ts) since both
@@ -164,18 +181,38 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
 
     const providerName = departmentModelLookup(phase.department) ?? departmentModelLookup("semua");
 
-    let result = await runAgentLoopFn({
-      providers: buildProvidersFn(providerName),
-      systemPrompt,
-      instruction,
-      cwd,
-      taskId,
-      abortController,
-      onProgress,
-      maxTurns: PHASE_MAX_TURNS,
-      sendDocument,
-      onDangerousBash,
-    });
+    const runPhase = () =>
+      runAgentLoopFn({
+        providers: buildProvidersFn(providerName),
+        systemPrompt,
+        instruction,
+        cwd,
+        taskId,
+        abortController,
+        onProgress,
+        maxTurns: maxTurnsForDepartment(phase.department),
+        sendDocument,
+        onDangerousBash,
+      });
+
+    let result = await runPhase();
+
+    // Recoverable (e.g. "Figma belum kesambung") on a phase's very first run
+    // — not just the checkpoint-revision loop further down, which already
+    // handled this. Reuses the same checkpoint wait/resolve primitives
+    // handler.ts's handlePendingCheckpoint already resolves on the user's
+    // next message (including its "hubungkan figma" special-case that sends
+    // the OAuth link but leaves this pending) — "continue" and "revise" both
+    // just mean "try again" here, there's nothing to revise about a
+    // recoverable failure, the user just needs to fix the actual blocker.
+    while (!result.ok && result.recoverable) {
+      await onProgress(result.summary);
+      const resolution = await waitForCheckpoint(taskId, abortController.signal);
+      if (resolution.action === "cancel") {
+        return { ok: false, cancelled: true, summary: `Dibatalin pas fase "${label}" nunggu perbaikan.` };
+      }
+      result = await runPhase();
+    }
 
     if (!result.ok) {
       // A mid-phase abort (user typed "stop" while this phase's agent loop
@@ -278,7 +315,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           taskId,
           abortController,
           onProgress,
-          maxTurns: PHASE_MAX_TURNS,
+          maxTurns: maxTurnsForDepartment(phase.department),
           sendDocument,
           onDangerousBash,
         });

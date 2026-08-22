@@ -244,6 +244,47 @@ test("a recoverable revise failure (e.g. Figma not linked) re-prompts at the sam
   assert.match(result.summary, /Landing page diimplementasi\./);
 });
 
+test("a recoverable failure on a phase's very first run pauses and retries instead of failing the whole task", async () => {
+  const taskId = "first-run-recoverable";
+  const progressMessages: string[] = [];
+
+  let callCount = 0;
+  const runAgentLoopFn = async (): Promise<RunAgentLoopResult> => {
+    callCount++;
+    if (callCount === 1) {
+      return { ok: false, recoverable: true, summary: 'Figma belum kesambung. Ketik "hubungkan figma" dulu ya.' };
+    }
+    return { ok: true, summary: "Komponen udah dibikin pakai link Figma." };
+  };
+
+  const resultPromise = runPipeline({
+    ...baseParams,
+    taskId,
+    instruction: "buatkan komponen dari desain ini https://figma.com/design/abc123",
+    phases: [{ department: "desain", note: "rancang komponen dari Figma" }],
+    abortController: new AbortController(),
+    onProgress: async (msg) => {
+      progressMessages.push(msg);
+    },
+    // Deliberately off — this failure mode used to only get handled inside
+    // the checkpoint-revision loop, which only exists when checkpoints are
+    // on. The fix applies regardless of this setting, on the very first run.
+    checkpoints: false,
+    departmentModelLookup: () => "fake",
+    buildProvidersFn: () => [],
+    runAgentLoopFn,
+  });
+
+  await waitUntilCheckpointPending(taskId);
+  assert.match(progressMessages[progressMessages.length - 1], /Figma belum kesambung/);
+
+  resolveCheckpoint(taskId, { action: "continue" });
+  const result = await resultPromise;
+  assert.equal(result.ok, true);
+  assert.match(result.summary, /Komponen udah dibikin pakai link Figma\./);
+  assert.equal(callCount, 2);
+});
+
 test("a failing phase stops the pipeline before later phases run", async () => {
   let devPhaseRan = false;
 

@@ -77,6 +77,29 @@ Cek log untuk pastikan semua service jalan:
 docker compose -f infra/docker-compose.yml logs -f
 ```
 
+### Alternatif: GCP dengan auto-deploy tiap push
+
+Kalau mau host di GCP dan biar tiap `git push` ke `main` langsung ke-deploy sendiri (tanpa SSH manual tiap kali ada perubahan), pakai `infra/gcp/setup.sh` alih-alih langkah VPS di atas.
+
+Sekali jalan, script ini bikin: VM Compute Engine (Ubuntu + Docker, isi `.env` kamu disimpan sebagai Secret Manager secret, bukan plaintext di disk), static IP dengan domain gratis `<ip>.sslip.io` (dapat sertifikat HTTPS valid otomatis lewat Caddy, gak perlu beli domain), dan Workload Identity Federation supaya GitHub Actions bisa SSH deploy tanpa nyimpen service account key di mana pun.
+
+```bash
+gcloud auth login                 # kalau belum
+gcloud config set project <project-id>
+cp .env.example .env && $EDITOR .env   # isi semua kredensial (lihat langkah 1)
+VM_MACHINE_TYPE=e2-medium ./infra/gcp/setup.sh   # e2-small lebih murah kalau mau hemat
+```
+
+Di akhir, script ini nampilin domain sslip.io-nya dan 5 nilai (`GCP_PROJECT_ID`, `GCP_WIF_PROVIDER`, `GCP_DEPLOY_SA`, `GCP_ZONE`, `GCP_VM_NAME`) buat ditaruh sebagai **repo variable** GitHub (Settings → Secrets and variables → Actions → tab *Variables*, bukan *Secrets* — nilainya emang bukan rahasia). Setelah itu, `.github/workflows/deploy.yml` yang jalanin sisanya: tiap push ke `main`, workflow SSH ke VM lewat IAP tunnel dan jalankan `infra/gcp/redeploy.sh` (`git pull` + refresh secret + `docker compose up -d --build`).
+
+Ganti isi kredensial (API key, token) belakangan? Update Secret Manager, bukan `.env` di VM langsung — nanti ke-overwrite tiap deploy:
+
+```bash
+gcloud secrets versions add agent-engineer-env --data-file .env
+```
+
+lalu redeploy (push apa saja ke `main`, atau SSH manual `sudo bash /opt/agent-engineer-system/infra/gcp/redeploy.sh`) biar VM narik versi terbaru.
+
 ## 3. Selesaikan setup webhook Meta
 
 Setelah container jalan dan DNS domain kamu mengarah ke server:
@@ -117,7 +140,6 @@ pakai model <nama>                    → model AI default (dipakai departemen y
 pakai model <departemen> <nama>       → model AI khusus satu departemen (manajemen/dev/desain/qa/infra/bisnis)
 status                                → lihat task yang sedang berjalan (termasuk fase yang lagi jalan)
 stop / batalkan                       → hentikan task yang sedang berjalan
-hubungkan figma                       → sambungkan akun Figma (sekali saja) — lihat "Integrasi Figma" di bawah
 bantuan                               → tampilkan daftar perintah
 ```
 
@@ -171,24 +193,11 @@ Satu provider (mis. Gemini) biasanya punya banyak model (`gemini-3.1-flash-lite`
 1. **`daftar model <provider> <kata kunci>`** — cari model di catalog provider itu, mis. `daftar model gemini flash-lite`. Agent benar-benar **mencoba tiap model** (bukan cuma baca daftar) dan **cuma nampilin yang beneran bisa dipakai sekarang** — model yang ada di catalog tapi error/404/kena limit buat API key kamu otomatis disembunyikan (ini beneran terjadi: `gemini-2.5-flash-lite` misalnya masih muncul di catalog Gemini tapi sudah tidak bisa dipakai API key baru). Maksimal 8 model dicek sekaligus biar gak boros kuota.
 2. **`pakai model <provider>/<model>`** atau **`pakai model <departemen> <provider>/<model>`** — pilih model spesifik itu (bukan cuma provider-nya). Sebelum diterapkan, agent coba dulu model itu sekali — kalau ternyata gak bisa dipakai, permintaannya ditolak dengan penjelasan kenapa, bukan diam-diam disimpan lalu gagal pas dipakai beneran.
 
-## Integrasi Figma (read-only, lewat MCP)
+## Integrasi Figma — lagi nonaktif
 
-Agent bisa "lihat" desain Figma — baca layer, style, variabel, generate kode dari frame, export gambar — lewat [MCP server resmi Figma](https://developers.figma.com/docs/figma-mcp-server/) (`https://mcp.figma.com/mcp`, versi remote, gak butuh Figma desktop app jalan di server). Cuma baca: agent sengaja gak pernah manggil tool Figma yang bisa mengubah/menulis/comment, walaupun server-nya sendiri punya tool semacam itu (masih beta) — kita filter sendiri, cuma tool yang namanya jelas-jelas "get_..." yang diekspos ke AI.
+Fitur ini (baca desain Figma lewat [MCP server resmi Figma](https://developers.figma.com/docs/figma-mcp-server/)) sudah dibangun lengkap tapi sengaja dinonaktifkan: Figma sendiri yang membatasi scope OAuth `mcp:connect` cuma untuk klien yang sudah mereka approve duluan (dikonfirmasi langsung oleh Figma support di forum mereka), dan gak ada jalur pendaftaran mandiri untuk custom OAuth app. Semua percobaan sejauh ini — PKCE, parameter `resource` (RFC 8707), redirect URI yang benar — tetap kena `Invalid scope: mcp:connect`, karena ini pembatasan Figma di sisi mereka, bukan bug di kode.
 
-**Setup sekali (di server):**
-1. Daftarkan OAuth app di [Figma Developer Console](https://www.figma.com/developers/apps) dengan scope `mcp:connect`.
-2. Set redirect URI-nya ke `https://<domain-kamu>/figma/oauth/callback` (harus persis sama di kedua tempat — Figma dev console dan `.env`).
-3. Isi `FIGMA_MCP_CLIENT_ID`, `FIGMA_MCP_CLIENT_SECRET` (kalau ada), `FIGMA_OAUTH_REDIRECT_URI` di `.env`.
-
-**Cara pakai (dari WhatsApp):**
-1. Ketik `hubungkan figma` — sekali saja. Agent kirim link, buka di browser, izinkan aksesnya. Token disimpan dan di-refresh otomatis sesudahnya, gak perlu diulang tiap task.
-2. Tempel link Figma langsung di instruksi kamu, mis.:
-   ```
-   bikin komponen React dari desain ini: https://figma.com/design/abc123/My-File?node-id=12-34
-   ```
-   Agent otomatis mendeteksi link itu dan nyambung ke Figma buat instruksi tersebut — gak ada command pendaftaran project Figma terpisah.
-
-Kalau kamu tempel link Figma sebelum pernah `hubungkan figma`, agent bakal bilang jelas ("belum kesambung, ketik hubungkan figma dulu") daripada gagal diam-diam.
+Kalau Figma nanti membuka akses ini (atau app kamu spesifik di-approve), kodenya tinggal diaktifkan lagi — lihat komentar di `handleConnectFigmaCommand` (`apps/orchestrator/src/router/handler.ts`).
 
 ## Kirim dokumen sebagai lampiran WhatsApp
 

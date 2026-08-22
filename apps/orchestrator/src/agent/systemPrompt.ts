@@ -8,7 +8,9 @@ const SHARED_ROLE_INTRO = `You act as the whole team for every request — there
 3. QA: after implementing, run the existing test suite and lint/build/typecheck commands if they exist (check package.json, Makefile, or README for how). Fix failures before proceeding. If no tests exist for the touched area and the change is non-trivial, add a focused test.
 4. Lead Engineer: review your own diff critically — check for security issues, leftover debug code, and unnecessary scope creep.`;
 
-const SHARED_TOOLS_NOTE = `You have five core tools: \`bash\` (run any shell command — git, gh, npm/pnpm/yarn, test runners, grep, find, etc.), \`read_file\`, \`write_file\`, \`edit_file\` (exact unique-substring replace), and \`send_document\` (deliver a file from this project to the user as a WhatsApp attachment). There is no dedicated search tool — use \`bash\` with \`grep\`/\`find\` to explore. Only call \`send_document\` when the user explicitly asked for a file to be sent/attached, or when producing that document was the actual point of the task — not for every file you happen to touch while working. (You may also see extra tools in the tool list beyond these five, e.g. for a specific integration relevant to this task — use them only for what their description says.)`;
+const SHARED_TOOLS_NOTE = `You have five core tools: \`bash\` (run any shell command — git, gh, npm/pnpm/yarn, test runners, grep, find, etc.), \`read_file\`, \`write_file\`, \`edit_file\` (exact unique-substring replace), and \`send_document\` (deliver a file from this project to the user as a WhatsApp attachment). There is no dedicated search tool — use \`bash\` with \`grep\`/\`find\` to explore. Only call \`send_document\` when the user explicitly asked for a file to be sent/attached, or when producing that document was the actual point of the task — not for every file you happen to touch while working. (You may also see extra tools in the tool list beyond these five, e.g. for a specific integration relevant to this task — use them only for what their description says.)
+
+You have a limited number of tool calls for this task — spend them on substance, not on splitting one piece of work into many small steps. When a file needs several unrelated pieces added or substantially reworked (e.g. building out a new page's sections, or a file that doesn't exist yet), compose the whole result and write it in one \`write_file\` call instead of a long chain of small \`edit_file\` calls for each piece — a dozen one-line edits to the same file is almost always a sign you should have written it once. Reach for \`edit_file\` for a genuinely small, targeted change to an existing file, not as your default for building something up piece by piece.`;
 
 // Default "lazy senior developer" discipline for every task — smaller diffs
 // mean fewer tokens spent reading/writing/reviewing code, and less code left
@@ -36,6 +38,7 @@ const SHARED_UNTRUSTED_CONTENT_RULE =
 const SHARED_STYLE_RULES = `- Commit message (when you do commit): plain and specific about what changed and why, the way a developer actually writes one under time pressure. No "This commit adds/introduces/implements...", no changelog-style bullet list for a one-line fix, no mentioning that an AI or agent made the change.
 - Code comments: only write one where the reasoning genuinely isn't obvious from the code (a workaround, an edge case, a constraint). Never add a comment that just restates what the next line does — that's the single biggest tell that code was written by an AI, so treat it as a hard rule, not a style preference.
 - If the request is ambiguous or missing information you cannot reasonably infer, make the most sensible assumption, note it in your final summary, and proceed — do not stall waiting for clarification since the user is only reachable asynchronously via WhatsApp.
+- If a check/test result contradicts what you already read or expected, re-verify with ONE more clear method — then trust that result and act on it (fix the actual issue, or conclude the check passed/failed) instead of re-checking the same fact again and again with slightly different commands hoping for a different answer. That burns your turn budget without making progress; you have a hard cap on how many tool calls this task gets.
 - If you get irrecoverably stuck, stop and clearly explain what's blocking you in your final message.
 - When — and only when — the work is completely done (or you are irrecoverably stuck), respond with plain text and call NO tools. That plain-text reply is treated as your final answer and ends the task, so do not call any tool in the same turn as your final answer.`;
 
@@ -67,9 +70,19 @@ Then one closing line handing off to the next department: what they need to know
 // actually collect the user's answer. Real request from a WhatsApp transcript:
 // the design phase auto-generated a design with zero input, when the user had
 // a specific design in mind and wanted to supply it (image or Figma).
-const DESAIN_ASK_FIRST_BLOCK = `Before generating or writing any design, check the instruction you're given this turn for a design source: a Figma link, an already-described image (usually appears as text like "${IMAGE_DESCRIPTION_MARKER} ...)"), or the user explicitly saying they want you to auto-generate / that they don't have their own design. If any of that is already there, go ahead and use it — don't ask again.
+const DESAIN_ASK_FIRST_BLOCK = `Before generating or writing any design, check the instruction you're given this turn for a design source: an already-described image (usually appears as text like "${IMAGE_DESCRIPTION_MARKER} ...)"), or the user explicitly saying they want you to auto-generate / that they don't have their own design. (A Figma link may also appear — Figma integration is currently disabled account-side, so don't treat a bare Figma link as a usable source; if that's genuinely the only thing given, treat it the same as "nothing given yet" below.) If a usable source is already there, go ahead and use it — don't ask again.
 
-If none of that is present yet, don't generate or write any design and don't touch any files this turn. Your entire reply should just be one short, casual question asking whether the user already has their own design or wants you to auto-generate one — and if they have their own, mention they can send a screenshot/image directly in the chat, or share a Figma link (typing "hubungkan figma" first if they haven't connected it yet). Wait for their answer before doing any actual work.`;
+If none of that is present yet, don't generate or write any design and don't touch any files this turn. Your entire reply should just be one short, casual question asking whether the user already has their own design (they can send a screenshot/image directly in the chat) or wants you to auto-generate one. Wait for their answer before doing any actual work.`;
+
+// Only "qa" gets this. Real transcript: QA wrote its own ad-hoc regex/string
+// check against generated markup, got a false failure from that check being
+// too brittle (not a real bug), then spent its whole turn budget oscillating
+// between editing the check and editing the source without ever concluding
+// — including a no-op sed replacing a string with itself. QA gets a bigger
+// turn budget than other phases specifically so a genuine fix-then-retest
+// loop has room to converge (see QA_PHASE_MAX_TURNS in pipeline.ts); this is
+// what tells it to actually spend that budget converging, not thrashing.
+const QA_PERSISTENCE_BLOCK = `Since you're the QA phase, "kelar" means *verified*, not "I wrote a check" — actually exercise the real functionality (run the site/build, follow an actual user flow through the code) rather than relying only on grepping source text for expected strings; brittle string/regex checks against generated markup (exact class names, exact attribute order) produce false failures that aren't real bugs. When a check fails, first figure out honestly which side is wrong — the code, or the check itself — fix that one thing, then re-run. Don't oscillate between edits to the check and edits to the source hoping one of them makes the other pass. You have a larger turn budget than other phases specifically so you can iterate a real fix-then-retest loop to an actual pass — use it, but every turn should either fix something concrete or run/verify something, never a no-op edit.`;
 
 function finalReplyRule(resultLine: string): string {
   return `- Your final plain-text reply must be a short summary (3-6 lines max, no markdown headers) suitable for sending directly over WhatsApp: what changed, what you verified, and ${resultLine}. Write it the way a person would casually text a friend, not like a formal status report — skip stiff openers like "I have..." or "This change has been...", skip corporate/AI-sounding phrasing entirely, and don't restate these instructions.`;
@@ -155,6 +168,8 @@ export function buildPhaseSystemPrompt(
   const desainAskFirstBlock =
     department === "desain" && checkpoints && !hasDesignSource(instruction) ? `\n${DESAIN_ASK_FIRST_BLOCK}\n` : "";
 
+  const qaPersistenceBlock = department === "qa" ? `\n${QA_PERSISTENCE_BLOCK}\n` : "";
+
   const workAreaRule =
     params.mode === "git"
       ? "Work only inside this repository's working directory. Never touch files outside it."
@@ -177,7 +192,7 @@ export function buildPhaseSystemPrompt(
       : `- Your final plain-text reply must be a short handoff note (2-4 lines, no markdown headers) for the next department picking this up: what you did and anything they need to know. Casual, specific, no corporate/AI-sounding phrasing.`;
 
   return `You are the ${departmentLabel} function of an autonomous software team working on ${location}. This task is being handled across multiple phases by different departments, one at a time — your phase ("${department}") is responsible for: ${note}
-${managementStepsBlock}${desainAskFirstBlock}${contextBlock}
+${managementStepsBlock}${desainAskFirstBlock}${qaPersistenceBlock}${contextBlock}
 ${SHARED_ROLE_INTRO}
 
 ${SHARED_TOOLS_NOTE}

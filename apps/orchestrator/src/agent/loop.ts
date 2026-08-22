@@ -100,11 +100,14 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
 
   const figmaTools = await resolveFigmaToolsFn(instruction, taskId);
   if (figmaTools.kind === "not_linked") {
+    // Not recoverable — "hubungkan figma" currently always declines (see
+    // handler.ts's handleConnectFigmaCommand), so pausing to wait for it to
+    // get resolved would just hang. Fail with a clear, accurate explanation
+    // instead of pointing at a command that can't actually help right now.
     return {
       ok: false,
-      recoverable: true,
       summary:
-        'Ada link Figma di instruksi, tapi akun Figma belum kesambung. Ketik "hubungkan figma" dulu ya, terus kirim ulang instruksinya.',
+        "Ada link Figma di instruksi, tapi integrasi Figma lagi gak bisa dipakai (Figma sendiri yang batesin aksesnya, bukan soal koneksi). Coba kirim ulang instruksinya tanpa link Figma-nya, atau kirim gambar/screenshot desainnya kalau ada.",
     };
   }
   if (figmaTools.kind === "error") {

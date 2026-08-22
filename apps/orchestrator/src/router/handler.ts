@@ -9,6 +9,7 @@ import {
   memoryRepo,
   chatHistoryRepo,
   sessionRepo,
+  figmaAppConfigRepo,
   type Project,
 } from "../db/index.js";
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
@@ -17,11 +18,12 @@ import { buildProviders, splitProviderSpec, primaryModelForProvider } from "../a
 import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
 import { classifyIntent } from "../agent/commandIntent.js";
+import { checkNeedsClarification } from "../agent/requestClarity.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
 import { describeImage, mergeImageDescription } from "../agent/imageDescription.js";
 import { generateChatReply } from "../agent/chatAssistant.js";
 import type { Provider } from "../agent/types.js";
-import { explainInSimpleTerms, introduceYourself, respondToGreeting, explainHelp } from "../agent/dynamicReplies.js";
+import { explainInSimpleTerms, introduceYourself, explainHelp } from "../agent/dynamicReplies.js";
 import { listGeminiModels, listOpenAiCompatibleModels } from "../agent/modelCatalog.js";
 import {
   runPipeline,
@@ -60,6 +62,7 @@ import {
   isConfirmNo,
   isConfirmYesWithCheckpoints,
   isIntroCommand,
+  isCreatorCommand,
   isConnectFigmaCommand,
   isGreetingCommand,
   isAllowedRepoUrl,
@@ -74,7 +77,38 @@ const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software hous
 
 Mau mulai? Daftarin project dulu, atau ketik "bantuan" buat lihat semua perintahnya.`;
 
-const GREETING_TEXT = `Halo, baik nih! Ada yang mau dikerjain, atau ketik "bantuan" dulu kalau mau lihat-lihat perintahnya.`;
+// Fixed, factual — deterministic reply, no AI call, same reasoning as
+// localGreetingReply (nothing here needs a model's judgment, and a
+// generated answer risks garbling real contact details).
+const CREATOR_INFO_TEXT = `Aku dibuat sama Naufal Hilmi Abdurrahman.
+
+WhatsApp: +62 896-7906-6300
+Email: naufalhilmi1809@gmail.com
+GitHub: https://github.com/gvjavx/
+LinkedIn: https://www.linkedin.com/in/naufal-h-68576a197/`;
+
+// Ade's "own brain" for pure small talk ("halo", "apa kabar", dsb) — decided
+// locally, never hits an AI provider at all, not even as a first attempt.
+// Real conversations are exactly this formulaic (a greeting doesn't need a
+// creative answer), so there's nothing an AI call would add here besides
+// quota spent and latency, on a path that gets hit constantly. Two sources
+// of "learning" feed it, both without any new AI call: time-of-day (computed
+// fresh per reply, same WIB clock as currentDateLine in dynamicReplies.ts),
+// and memoryRepo — the same fact store the free-chat path already builds up
+// over real conversations — so a greeting can reference the most recent
+// thing actually learned about this user instead of being fully generic.
+function localGreetingReply(from: string): string {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: "Asia/Jakarta" }).format(new Date())
+  );
+  const timeOfDay =
+    hour >= 4 && hour < 11 ? "pagi" : hour >= 11 && hour < 15 ? "siang" : hour >= 15 && hour < 18 ? "sore" : "malam";
+  const base = `Halo, selamat ${timeOfDay}! Baik nih.`;
+  const facts = memoryRepo.list(from);
+  const lastFact = facts[facts.length - 1]?.replace(/[.!?]+$/, "");
+  const recall = lastFact ? ` Btw aku masih inget: ${lastFact}.` : "";
+  return `${base}${recall} Ada yang mau dikerjain, atau ketik "bantuan" dulu kalau mau lihat-lihat perintahnya.`;
+}
 
 // For non-technical "how does this work" questions — no command syntax, no
 // jargon. Separate from HELP_TEXT (the command cheatsheet) on purpose: someone
@@ -85,7 +119,7 @@ Abis itu, buat request bikin aplikasi, biasanya aku jalanin langkah-langkah kaya
 1. Pertama, aku bertindak sebagai Product Owner — nangkep dulu kebutuhan kamu sebenernya dan nentuin cakupan yang paling masuk akal.
 2. Abis itu aku bertindak sebagai Project Manager — ngatur urutan kerjaan, bagian mana yang perlu dikerjain duluan.
 3. Lalu aku bertindak sebagai System Analyst — mikirin alur kerja dan kebutuhan sistemnya biar sesuai sama yang kamu mau.
-4. Masuk ke bagian UI/UX — kamu bisa hubungin aku ke desain Figma yang udah kamu buat sebelumnya, atau biarin aku yang desain otomatis.
+4. Masuk ke bagian UI/UX — biarin aku yang desain otomatis, atau kirim gambar/screenshot referensi desain kamu.
 5. Abis UI/UX kelar, aku mulai nulis kodenya berdasarkan yang udah disepakati di langkah-langkah sebelumnya.
 6. Terakhir aku bertindak sebagai QA/Tester — nyariin bug dan mastiin semua fungsinya jalan dengan bener.
 
@@ -109,9 +143,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *pakai model <departemen> <nama>* atau *pakai model <departemen> <provider>/<model>* — model AI khusus satu departemen (${DEPARTMENT_LIST_TEXT})
 - *status* — cek task yang lagi jalan
 - *stop* — batalin task yang lagi jalan di project aktif
-- *hubungkan figma* — sambungin akun Figma kamu (sekali aja) biar aku bisa baca desainnya
 - Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
-- Tempel link Figma langsung di instruksi (mis. "bikin komponen dari desain ini: https://figma.com/design/...") — aku bakal baca layer/style/variabel-nya, cuma baca aja, gak pernah aku ubah
 - Kirim gambar (screenshot, mockup, dsb) bareng caption instruksinya (mis. "perbaiki tampilan sesuai screenshot ini") — aku bakal liat gambarnya dulu baru mulai kerjain. Kirim tanpa caption juga boleh, nanti aku ceritain apa yang aku liat terus tanya mau diapain.
 - Atau langsung ketik aja apa yang mau dikerjain (mis. "tambahin endpoint health check"). Aku bakal tebak departemen mana yang perlu ngerjain, kasih tau rencananya, baru mulai setelah kamu konfirmasi — kalau rencananya lebih dari satu fase, kamu bisa pilih "review tiap fase" biar aku pause dulu abis tiap fase kelar, nunggu kamu approve atau minta revisi sebelum lanjut.`;
 
@@ -154,13 +186,45 @@ interface PendingClearMemory {
   type: "confirm_clear_memory";
 }
 
+// See classifyAndPresentPlan/checkNeedsClarification — set when a fresh task
+// instruction had zero concrete product info to plan from, waiting on either
+// a free-text answer or the CLARIFY_SKIP_TAP shortcut before classification
+// actually runs.
+interface PendingClarifyInstruction {
+  type: "clarify_instruction";
+  alias: string;
+  instruction: string;
+}
+
+// Walks client_id -> client_secret -> redirect_uri one at a time, same shape
+// as PendingGuidedGitProject/PendingGuidedFolder — see
+// startFigmaSetupWizard/handleConnectFigmaCommand.
+interface PendingFigmaSetup {
+  type: "figma_setup";
+  step: "client_id" | "client_secret" | "redirect_uri";
+  clientId?: string;
+  clientSecret?: string;
+}
+
+// Set when a captionless image was described but the user hasn't said what
+// to do with it yet — without this, the description shown once was never
+// referenced again, so a follow-up like "perbaiki sesuai gambar tadi" ran as
+// plain text with zero knowledge of the image. See handleImageMessage.
+interface PendingImageFollowup {
+  type: "image_followup";
+  description: string;
+}
+
 type PendingActionData =
   | PendingAddFolder
   | PendingDeleteProject
   | PendingGuidedGitProject
   | PendingGuidedFolder
   | PendingPipeline
-  | PendingClearMemory;
+  | PendingClearMemory
+  | PendingClarifyInstruction
+  | PendingFigmaSetup
+  | PendingImageFollowup;
 
 const YES_NO_OPTIONS: QuickReplyOption[] = [
   { id: "ya", title: "Ya, lanjut" },
@@ -192,15 +256,13 @@ const MANAJEMEN_CHECKPOINT_OPTIONS: QuickReplyOption[] = [
 // Offered at a desain-phase checkpoint specifically when no design source
 // has been given yet (pipeline.ts's designSourceStillNeeded). "Upload
 // gambar"'s id comes from pipeline.ts's DESAIN_SOURCE_UPLOAD_IMAGE_TAP
-// (single source of truth with the state machine that intercepts it).
-// "Hubungkan Figma"'s id is deliberately the exact phrase
-// isConnectFigmaCommand already matches (router/parse.ts) — reuses the
-// existing carve-out in handlePendingCheckpoint instead of needing a new
-// one. "Serahkan ke AI" needs no special id — it's a complete answer on its
-// own, so it just flows into the normal revise path as typed text would.
+// (single source of truth with the state machine that intercepts it). No
+// "Hubungkan Figma" option here — see handleConnectFigmaCommand for why
+// that's disabled. "Serahkan ke AI" needs no special id — it's a complete
+// answer on its own, so it just flows into the normal revise path as typed
+// text would.
 const DESAIN_SOURCE_CHECKPOINT_OPTIONS: QuickReplyOption[] = [
   { id: DESAIN_SOURCE_UPLOAD_IMAGE_TAP, title: DESAIN_SOURCE_UPLOAD_IMAGE_TAP },
-  { id: "hubungkan figma", title: "Hubungkan Figma" },
   { id: "Serahkan ke AI, aku gak punya desain sendiri, auto-generate aja", title: "Serahkan ke AI" },
   { id: "ya", title: "Lanjutkan" },
   { id: "tidak", title: "Batal" },
@@ -220,6 +282,38 @@ const HELP_WIZARD_GIT_PROJECT_ID = "__wizard_tambah_git_project__";
 const HELP_WIZARD_FOLDER_ID = "__wizard_tambah_folder__";
 const HELP_PICKER_DELETE_PROJECT_ID = "__picker_hapus_project__";
 const HELP_TOPIC_START_TASK_ID = "__topik_mulai_kerja__";
+// Tap shortcut offered alongside a clarify_instruction question — lets the
+// user skip answering and just let the agent guess, same convenience as
+// desain's "Serahkan ke AI" option.
+const CLARIFY_SKIP_TAP = "Lanjut tanpa detail tambahan";
+
+// figma_setup wizard's client_secret step — some Figma OAuth apps don't use
+// one at all (figmaAuth.ts already treats it as optional). Includes the bare
+// "tidak"/"gak"/"nggak" forms on purpose: at this specific data-entry step
+// ("Client Secret-nya?"), a short "no" answer means "no secret", not "cancel
+// the wizard" — checked before the generic isConfirmNo cancel check below,
+// or "gak ada" would already fall through to isConfirmNo and cancel instead
+// of being read as an answer.
+const FIGMA_SECRET_SKIP_PHRASES = new Set([
+  "tidak ada",
+  "tidak",
+  "gak ada",
+  "gak",
+  "ga ada",
+  "ga",
+  "nggak ada",
+  "nggak",
+  "none",
+  "no",
+  "n",
+  "-",
+  "skip",
+  "kosong",
+]);
+// Real cancellation intent at the client_secret step specifically — narrower
+// than isConfirmNo's CONFIRM_NO_PHRASES, which overlaps with the skip-phrase
+// set above ("tidak"/"gak"/"nggak" mean different things depending on step).
+const FIGMA_WIZARD_CANCEL_PHRASES = new Set(["batal", "cancel", "jangan"]);
 
 // Attached to every "bantuan" reply. Parameter-less commands use the real
 // exact phrase as the id (tap hits the real command directly). "Ganti
@@ -245,11 +339,10 @@ const HELP_OPTIONS: QuickReplyOption[] = [
   { id: "daftar model", title: "Daftar model", description: "Lihat atau ganti model AI default" },
   { id: "status", title: "Status", description: "Cek task yang lagi jalan" },
   { id: "stop", title: "Stop", description: "Batalin task yang lagi jalan" },
-  { id: "hubungkan figma", title: "Hubungkan Figma", description: "Sambungin akun Figma kamu" },
   {
     id: HELP_TOPIC_START_TASK_ID,
     title: "Mulai ngerjain sesuatu",
-    description: "Instruksi bebas, link Figma, atau kirim gambar",
+    description: "Instruksi bebas, atau kirim gambar",
   },
 ];
 
@@ -314,7 +407,7 @@ export async function handleInboundMessage(
 
   touchAndLogSession(from, image ? trimmed || "[gambar]" : trimmed);
 
-  const bashApprovalReply = await handlePendingBashApproval(from, trimmed);
+  const bashApprovalReply = await handlePendingBashApproval(from, trimmed, image);
   if (bashApprovalReply) return;
 
   const checkpointReply = await handlePendingCheckpoint(from, trimmed, image);
@@ -333,13 +426,18 @@ export async function handleInboundMessage(
     return;
   }
 
+  if (isCreatorCommand(trimmed)) {
+    await handleCreatorCommand(from);
+    return;
+  }
+
   if (isIntroCommand(trimmed)) {
     await handleIntroCommand(from, trimmed);
     return;
   }
 
   if (isGreetingCommand(trimmed)) {
-    await handleGreetingCommand(from, trimmed);
+    await handleGreetingCommand(from);
     return;
   }
 
@@ -672,6 +770,10 @@ async function handleRetryCommand(from: string): Promise<void> {
   await sendWhatsApp(from, "Coba lagi apa ya? Nggak ada yang gagal barusan yang bisa aku ulang.");
 }
 
+async function handleCreatorCommand(from: string): Promise<void> {
+  await sendWhatsApp(from, CREATOR_INFO_TEXT);
+}
+
 // Each of these three follows the same shape: try an AI-generated reply
 // tailored to what was actually asked, fall back to the static text if
 // there's no provider configured or the call fails — never leaves the user
@@ -684,12 +786,8 @@ async function handleIntroCommand(from: string, question: string): Promise<void>
   await sendWhatsApp(from, answer ?? INTRO_TEXT);
 }
 
-async function handleGreetingCommand(from: string, message: string): Promise<void> {
-  const state = conversationRepo.get(from);
-  const providers = buildProviders(resolveManajemenProvider(from, state));
-  const answer =
-    providers.length > 0 ? await respondToGreeting(message, providers[0], new AbortController().signal) : undefined;
-  await sendWhatsApp(from, answer ?? GREETING_TEXT);
+async function handleGreetingCommand(from: string): Promise<void> {
+  await sendWhatsApp(from, localGreetingReply(from));
 }
 
 async function handleHelpCommand(from: string, question: string): Promise<void> {
@@ -852,19 +950,34 @@ async function handleStopCommand(from: string): Promise<void> {
   }
 }
 
-async function handleConnectFigmaCommand(from: string): Promise<void> {
-  if (!config.figma) {
-    await sendWhatsApp(
-      from,
-      "Figma belum disetel di server (client ID OAuth-nya belum diisi di .env). Bilang ke yang pegang server ya."
-    );
-    return;
-  }
-  const state = createPendingState(from);
-  const authorizeUrl = buildAuthorizeUrl(state);
+// Shared tail for both the already-configured case and the last step of the
+// figma_setup wizard below — generates a fresh authorize link either way.
+async function sendFigmaAuthorizeLink(from: string): Promise<void> {
+  const { state, codeVerifier } = createPendingState(from);
+  const authorizeUrl = buildAuthorizeUrl(state, codeVerifier);
   await sendWhatsApp(
     from,
     `Buka link ini buat sambungin akun Figma kamu, izinin aksesnya, nanti aku kabarin kalau udah connect:\n${authorizeUrl}`
+  );
+}
+
+// Disabled, not removed — Figma restricts the mcp:connect OAuth scope to an
+// allowlist of clients they've pre-approved themselves (confirmed by Figma
+// support on their own forum: "the mcp:connect scope isn't available for
+// general third-party OAuth apps"). A self-registered app — which is
+// exactly what the figma_setup wizard (see handlePendingConfirmation,
+// unchanged and still fully working) walks someone through creating —
+// always gets rejected with "Invalid scope: mcp:connect", no matter how
+// correctly the request is built (verified: PKCE and the RFC 8707 resource
+// parameter were both genuinely missing bugs, fixed in agent/mcp/figmaAuth.ts,
+// but neither was the actual blocker). There's no self-service path to get
+// approved. If Figma opens this up later, or this app specifically gets
+// allowlisted, restore the wizard-starting branch this replaced — see git
+// history for this function — everything it depends on is still here.
+async function handleConnectFigmaCommand(from: string): Promise<void> {
+  await sendWhatsApp(
+    from,
+    "Integrasi Figma lagi gak bisa dipakai dulu nih. Figma sendiri yang batesin akses OAuth-nya cuma buat aplikasi yang udah mereka approve duluan, dan belum ada jalur buat daftar sendiri — jadi ini di luar kendali aku, bukan soal setup yang salah."
   );
 }
 
@@ -934,6 +1047,8 @@ async function handleImageMessage(
     return;
   }
 
+  const pending: PendingImageFollowup = { type: "image_followup", description };
+  conversationRepo.setPendingAction(from, JSON.stringify(pending));
   await sendWhatsApp(
     from,
     `Ini yang aku tangkep dari gambarnya:\n\n${description}\n\nMau aku apain nih? Kasih instruksinya ya, abis itu aku lanjutin.`
@@ -961,8 +1076,11 @@ async function tryHandleSemanticIntent(from: string, trimmed: string): Promise<b
     case "intro":
       await handleIntroCommand(from, trimmed);
       return true;
+    case "creator":
+      await handleCreatorCommand(from);
+      return true;
     case "greeting":
-      await handleGreetingCommand(from, trimmed);
+      await handleGreetingCommand(from);
       return true;
     case "help":
       await handleHelpCommand(from, trimmed);
@@ -1045,6 +1163,7 @@ async function interpretConfirmationReply(
 function looksLikeAnotherCommand(trimmed: string): boolean {
   return (
     isIntroCommand(trimmed) ||
+    isCreatorCommand(trimmed) ||
     isGreetingCommand(trimmed) ||
     isHelpCommand(trimmed) ||
     isListProjectsCommand(trimmed) ||
@@ -1072,10 +1191,22 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
 // rather than a whole pipeline phase. Fails closed on anything but an
 // explicit "ya" — an ambiguous reply shouldn't accidentally green-light a
 // command flagged as dangerous in the first place.
-async function handlePendingBashApproval(from: string, trimmed: string): Promise<boolean> {
+async function handlePendingBashApproval(
+  from: string,
+  trimmed: string,
+  image?: { mimeType: string; base64Data: string }
+): Promise<boolean> {
   const state = conversationRepo.get(from);
   const taskId = state?.active_project_alias ? getActiveTaskId(state.active_project_alias) : undefined;
   if (!taskId || !hasPendingBashApproval(taskId)) return false;
+
+  // An image can't answer a ya/tidak gate — resolving it either way here
+  // would be a guess. Leave the approval pending instead of silently
+  // auto-denying it (empty caption used to read as "unclear" -> denied).
+  if (image) {
+    await sendWhatsApp(from, "Ini butuh jawaban ya/tidak buat command yang aku tanyain, bukan gambar. Ketik ya atau tidak dulu ya.");
+    return true;
+  }
 
   if (looksLikeAnotherCommand(trimmed)) {
     resolveBashApproval(taskId, false);
@@ -1106,18 +1237,15 @@ async function handlePendingCheckpoint(
   if (!taskId || !hasPendingCheckpoint(taskId)) return false;
 
   // One deliberate, narrow exception to "anything non-yes/no is the
-  // revision/question itself" (see looksLikeAnotherCommand's comment): the
-  // agent loop has no tool to act on "hubungkan figma" itself, so left to the
-  // usual path it'd just become inert revision text. Handled here directly
-  // instead — sends the OAuth link but leaves the checkpoint pending, so the
-  // user comes back afterward to actually answer/paste the Figma link.
+  // revision/question itself" (see looksLikeAnotherCommand's comment): left
+  // to the usual path, "hubungkan figma" typed mid-checkpoint would just
+  // become inert revision text instead of the recognized command it is.
+  // Handled here directly instead, leaving the checkpoint pending either
+  // way. handleConnectFigmaCommand currently always declines (see its own
+  // comment) — this carve-out stays regardless, since the command is still
+  // real and still shouldn't be misread as a revision instruction.
   if (!image && isConnectFigmaCommand(trimmed)) {
     await handleConnectFigmaCommand(from);
-    // Generic enough to send regardless of which phase/checkpoint triggered
-    // this — the desain "ask first" flow is the main reason it's here (a
-    // link alone doesn't say which file/frame to use), but it's harmless
-    // advice at any other checkpoint too.
-    await sendWhatsApp(from, 'Abis itu, tempel link Figma file/frame yang mau dipakai ya.');
     return true;
   }
 
@@ -1277,6 +1405,81 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
       `Ini folder lokal di server, bukan repo git — kalau aku daftarin, aku bisa baca, ubah, dan bikin file/folder apapun di dalam "${resolvedPath}" (semua isinya, bukan cuma yang kamu sebut). Boleh lanjut?`,
       YES_NO_OPTIONS
     );
+    return true;
+  }
+
+  if (pending.type === "figma_setup") {
+    // Checked before the generic isConfirmNo cancel below — "tidak"/"gak" at
+    // this specific step means "no secret", not "cancel the wizard". Only an
+    // unambiguous cancel word actually cancels here.
+    if (pending.step === "client_secret") {
+      const lower = trimmed.toLowerCase();
+      if (FIGMA_WIZARD_CANCEL_PHRASES.has(lower)) {
+        conversationRepo.setPendingAction(from, null);
+        await sendWhatsApp(from, "Oke, gak jadi ya.");
+        return true;
+      }
+      const clientSecret = FIGMA_SECRET_SKIP_PHRASES.has(lower) ? undefined : trimmed;
+      const next: PendingFigmaSetup = {
+        type: "figma_setup",
+        step: "redirect_uri",
+        clientId: pending.clientId,
+        clientSecret,
+      };
+      conversationRepo.setPendingAction(from, JSON.stringify(next));
+      await sendWhatsApp(
+        from,
+        "Terakhir, redirect URI yang kamu daftarin di app Figma-nya (harus persis sama) — biasanya https://<domain-server-kamu>/figma/oauth/callback."
+      );
+      return true;
+    }
+
+    if (isConfirmNo(trimmed)) {
+      conversationRepo.setPendingAction(from, null);
+      await sendWhatsApp(from, "Oke, gak jadi ya.");
+      return true;
+    }
+    if (pending.step === "client_id") {
+      const next: PendingFigmaSetup = { type: "figma_setup", step: "client_secret", clientId: trimmed };
+      conversationRepo.setPendingAction(from, JSON.stringify(next));
+      await sendWhatsApp(
+        from,
+        'Sip. Sekarang Client Secret-nya — kalau app Figma kamu gak pakai secret, ketik "tidak ada".'
+      );
+      return true;
+    }
+    // step === "redirect_uri"
+    try {
+      new URL(trimmed);
+    } catch {
+      await sendWhatsApp(from, 'URL-nya gak valid. Kirim lagi redirect URI-nya, atau ketik "batal".');
+      return true;
+    }
+    conversationRepo.setPendingAction(from, null);
+    figmaAppConfigRepo.save({ clientId: pending.clientId ?? "", clientSecret: pending.clientSecret, redirectUri: trimmed });
+    await sendWhatsApp(from, "Oke, Figma OAuth udah aku simpen.");
+    await sendFigmaAuthorizeLink(from);
+    return true;
+  }
+
+  if (pending.type === "image_followup") {
+    conversationRepo.setPendingAction(from, null);
+    await handleFreeTextInstruction(from, mergeImageDescription(trimmed || undefined, pending.description));
+    return true;
+  }
+
+  if (pending.type === "clarify_instruction") {
+    conversationRepo.setPendingAction(from, null);
+    const project = projectsRepo.get(pending.alias);
+    if (!project) {
+      await sendWhatsApp(from, `Waduh, project "${pending.alias}" udah gak ada. Coba ulangi instruksinya.`);
+      return true;
+    }
+    const merged =
+      trimmed === CLARIFY_SKIP_TAP ? pending.instruction : `${pending.instruction}\n\nDetail tambahan dari user: ${trimmed}`;
+    // allowClarify=false — this is the second pass, caps the clarify loop at
+    // exactly one round no matter how thin the merged instruction still is.
+    await classifyAndPresentPlan(from, project, merged, false);
     return true;
   }
 
@@ -1482,11 +1685,34 @@ async function handleFreeTextInstruction(from: string, instruction: string): Pro
   }
 
   const project = projectsRepo.get(alias) as Project;
+  await classifyAndPresentPlan(from, project, instruction, true);
+}
 
+// Split out of handleFreeTextInstruction so a resumed clarify_instruction
+// answer (handlePendingConfirmation) can re-enter here directly with
+// allowClarify=false, instead of re-running alias/project resolution and
+// risking a second clarify round.
+async function classifyAndPresentPlan(
+  from: string,
+  project: Project,
+  instruction: string,
+  allowClarify: boolean
+): Promise<void> {
+  const state = conversationRepo.get(from);
   const classifierProviders = buildProviders(resolveManajemenProvider(from, state));
   if (classifierProviders.length === 0) {
     await sendWhatsApp(from, "Belum ada AI provider yang aktif, jadi aku belum bisa kerja.");
     return;
+  }
+
+  if (allowClarify) {
+    const question = await checkNeedsClarification(instruction, classifierProviders[0], new AbortController().signal);
+    if (question) {
+      const pending: PendingClarifyInstruction = { type: "clarify_instruction", alias: project.alias, instruction };
+      conversationRepo.setPendingAction(from, JSON.stringify(pending));
+      await sendWhatsApp(from, question, [{ id: CLARIFY_SKIP_TAP, title: CLARIFY_SKIP_TAP }]);
+      return;
+    }
   }
 
   await sendWhatsApp(from, "Bentar, aku pikirin dulu departemen mana yang perlu ngerjain ini...");
@@ -1497,7 +1723,7 @@ async function handleFreeTextInstruction(from: string, instruction: string): Pro
     const label = phase.department === "semua" ? "Satu langkah umum" : DEPARTMENT_LABELS[phase.department];
     const model =
       phase.department === "semua"
-        ? (state?.preferred_provider ?? "default")
+        ? (state?.preferred_provider ?? config.departmentDefaultProviders.dev ?? "default")
         : (deptModels[phase.department] ??
             state?.preferred_provider ??
             config.departmentDefaultProviders[phase.department] ??
@@ -1610,8 +1836,12 @@ async function executeTask(
         sendDocument,
         onDangerousBash,
         departmentModelLookup: (department) =>
+          // "semua" means classification didn't split into departments, but
+          // the work is still almost always coding — falls back to the dev
+          // default (not a "semua"-specific one) rather than the flat
+          // provider order, same reasoning the split departments already get.
           department === "semua"
-            ? (state?.preferred_provider ?? undefined)
+            ? (state?.preferred_provider ?? config.departmentDefaultProviders.dev)
             : (conversationRepo.getDepartmentModel(from, department) ??
                 state?.preferred_provider ??
                 config.departmentDefaultProviders[department as DepartmentKey]),

@@ -7,6 +7,7 @@ import type { Provider } from "./types.js";
 // fanning out into a second call — same end behavior, half the latency.
 export const INTENTS = [
   "intro",
+  "creator",
   "help",
   "explain",
   "list_projects",
@@ -26,6 +27,7 @@ function buildIntentPrompt(text: string): string {
 
 Fixed commands:
 intro — asking who/what the bot is, asking it to introduce itself
+creator — asking who made/created/developed the bot (NOT asking what the bot is or does — that's intro; this is specifically about who built it)
 help — asking specifically for the list of commands, exact command syntax, or a technical usage reference/cheatsheet
 explain — asking in general, non-technical, plain language how the bot works, how it helps them, or what happens when they ask it to build/change something (e.g. "jelaskan bagaimana anda membantu saya membuat aplikasi") — NOT asking for specific command syntax, just a conceptual explanation
 list_projects — asking to see the list of already-registered projects
