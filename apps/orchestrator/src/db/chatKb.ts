@@ -1,23 +1,62 @@
 import { db } from "./index.js";
 
-// Stage 0 of teaching Mas ADE to answer non-coding questions from its own
-// accumulated store (see ARCHITECTURE.md "Chat knowledge base"): every
-// free-form chat Q&A is recorded here. Retrieval comes later — this table
-// only gets written to for now. embedding is nullable: the row is saved
-// immediately, the question vector is backfilled best-effort when a Gemini
-// key is available.
+// The chat knowledge base (see ARCHITECTURE.md "Chat knowledge base"): every
+// free-form chat Q&A is recorded here so a repeat of the same question can be
+// answered from the store instead of the model.
+//
+// norm_question is the question reduced to a canonical form (lowercase, no
+// punctuation/diacritics, single spaces) — the repeat match is done against
+// this locally, no embedding call. `embedding` is only populated when the
+// opt-in semantic fallback is enabled.
 db.exec(`
   CREATE TABLE IF NOT EXISTS interaction_kb (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_number TEXT NOT NULL,
     kind TEXT NOT NULL,         -- 'chat_model' | 'chat_arithmetic' | ...
     question TEXT NOT NULL,
+    norm_question TEXT,
     answer TEXT NOT NULL,
-    embedding BLOB,             -- question embedding; NULL until backfilled
+    embedding BLOB,             -- only set when the semantic fallback is on
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_interaction_kb_from ON interaction_kb(from_number);
 `);
+
+// Idempotent migration for DBs created before norm_question existed — must
+// run before the index below, which references the column.
+try {
+  db.exec("ALTER TABLE interaction_kb ADD COLUMN norm_question TEXT");
+} catch {
+  // already there
+}
+
+db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_kb_norm ON interaction_kb(from_number, norm_question)");
+
+// Reduce a question to what two askings of "the same thing" have in common:
+// case, punctuation, diacritics and repeated whitespace all removed.
+export function normalizeQuestion(q: string): string {
+  return q
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "") // combining diacritical marks
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// One-time backfill of norm_question for any pre-migration rows.
+{
+  const stale = db
+    .prepare("SELECT id, question FROM interaction_kb WHERE norm_question IS NULL")
+    .all() as { id: number; question: string }[];
+  if (stale.length > 0) {
+    const upd = db.prepare("UPDATE interaction_kb SET norm_question = ? WHERE id = ?");
+    const tx = db.transaction(() => {
+      for (const r of stale) upd.run(normalizeQuestion(r.question), r.id);
+    });
+    tx();
+  }
+}
 
 export interface InteractionRow {
   id: number;
@@ -25,6 +64,11 @@ export interface InteractionRow {
   answer: string;
   kind: string;
   embedding: Float32Array;
+}
+
+export interface LocalCandidate {
+  answer: string;
+  normQuestion: string;
 }
 
 function toBuffer(v: Float32Array): Buffer {
@@ -40,8 +84,10 @@ export const chatKbRepo = {
   insert(fromNumber: string, kind: string, question: string, answer: string): number {
     return Number(
       db
-        .prepare("INSERT INTO interaction_kb (from_number, kind, question, answer) VALUES (?, ?, ?, ?)")
-        .run(fromNumber, kind, question, answer).lastInsertRowid
+        .prepare(
+          "INSERT INTO interaction_kb (from_number, kind, question, norm_question, answer) VALUES (?, ?, ?, ?, ?)"
+        )
+        .run(fromNumber, kind, question, normalizeQuestion(question), answer).lastInsertRowid
     );
   },
 
@@ -59,7 +105,17 @@ export const chatKbRepo = {
     db.prepare("DELETE FROM interaction_kb WHERE from_number = ?").run(fromNumber);
   },
 
-  // For the retrieval step (Stage 1) — only rows that actually have a vector.
+  // The local repeat match works off these — no embedding involved. Newest
+  // first so an exact match picks the most recent answer.
+  candidatesForLocalMatch(fromNumber: string): LocalCandidate[] {
+    return db
+      .prepare(
+        "SELECT answer, norm_question AS normQuestion FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND norm_question IS NOT NULL AND norm_question != '' ORDER BY id DESC"
+      )
+      .all(fromNumber) as LocalCandidate[];
+  },
+
+  // For the opt-in semantic fallback only.
   embeddedForNumber(fromNumber: string): InteractionRow[] {
     const rows = db
       .prepare(
@@ -69,8 +125,6 @@ export const chatKbRepo = {
     return rows.map((r) => ({ ...r, embedding: toFloat32Array(r.embedding) }));
   },
 
-  // Rows a past embedding failure (e.g. a 429) left without a vector — the
-  // backfill pass re-embeds these on a later lookup.
   nullForNumber(fromNumber: string): { id: number; question: string }[] {
     return db
       .prepare(

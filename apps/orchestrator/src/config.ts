@@ -206,14 +206,15 @@ export const config = {
   // content. Nothing reads the store yet; this only starts the accumulation.
   chatKb: {
     enabled: (process.env.CHAT_KB_ENABLED ?? "false").toLowerCase() === "true",
-    // Cosine score a new question must hit against a stored one to be answered
-    // from the store instead of the model. Calibrated live with
-    // gemini-embedding-001 + SEMANTIC_SIMILARITY: near-identical rewordings of
-    // the same question land ~0.97+, a genuinely different question about the
-    // same topic ("kapan X" vs "siapa penemu X") lands ~0.93, unrelated ~0.72.
-    // 0.95 clears the rewordings and rejects the near-misses; raise it toward
-    // 1.0 to only reuse an answer for an almost-exact repeat.
-    matchThreshold: Math.min(1, Math.max(0, Number(process.env.CHAT_KB_MATCH_THRESHOLD ?? 0.95))),
+    // The repeat match is local by default (no embedding call): exact after
+    // normalization, or token-set overlap at/above this Jaccard score. 0.85
+    // catches a dropped/added filler word; 1.0 means exact-tokens only.
+    localMatchThreshold: Math.min(1, Math.max(0, Number(process.env.CHAT_KB_LOCAL_THRESHOLD ?? 0.85))),
+    // Opt-in: also try Gemini-embedding similarity when the local match
+    // misses (catches deeper paraphrases, but costs an embedding call per
+    // message and can 429 on the free tier). Off unless CHAT_KB_SEMANTIC=true.
+    semanticFallback: (process.env.CHAT_KB_SEMANTIC ?? "false").toLowerCase() === "true",
+    matchThreshold: Math.min(1, Math.max(0, Number(process.env.CHAT_KB_MATCH_THRESHOLD ?? 0.9))),
   },
 
   // Optional — only set once someone actually registers a Figma OAuth app
