@@ -81,14 +81,22 @@ test("generateChatReply answers a plain arithmetic question itself, without call
   assert.deepEqual(result, { reply: "234 × 213 = 49.842", source: "arithmetic" });
 });
 
-test("the chat system prompt grounds the model as having no internet access", async () => {
-  let seen: ChatMessage[] | undefined;
-  const provider = fakeProvider(async (messages) => {
-    seen = messages;
-    return { type: "text", text: "Oke.\nFACT: tidak ada" };
-  });
-  await generateChatReply("kabar apa", [], [], provider, new AbortController().signal);
-  assert.match(seen?.[0].content ?? "", /no internet access/i);
+test("the no-internet grounding is injected only when the message is about connectivity/current info", async () => {
+  const promptFor = async (message: string): Promise<string> => {
+    let seen = "";
+    const provider = fakeProvider(async (messages) => {
+      seen = messages[0]?.content ?? "";
+      return { type: "text", text: "Oke.\nFACT: tidak ada" };
+    });
+    await generateChatReply(message, [], [], provider, new AbortController().signal);
+    return seen;
+  };
+
+  assert.match(await promptFor("apa kamu terhubung ke internet?"), /no internet access/i);
+  assert.match(await promptFor("cari berita terbaru soal AI dong"), /no internet access/i);
+  // plain trivia / small talk: not present, so it can't bleed into the answer
+  assert.doesNotMatch(await promptFor("kapan hari kemerdekaan indonesia"), /no internet access/i);
+  assert.doesNotMatch(await promptFor("kabar apa"), /no internet access/i);
 });
 
 test("generateChatReply serves a stored answer without calling the provider when the KB has a close match", async () => {

@@ -31,17 +31,26 @@ export interface GenerateChatReplyOpts {
 // assistant turns; openAiCompatible.ts passes them through 1:1), it's just
 // never been exercised by this codebase's other one-shot callers, which all
 // bake everything into a single user message.
+// Only inject the "no internet / no live data" grounding when the message is
+// actually about connectivity or current information. Kept always-on it bled
+// into unrelated answers with flash-lite (real transcript: an internet
+// disclaimer tacked onto "kapan hari kemerdekaan Indonesia").
+const CONNECTIVITY_RE =
+  /\b(internet|online|offline|web|browsing|browser|jaringan|koneksi|terhubung|nyambung|situs|website|google|real[\s-]?time|terkini|terbaru|berita|kabar terbaru|harga (sekarang|terkini|hari ini)|kurs|cuaca|skor|live)\b|akses.*(luar|data|internet)/i;
+
 function buildSystemPrompt(message: string, facts: string[]): string {
   const factsBlock =
     facts.length > 0
       ? `Yang udah kamu tau soal user ini dari obrolan sebelumnya:\n${facts.map((f) => `- ${f}`).join("\n")}`
       : "Belum ada yang kamu tau soal user ini dari obrolan sebelumnya.";
 
-  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES} ${currentDateLine(message)}
+  const connectivityBlock = CONNECTIVITY_RE.test(message)
+    ? "\n\nYou have no internet access, no web search, and no live data in this chat. Say plainly you can't check or look things up — don't claim you're \"connected to the internet\" or can fetch the latest info. Answer only what you already know."
+    : "";
 
-You have no internet access, no web search, and no live data in this chat — answer from what you already know, and when something needs current information you can't be sure of, say you're not sure or can't check rather than guessing. The only time you touch a real machine is while running an actual coding task the user asked for (shell commands inside their project), never for looking things up, so don't tell the user you're "connected to the internet" or can fetch the latest info.
+  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES} ${currentDateLine(message)}${connectivityBlock}
 
-The message history below is context only, to understand what's already been discussed — answer the user's newest message specifically. Don't open by restating, recapping, or re-answering what you said last turn unless the new message actually asks you to.
+The message history below is context only, to understand what's already been discussed — answer ONLY the user's newest message. Do not restate, recap, quote, or re-answer anything from an earlier turn unless the new message explicitly asks you to — not even one sentence of it.
 
 ${factsBlock}
 
