@@ -152,9 +152,10 @@ Kalau `classifyMessageKind` bilang `chat` (bukan task), `handleChatMessage` (`ag
 Opsional, mati default (`CHAT_KB_ENABLED`). Konsepnya: pertanyaan non-koding **baru** dijawab Gemini dan jawabannya disimpan; pertanyaan **yang sama diulang** dijawab dari store itu, bukan Gemini. Kode di `agent/chatKb.ts` + `db/chatKb.ts`.
 
 - **Rekam**: tiap Q&A chat bebas (`handleChatMessage`) dicatat ke `interaction_kb` lewat `recordInteraction` — fire-and-forget, gagal di sini nggak pernah nyentuh balasan yang udah dikirim. Yang disimpan termasuk `norm_question` (pertanyaan di-lowercase, buang tanda baca/diakritik, rapetin spasi).
+- **Normalisasi** (`normalizeQuestion`, `db/chatKb.ts`): huruf kecil, buang tanda baca/diakritik, buang kata pengisi (`sih/dong/kok/yang/itu/...`), samakan varian ejaan & sinonim lewat peta buatan tangan (`nggak`→`tidak`, `lo`→`kamu`, `bagaimana`→`gimana`, `penemu`→`temu`, `bikin`→`buat`, dst — peta di `db/chatKb.ts`, tinggal ditambah). Semua baris di-recompute pas startup kalau petanya berubah.
 - **Ambil** (`lookupCachedAnswer`, dipanggil di `generateChatReply` setelah cek aritmatika, sebelum panggilan model) — **lokal, tanpa panggilan API**:
   - cocok persis di `norm_question` → pakai jawaban tersimpan (yang terbaru).
-  - kalau nggak, Jaccard antar token-set ≥ `CHAT_KB_LOCAL_THRESHOLD` (default 0.85) → pakai. Nangkep beda tanda baca, huruf besar/kecil, urutan kata, satu kata pengisi yang beda.
+  - kalau nggak, Jaccard antar token-set ≥ `CHAT_KB_LOCAL_THRESHOLD` (default 0.85) → pakai. Nangkep beda tanda baca, huruf besar/kecil, urutan kata, kata pengisi, dan varian ejaan/sinonim yang ada di peta.
   - hit → `source: "kb"`, nol panggilan Gemini. Handler nggak nyimpen ulang.
 - **Fallback semantik** (opt-in, `CHAT_KB_SEMANTIC=true`): kalau cocok lokal meleset, embed pertanyaan (`gemini-embedding-001`, `SEMANTIC_SIMILARITY`, rotasi key + retry 429, timeout 4 dtk di jalur balasan) dan cosine lawan baris ter-embed, ambang `CHAT_KB_MATCH_THRESHOLD` (0.9). Nangkep parafrase yang lebih dalam, tapi bayar 1 embedding/pesan dan gampang kena 429. Mati secara default.
 - Jawaban aritmatika (`source: "arithmetic"`) dicatat tapi nggak pernah jadi kandidat — `agent/calc.ts` udah generalisasi.

@@ -32,30 +32,74 @@ try {
 
 db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_kb_norm ON interaction_kb(from_number, norm_question)");
 
+// Chat fillers: safe to drop, never change what's being asked.
+const FILLER = new Set(
+  "sih ya yah dong deh nih tuh kan kok lah pun aja saja yang tolong coba pls plis please min gan bro sis kak bang mas mbak dulu itu ini nya"
+    .split(" ")
+);
+
+// Surface variants that mean the same thing in a question. Grow this as real
+// misses show up — keep it conservative, a wrong collapse serves a wrong answer.
+const SYNONYM: Record<string, string> = {
+  apakah: "apa", apaan: "apa",
+  kapankah: "kapan", kpn: "kapan",
+  siapakah: "siapa", sapa: "siapa",
+  dimana: "mana", kemana: "mana", kmana: "mana",
+  bagaimana: "gimana", gmn: "gimana", gimanakah: "gimana", piye: "gimana",
+  mengapa: "kenapa", ngapa: "kenapa", knp: "kenapa", kenapakah: "kenapa",
+  berapakah: "berapa", brp: "berapa",
+  gak: "tidak", nggak: "tidak", ga: "tidak", gk: "tidak", kagak: "tidak", enggak: "tidak", engga: "tidak",
+  udah: "sudah", udh: "sudah", dah: "sudah", telah: "sudah",
+  lu: "kamu", lo: "kamu", loe: "kamu", elo: "kamu", elu: "kamu", kau: "kamu", anda: "kamu", dirimu: "kamu",
+  gue: "aku", gw: "aku", gua: "aku", saya: "aku",
+  terhubung: "hubung", tersambung: "hubung", nyambung: "hubung", konek: "hubung", tehubung: "hubung",
+  penemu: "temu", menemukan: "temu", nemuin: "temu", ditemukan: "temu", menemui: "temu", temukan: "temu",
+  membuat: "buat", bikin: "buat", ngebikin: "buat", menciptakan: "buat", nyiptain: "buat", dibuat: "buat", dibikin: "buat", buatin: "buat",
+  arti: "makna", maksud: "makna", pengertian: "makna", definisi: "makna",
+};
+
+const PHRASE: [RegExp, string][] = [
+  [/\btanggal berapa\b/g, "kapan"],
+  [/\bhari apa\b/g, "kapan"],
+  [/\bdi mana\b/g, "mana"],
+];
+
 // Reduce a question to what two askings of "the same thing" have in common:
-// case, punctuation, diacritics and repeated whitespace all removed.
+// case, punctuation, diacritics, filler words, and spelling/synonym variants
+// all collapsed. Surface-level only — real paraphrase matching is a later step.
 export function normalizeQuestion(q: string): string {
-  return q
+  let s = q
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "") // combining diacritical marks
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+  for (const [re, rep] of PHRASE) s = s.replace(re, rep);
+  return s
+    .split(" ")
+    .filter((t) => t && !FILLER.has(t))
+    .map((t) => SYNONYM[t] ?? t)
+    .join(" ");
 }
 
-// One-time backfill of norm_question for any pre-migration rows.
+// Re-derive norm_question on startup for any row where it's missing or no
+// longer matches the current maps. Cheap: the table is small and only
+// changed rows are written.
 {
-  const stale = db
-    .prepare("SELECT id, question FROM interaction_kb WHERE norm_question IS NULL")
-    .all() as { id: number; question: string }[];
-  if (stale.length > 0) {
-    const upd = db.prepare("UPDATE interaction_kb SET norm_question = ? WHERE id = ?");
-    const tx = db.transaction(() => {
-      for (const r of stale) upd.run(normalizeQuestion(r.question), r.id);
-    });
-    tx();
-  }
+  const rows = db.prepare("SELECT id, question, norm_question FROM interaction_kb").all() as {
+    id: number;
+    question: string;
+    norm_question: string | null;
+  }[];
+  const upd = db.prepare("UPDATE interaction_kb SET norm_question = ? WHERE id = ?");
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      const n = normalizeQuestion(r.question);
+      if (n !== r.norm_question) upd.run(n, r.id);
+    }
+  });
+  tx();
 }
 
 export interface InteractionRow {

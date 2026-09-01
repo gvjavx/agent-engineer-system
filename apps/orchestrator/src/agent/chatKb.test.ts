@@ -12,9 +12,16 @@ async function seed(from: string, question: string, answer: string): Promise<voi
 }
 const lookup = (from: string, question: string) => lookupCachedAnswer({ fromNumber: from, question }, { enabled: true });
 
-test("normalizeQuestion strips case, punctuation and repeated spaces", () => {
+test("normalizeQuestion strips case/punctuation/spaces and collapses fillers + synonyms", () => {
   assert.equal(normalizeQuestion("Kapan Hari Kemerdekaan Indonesia?"), "kapan hari kemerdekaan indonesia");
-  assert.equal(normalizeQuestion("  siapa   penemu, sepeda!!  "), "siapa penemu sepeda");
+  // filler dropped, "penemu" -> canonical "temu"
+  assert.equal(normalizeQuestion("  siapa sih   penemu, sepeda itu!!  "), "siapa temu sepeda");
+  // spelling / synonym variants land on the same form
+  assert.equal(
+    normalizeQuestion("apakah lo nggak terhubung ke internet"),
+    normalizeQuestion("apa kamu ga tersambung ke internet")
+  );
+  assert.equal(normalizeQuestion("bagaimana bikin kopi"), normalizeQuestion("gimana membuat kopi"));
 });
 
 test("recordInteraction is a no-op when the KB is disabled", async () => {
@@ -41,16 +48,15 @@ test("lookupCachedAnswer hits on the same question re-asked (punctuation/case ig
   assert.equal((await lookup(from, "hari kemerdekaan indonesia kapan")).hit, "17 Agustus.");
 });
 
-test("lookupCachedAnswer tolerates one dropped filler word, but not a different question", async () => {
+test("lookupCachedAnswer hits through filler + synonym differences, misses a genuinely different question", async () => {
   const from = uid("fuzzy");
   await seed(from, "siapa sih penemu sepeda itu", "Karl von Drais.");
 
-  // 3 of 5 tokens shared -> Jaccard 0.6, below the 0.85 default -> miss
-  assert.equal((await lookup(from, "siapa penemu sepeda")).hit, undefined);
-  // exact tokens -> hit
-  assert.equal((await lookup(from, "siapa sih penemu sepeda itu?")).hit, "Karl von Drais.");
-  // different question, same topic -> miss
-  assert.equal((await lookup(from, "kapan sepeda ditemukan")).hit, undefined);
+  // fillers dropped + penemu->temu on both sides -> same normalized form -> hit
+  assert.equal((await lookup(from, "siapa penemu sepeda")).hit, "Karl von Drais.");
+  assert.equal((await lookup(from, "SIAPA yang menemukan sepeda??")).hit, "Karl von Drais.");
+  // "when was it invented" is a different question -> miss
+  assert.equal((await lookup(from, "kapan sepeda dibuat")).hit, undefined);
 });
 
 test("lookupCachedAnswer returns {} when disabled or the store is empty for this sender", async () => {
