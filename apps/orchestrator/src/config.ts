@@ -181,7 +181,12 @@ export const config = {
   // unbounded context block.
   rag: {
     enabled: (process.env.RAG_ENABLED ?? "false").toLowerCase() === "true",
-    embedModel: process.env.RAG_EMBED_MODEL ?? "text-embedding-004",
+    // gemini-embedding-001, not text-embedding-004 — the latter 404s on
+    // v1beta for a fresh AI Studio key (verified live). 3072-dim by default;
+    // we ask for 768 to keep the sqlite blobs small. Cosine is scale-
+    // invariant so the un-normalized truncated output is fine as-is.
+    embedModel: process.env.RAG_EMBED_MODEL ?? "gemini-embedding-001",
+    embedDim: Math.max(1, Number(process.env.RAG_EMBED_DIM ?? 768)),
     topK: Math.max(1, Number(process.env.RAG_TOP_K ?? 8)),
     maxContextChars: Math.max(500, Number(process.env.RAG_MAX_CONTEXT_CHARS ?? 8000)),
     chunkLines: Math.max(10, Number(process.env.RAG_CHUNK_LINES ?? 60)),

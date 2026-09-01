@@ -19,6 +19,7 @@ function fakeEmbedder(overrides: Partial<EmbeddingProvider> = {}): EmbeddingProv
   return {
     name: "fake",
     model: "fake-embed-1",
+    identity: "fake-embed-1@8",
     async embed(texts) {
       return texts.map((t) => {
         const lower = t.toLowerCase();
@@ -210,7 +211,7 @@ test("indexProject indexes a local folder, then no-ops until a file changes", as
   assert.ok(!store.fileHashes("demo").has("sub/user.ts"));
 });
 
-test("indexProject wipes and rebuilds when the embed model changed", async (t) => {
+test("indexProject wipes and rebuilds when the embed identity changed (model or dimensionality)", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "rag-model-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, "a.ts"), "alpha beta gamma\n");
@@ -218,11 +219,12 @@ test("indexProject wipes and rebuilds when the embed model changed", async (t) =
   const store = memoryStore();
   const base = { projectAlias: "demo", cwd: dir, mode: "local" as const, signal: new AbortController().signal };
 
-  await indexProject({ ...base, deps: { store, embedder: fakeEmbedder({ model: "old-model" }) } });
-  assert.equal(store.getMeta("demo")?.embedModel, "old-model");
+  await indexProject({ ...base, deps: { store, embedder: fakeEmbedder({ identity: "old-model@768" }) } });
+  assert.equal(store.getMeta("demo")?.embedModel, "old-model@768");
 
-  const rebuilt = await indexProject({ ...base, deps: { store, embedder: fakeEmbedder({ model: "new-model" }) } });
+  // same model name, different dimensionality -> still a full rebuild
+  const rebuilt = await indexProject({ ...base, deps: { store, embedder: fakeEmbedder({ identity: "old-model@1536" }) } });
   assert.equal(rebuilt.skipped, false);
   assert.equal(rebuilt.filesIndexed, 1);
-  assert.equal(store.getMeta("demo")?.embedModel, "new-model");
+  assert.equal(store.getMeta("demo")?.embedModel, "old-model@1536");
 });

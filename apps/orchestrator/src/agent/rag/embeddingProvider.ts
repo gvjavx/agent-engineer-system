@@ -7,6 +7,11 @@ import { PROVIDER_REQUEST_TIMEOUT_MS } from "../types.js";
 export interface EmbeddingProvider {
   name: string;
   model: string;
+  // Stable string identifying model + output shape together. Stored per
+  // project and compared on every index run — changing the model OR the
+  // dimensionality forces a full reindex, since old vectors would no longer
+  // be comparable to new ones.
+  identity: string;
   // One vector per input text, in the same order. Throws on any failure or a
   // response whose shape doesn't line up with the request — callers treat a
   // throw as "no retrieval this time", never as a task failure.
@@ -20,11 +25,15 @@ const EMBED_BATCH_SIZE = 32;
 export class GeminiEmbeddingProvider implements EmbeddingProvider {
   name = "gemini";
   model: string;
+  identity: string;
   private client: GoogleGenAI;
+  private dim: number;
 
-  constructor(opts: { apiKey: string; model: string }) {
+  constructor(opts: { apiKey: string; model: string; dim: number }) {
     this.client = new GoogleGenAI({ apiKey: opts.apiKey });
     this.model = opts.model;
+    this.dim = opts.dim;
+    this.identity = `${opts.model}@${opts.dim}`;
   }
 
   async embed(texts: string[], kind: "document" | "query", signal: AbortSignal): Promise<Float32Array[]> {
@@ -38,7 +47,12 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
         response = await this.client.models.embedContent({
           model: this.model,
           contents: batch,
-          config: { taskType, abortSignal: signal, httpOptions: { timeout: PROVIDER_REQUEST_TIMEOUT_MS } },
+          config: {
+            taskType,
+            outputDimensionality: this.dim,
+            abortSignal: signal,
+            httpOptions: { timeout: PROVIDER_REQUEST_TIMEOUT_MS },
+          },
         });
       } catch (err) {
         throw new Error(`[gemini-embed] ${err instanceof Error ? err.message : String(err)}`);

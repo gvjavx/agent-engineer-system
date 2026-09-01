@@ -17,7 +17,11 @@ export type { EmbeddingProvider } from "./embeddingProvider.js";
 export function buildEmbeddingProvider(): EmbeddingProvider | undefined {
   if (!config.rag.enabled) return undefined;
   if (!config.gemini || config.gemini.apiKeys.length === 0) return undefined;
-  return new GeminiEmbeddingProvider({ apiKey: config.gemini.apiKeys[0], model: config.rag.embedModel });
+  return new GeminiEmbeddingProvider({
+    apiKey: config.gemini.apiKeys[0],
+    model: config.rag.embedModel,
+    dim: config.rag.embedDim,
+  });
 }
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -93,8 +97,8 @@ async function indexProjectInner(params: IndexProjectParams): Promise<IndexProje
   const headCommit = mode === "git" ? await gitHead(cwd) : null;
   const meta = store.getMeta(projectAlias);
 
-  if (meta && meta.embedModel !== embedder.model) {
-    log?.(`Model embedding berubah (${meta.embedModel} -> ${embedder.model}), indeks ulang dari nol.`);
+  if (meta && meta.embedModel !== embedder.identity) {
+    log?.(`Model embedding berubah (${meta.embedModel} -> ${embedder.identity}), indeks ulang dari nol.`);
     store.deleteProject(projectAlias);
   } else if (meta && headCommit && meta.headCommit === headCommit) {
     return { ...nothing, reason: "head unchanged" };
@@ -156,7 +160,7 @@ async function indexProjectInner(params: IndexProjectParams): Promise<IndexProje
   // Only advance the head pointer when the whole changed set actually made it
   // in — a capped or aborted run leaves it stale so the next run finishes the job.
   if (!signal.aborted && toIndex.length === changed.length) {
-    store.setMeta(projectAlias, headCommit, embedder.model);
+    store.setMeta(projectAlias, headCommit, embedder.identity);
   }
 
   return { skipped: false, filesIndexed, filesRemoved: removed.length, chunks: chunkTotal };
