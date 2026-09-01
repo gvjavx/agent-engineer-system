@@ -210,11 +210,15 @@ export const config = {
     // normalization, or token-set overlap at/above this Jaccard score. 0.85
     // catches a dropped/added filler word; 1.0 means exact-tokens only.
     localMatchThreshold: Math.min(1, Math.max(0, Number(process.env.CHAT_KB_LOCAL_THRESHOLD ?? 0.85))),
-    // Opt-in: also try Gemini-embedding similarity when the local match
-    // misses (catches deeper paraphrases, but costs an embedding call per
-    // message and can 429 on the free tier). Off unless CHAT_KB_SEMANTIC=true.
+    // Opt-in: when the text match misses, compare meaning with a small local
+    // sentence-embedding model (agent/localEmbedder.ts) — no API, CPU-only.
+    // Off unless CHAT_KB_SEMANTIC=true and @huggingface/transformers is installed.
     semanticFallback: (process.env.CHAT_KB_SEMANTIC ?? "false").toLowerCase() === "true",
-    matchThreshold: Math.min(1, Math.max(0, Number(process.env.CHAT_KB_MATCH_THRESHOLD ?? 0.9))),
+    // Cosine (MiniLM q8) to treat two questions as the same. Measured: true
+    // rewordings land ~0.77-0.90, a merely-related different question ~0.66,
+    // unrelated ~0.13. 0.75 clears the rewordings and rejects the near-miss;
+    // a wrong reuse is worse than a miss, so bias high.
+    matchThreshold: Math.min(1, Math.max(0, Number(process.env.CHAT_KB_MATCH_THRESHOLD ?? 0.75))),
   },
 
   // Optional — only set once someone actually registers a Figma OAuth app

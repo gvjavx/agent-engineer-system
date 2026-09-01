@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { recordInteraction, lookupCachedAnswer } from "./chatKb.js";
+import { recordInteraction, lookupCachedAnswer, semanticLookup } from "./chatKb.js";
 import { chatKbRepo, normalizeQuestion } from "../db/chatKb.js";
 
 // Random suffixes: these hit the real sqlite file (same as every other test
@@ -73,6 +73,26 @@ test("an arithmetic row is never a local-match candidate", async () => {
     { enabled: true }
   );
   assert.equal((await lookup(from, "2 + 2")).hit, undefined);
+});
+
+test("semanticLookup: cosine against stored vectors, threshold-gated, returns the query vector", async () => {
+  const from = uid("sem");
+  // recordInteraction won't embed with the flag off (the test default), so
+  // set a vector on the row directly.
+  const id = chatKbRepo.insert(from, "chat_model", "kapan hari kemerdekaan indonesia", "17 Agustus.");
+  chatKbRepo.setEmbedding(id, Float32Array.from([1, 0, 0]));
+
+  const hit = await semanticLookup(from, "tanggal berapa indonesia merdeka", {
+    embedFn: async () => [Float32Array.from([1, 0, 0])], // parallel -> cosine 1 -> hit
+  });
+  assert.equal(hit.hit, "17 Agustus.");
+  assert.ok(hit.queryVector instanceof Float32Array);
+
+  const miss = await semanticLookup(from, "resep rendang", {
+    embedFn: async () => [Float32Array.from([0, 1, 0])], // orthogonal -> cosine 0 -> miss
+  });
+  assert.equal(miss.hit, undefined);
+  assert.ok(miss.queryVector instanceof Float32Array);
 });
 
 test("clearForNumber wipes a sender's stored interactions", async () => {

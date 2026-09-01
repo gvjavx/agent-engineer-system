@@ -7,6 +7,7 @@ import { sendWhatsApp } from "./whatsappClient.js";
 import { startIdleSessionScanner } from "./session/idleNotifier.js";
 import { isDuplicateInboundMessage } from "./inboundDedup.js";
 import { tasksRepo } from "./db/index.js";
+import { warmLocalEmbedder } from "./agent/localEmbedder.js";
 
 const app = express();
 
@@ -97,4 +98,7 @@ if (recovered.length > 0) {
 app.listen(config.port, () => {
   console.log(`orchestrator listening on port ${config.port}`);
   startIdleSessionScanner();
+  // Load the chat-KB embedding model in the background so the first semantic
+  // lookup isn't the one that pays the load cost. No-op unless CHAT_KB_SEMANTIC.
+  if (config.chatKb.semanticFallback) warmLocalEmbedder();
 });
