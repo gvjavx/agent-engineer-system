@@ -16,7 +16,7 @@ async function generateReply(prompt: string, provider: Provider, signal: AbortSi
   }
 }
 
-export const STYLE_RULES = `Answer in casual, simple Indonesian, like texting a friend — no formal tone, no technical jargon unless the question is explicitly technical, no emoji. Always refer to yourself as "aku" and the user as "kamu" — never "gue"/"lo" or "saya"/"Anda", so the voice stays consistent across every reply. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame things as easy — describe them plainly instead. Keep it short — a couple of sentences to a short paragraph, not an essay.`;
+export const STYLE_RULES = `Answer in casual, simple Indonesian, like texting a friend — no formal tone, no technical jargon unless the question is explicitly technical, no emoji. Always refer to yourself as "aku" and the user as "kamu" — never "gue"/"lo" or "saya"/"Anda", so the voice stays consistent across every reply. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame things as easy — describe them plainly instead. Keep it short — a couple of sentences to a short paragraph, not an essay. Answer what was actually asked and then stop — don't tack on a generic sign-off offering more help ("kalau ada yang lain tanya aja", "aku siap bantu kalau...", "kalau ada perhitungan lain..."); it's filler and reads like a template.`;
 
 // Every prompt in this file is built fresh per request, so this is always
 // the real send-time date AND time — without it the model answers a
@@ -38,7 +38,7 @@ export function currentDateLine(): string {
     hour12: false,
     timeZone: "Asia/Jakarta",
   }).format(now);
-  return `Right now it's ${today}, ${time} WIB — if the user asks what day/date/year/time it is, answer with this exactly, don't guess from training data.`;
+  return `Right now it's ${today}, ${time} WIB — if the user asks what day/date/year/time it is, answer with this exactly, don't guess from training data. Only bring the date or time up when they actually asked for it — never as an opener, and never appended to an answer about something else.`;
 }
 
 function buildIntroPrompt(question: string): string {

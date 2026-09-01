@@ -141,6 +141,7 @@ Opsional, mati secara default (`RAG_ENABLED`). Tujuannya: ngasih agent potongan 
 
 Kalau `classifyMessageKind` bilang `chat` (bukan task), `handleChatMessage` (`agent/chatAssistant.ts`) yang jalan — beda dari balasan statis di `dynamicReplies.ts` (dipakai buat intro/greeting/help/explain, satu tembakan tanpa histori, cuma digrounding ke fakta tetap yang ditulis di prompt):
 
+- Sebelum manggil AI: kalau pesannya ekspresi aritmatika murni ("berapa 234 x 213?"), dihitung sendiri secara deterministik (`agent/calc.ts` — shunting-yard kecil, tanpa `eval`) dan langsung dibalas. Model gratisan sering salah ngitung angka besar dan ngarang desimal; ini juga hemat satu panggilan. Selain ekspresi bersih, semua jatuh ke jalur AI seperti biasa.
 - Ambil 12 pesan terakhir dari `chat_history` (tabel di-prune ke maksimal 40 baris per nomor tiap kali nambah baris baru) buat konteks obrolan.
 - Ambil sampai 30 fakta terakhir dari `user_memory` (permanen, lintas sesi — beda dari `chat_history` yang cuma histori pendek) buat digrounding ke prompt.
 - Satu panggilan AI ngerjain dua hal sekaligus: kasih balasan natural, **dan** di baris terakhir opsional nyebutin satu fakta baru yang layak diinget (`FACT: ...` atau `FACT: tidak ada`) — sengaja satu panggilan, bukan dua, biar nggak dobel biaya tiap pesan obrolan.
@@ -174,4 +175,5 @@ Kredensial GitHub **nggak pernah** disimpen di URL remote atau di disk — `ensu
 | `figma_oauth` | Token OAuth Figma (single-tenant, satu baris). |
 | `user_memory` | Fakta permanen lintas sesi soal tiap user. |
 | `chat_history` | Histori obrolan biasa terbaru (bukan task), dipangkas otomatis. |
+| `processed_messages` | Guard dedup buat webhook yang dikirim ulang (`inboundDedup.ts`) — persisten di DB, bukan `Map`, biar restart di tengah window retry (default 1 jam) nggak ngebuka celah yang harusnya ketutup. |
 | `code_files` / `code_chunks` / `code_index_meta` | Index kode buat RAG (lihat "Konteks kode") — hash per file, chunk + vektor embedding, penanda HEAD/model terakhir. Cuma keisi kalau `RAG_ENABLED`. |

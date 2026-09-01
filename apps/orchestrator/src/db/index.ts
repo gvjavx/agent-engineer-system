@@ -106,6 +106,16 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_session_log_from ON session_log(from_number);
   CREATE INDEX IF NOT EXISTS idx_session_log_session ON session_log(session_id);
+
+  -- Dedup guard for retried webhook deliveries (Meta's retry, or the
+  -- gateway's own resend after a dropped response). Persisted, not a Map:
+  -- a real transcript showed a stale retry of "halo" get reprocessed minutes
+  -- later because an in-memory guard was wiped by a restart in between,
+  -- reopening exactly the window it exists to cover. See inboundDedup.ts.
+  CREATE TABLE IF NOT EXISTS processed_messages (
+    wa_message_id TEXT PRIMARY KEY,
+    seen_at INTEGER NOT NULL -- epoch ms
+  );
 `);
 
 // Idempotent migrations for DBs created before these columns existed.

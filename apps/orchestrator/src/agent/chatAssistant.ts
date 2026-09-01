@@ -1,5 +1,6 @@
 import type { ChatMessage, Provider } from "./types.js";
 import { STYLE_RULES, currentDateLine } from "./dynamicReplies.js";
+import { tryEvaluateArithmetic } from "./calc.js";
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -25,13 +26,15 @@ function buildSystemPrompt(facts: string[]): string {
 
   return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES} ${currentDateLine()}
 
+You have no internet access, no web search, and no live data in this chat — answer from what you already know, and when something needs current information you can't be sure of, say you're not sure or can't check rather than guessing. The only time you touch a real machine is while running an actual coding task the user asked for (shell commands inside their project), never for looking things up, so don't tell the user you're "connected to the internet" or can fetch the latest info.
+
 The message history below is context only, to understand what's already been discussed — answer the user's newest message specifically. Don't open by restating, recapping, or re-answering what you said last turn unless the new message actually asks you to.
 
 ${factsBlock}
 
 After your reply, add one final line with exactly this format:
 FACT: <one short new fact worth remembering long-term about this user, in Indonesian>
-Write it in second person ("kamu lagi ngerjain...", "kamu suka...") so it reads naturally if it ever gets quoted back to them in a later reply — not a third-person case note ("user sedang...", "user cenderung..."). Only include something genuinely worth remembering about them as a person — a preference, an ongoing project, real context about them — never a running commentary on how this conversation itself has gone (e.g. "kamu sering nanya X berulang" or "kamu ketauan bingung soal Y") — that's meta-observation about the chat, not a fact about them, and reads strangely if repeated back later. Don't repeat anything already listed above. If there's nothing new worth remembering from this message, write exactly:
+Write it in second person ("kamu lagi ngerjain...", "kamu suka...") so it reads naturally if it ever gets quoted back to them in a later reply — not a third-person case note ("user sedang...", "user cenderung..."). Only record a concrete, durable fact about them that would still be true and useful weeks from now — an ongoing project, the stack/tools/language they work in, their role or domain, a firm preference or constraint they stated outright. Do NOT record: guesses about what they're thinking or feeling, their attitude toward you or how much they trust you ("kamu pengen mastiin aku bisa diandalkan", "kamu lagi nguji kemampuan aku"), or any commentary on how this conversation is going ("kamu nanya hitungan berkali-kali") — those aren't facts about them and read strangely quoted back later. Small talk, a one-off test question, or general trivia has nothing to record. Don't repeat anything already listed above. If there's nothing new worth remembering from this message, write exactly:
 FACT: tidak ada`;
 }
 
@@ -70,6 +73,12 @@ export async function generateChatReply(
   provider: Provider,
   signal: AbortSignal
 ): Promise<ChatReplyResult | undefined> {
+  // Do the sums ourselves — a free-tier model gets multi-digit arithmetic
+  // wrong and states it with invented precision. Nothing to remember from a
+  // calculation, so no FACT extraction here.
+  const arithmetic = tryEvaluateArithmetic(message);
+  if (arithmetic) return { reply: arithmetic };
+
   try {
     const response = await provider.chat(buildChatMessages(message, history, facts), [], signal);
     if (response.type !== "text") return undefined;
