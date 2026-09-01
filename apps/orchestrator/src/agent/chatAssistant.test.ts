@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { generateChatReply, parseChatReply } from "./chatAssistant.js";
+import { recordInteraction } from "./chatKb.js";
+import type { EmbeddingProvider } from "./rag/index.js";
 import type { ChatMessage, Provider, ProviderResponse } from "./types.js";
 
 function fakeProvider(behavior: (messages: ChatMessage[]) => Promise<ProviderResponse>): Provider {
@@ -87,6 +89,55 @@ test("the chat system prompt grounds the model as having no internet access", as
   });
   await generateChatReply("kabar apa", [], [], provider, new AbortController().signal);
   assert.match(seen?.[0].content ?? "", /no internet access/i);
+});
+
+test("generateChatReply serves a stored answer without calling the provider when the KB has a close match", async () => {
+  const from = `cakb-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const idVec = (t: string): Float32Array =>
+    Float32Array.from(["sepeda", "penemu", "siapa"].map((k) => (t.toLowerCase().includes(k) ? 1 : 0)));
+  const embedder: EmbeddingProvider = {
+    name: "fake",
+    model: "fake",
+    identity: "fake@3",
+    async embed(texts) {
+      return texts.map(idVec);
+    },
+  };
+  await recordInteraction(
+    { fromNumber: from, kind: "chat_model", question: "siapa penemu sepeda?", answer: "Karl von Drais." },
+    { enabled: true, embedder }
+  );
+
+  let called = false;
+  const provider = fakeProvider(async () => {
+    called = true;
+    return { type: "text", text: "jawaban model\nFACT: tidak ada" };
+  });
+
+  const result = await generateChatReply("siapa penemu sepeda", [], [], provider, new AbortController().signal, {
+    fromNumber: from,
+    kb: { enabled: true, embedder },
+  });
+
+  assert.equal(called, false);
+  assert.deepEqual(result, { reply: "Karl von Drais.", source: "kb" });
+});
+
+test("generateChatReply falls through to the model when the KB has no close match", async () => {
+  const embedder: EmbeddingProvider = {
+    name: "fake",
+    model: "fake",
+    identity: "fake@1",
+    async embed(texts) {
+      return texts.map(() => Float32Array.from([1]));
+    },
+  };
+  const provider = fakeProvider(async () => ({ type: "text", text: "dari model\nFACT: tidak ada" }));
+  const result = await generateChatReply("pertanyaan baru", [], [], provider, new AbortController().signal, {
+    fromNumber: `cakb-none-${Date.now()}`,
+    kb: { enabled: true, embedder },
+  });
+  assert.deepEqual(result, { reply: "dari model", source: "model" });
 });
 
 test("generateChatReply returns undefined on a tool_calls response", async () => {

@@ -14,8 +14,10 @@ export interface EmbeddingProvider {
   identity: string;
   // One vector per input text, in the same order. Throws on any failure or a
   // response whose shape doesn't line up with the request — callers treat a
-  // throw as "no retrieval this time", never as a task failure.
-  embed(texts: string[], kind: "document" | "query", signal: AbortSignal): Promise<Float32Array[]>;
+  // throw as "no retrieval this time", never as a task failure. "similarity"
+  // is for symmetric text-to-text matching (the chat cache); "document"/
+  // "query" are the asymmetric pair for code retrieval.
+  embed(texts: string[], kind: "document" | "query" | "similarity", signal: AbortSignal): Promise<Float32Array[]>;
 }
 
 // Gemini caps how many inputs one embedContent call accepts, and the free
@@ -36,8 +38,9 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
     this.identity = `${opts.model}@${opts.dim}`;
   }
 
-  async embed(texts: string[], kind: "document" | "query", signal: AbortSignal): Promise<Float32Array[]> {
-    const taskType = kind === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT";
+  async embed(texts: string[], kind: "document" | "query" | "similarity", signal: AbortSignal): Promise<Float32Array[]> {
+    const taskType =
+      kind === "query" ? "RETRIEVAL_QUERY" : kind === "similarity" ? "SEMANTIC_SIMILARITY" : "RETRIEVAL_DOCUMENT";
     const out: Float32Array[] = [];
 
     for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {

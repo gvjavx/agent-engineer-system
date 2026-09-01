@@ -1139,21 +1139,25 @@ async function tryHandleSemanticIntent(from: string, trimmed: string): Promise<b
 async function handleChatMessage(from: string, message: string, provider: Provider): Promise<void> {
   const history = chatHistoryRepo.recent(from, CHAT_HISTORY_TURNS);
   const facts = memoryRepo.list(from).slice(-MAX_FACTS_IN_PROMPT);
-  const result = await generateChatReply(message, history, facts, provider, new AbortController().signal);
+  const result = await generateChatReply(message, history, facts, provider, new AbortController().signal, {
+    fromNumber: from,
+  });
   const reply = result?.reply ?? "Provider yang aktif lagi susah diajak mikir buat ini, coba lagi bentar ya.";
   await sendWhatsApp(from, reply);
   if (result) {
     chatHistoryRepo.append(from, "user", message);
     chatHistoryRepo.append(from, "assistant", reply);
     if (result.newFact) memoryRepo.add(from, result.newFact);
-    // Fire-and-forget: accumulates the Q&A for the chat knowledge base
-    // (Stage 0 — no retrieval yet). No-ops unless CHAT_KB_ENABLED.
-    void recordInteraction({
-      fromNumber: from,
-      kind: result.source === "arithmetic" ? "chat_arithmetic" : "chat_model",
-      question: message,
-      answer: reply,
-    });
+    // A "kb" reply is already in the store — re-recording would just pile up
+    // duplicates. Only the model/arithmetic paths produce something new.
+    if (result.source !== "kb") {
+      void recordInteraction({
+        fromNumber: from,
+        kind: result.source === "arithmetic" ? "chat_arithmetic" : "chat_model",
+        question: message,
+        answer: reply,
+      });
+    }
   }
 }
 

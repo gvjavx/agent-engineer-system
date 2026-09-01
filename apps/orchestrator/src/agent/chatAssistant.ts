@@ -1,6 +1,7 @@
 import type { ChatMessage, Provider } from "./types.js";
 import { STYLE_RULES, currentDateLine } from "./dynamicReplies.js";
 import { tryEvaluateArithmetic } from "./calc.js";
+import { lookupCachedAnswer, type ChatKbOpts } from "./chatKb.js";
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -10,10 +11,18 @@ export interface ChatTurn {
 export interface ChatReplyResult {
   reply: string;
   newFact?: string;
-  // Where the reply came from — "arithmetic" means agent/calc.ts answered it
-  // deterministically and no model was called. Used by the chat KB so it
-  // doesn't bother storing/embedding calculations.
-  source?: "model" | "arithmetic";
+  // Where the reply came from, none of which involved a model call except
+  // "model": "arithmetic" = agent/calc.ts, "kb" = a stored answer to a
+  // near-identical earlier question. The chat handler uses this to skip
+  // re-recording a KB hit.
+  source?: "model" | "arithmetic" | "kb";
+}
+
+export interface GenerateChatReplyOpts {
+  // When set, a matching earlier answer for this sender is reused instead of
+  // calling the model. kb carries the chat-KB test seams.
+  fromNumber?: string;
+  kb?: ChatKbOpts;
 }
 
 // Real multi-turn messages (system + history + the new user turn) rather
@@ -75,13 +84,21 @@ export async function generateChatReply(
   history: ChatTurn[],
   facts: string[],
   provider: Provider,
-  signal: AbortSignal
+  signal: AbortSignal,
+  opts: GenerateChatReplyOpts = {}
 ): Promise<ChatReplyResult | undefined> {
   // Do the sums ourselves — a free-tier model gets multi-digit arithmetic
   // wrong and states it with invented precision. Nothing to remember from a
   // calculation, so no FACT extraction here.
   const arithmetic = tryEvaluateArithmetic(message);
   if (arithmetic) return { reply: arithmetic, source: "arithmetic" };
+
+  // Already answered a near-identical question for this user? Reuse it, no
+  // model call. No-ops unless the chat KB is on and has a close match.
+  if (opts.fromNumber) {
+    const cached = await lookupCachedAnswer({ fromNumber: opts.fromNumber, question: message }, opts.kb);
+    if (cached) return { reply: cached, source: "kb" };
+  }
 
   try {
     const response = await provider.chat(buildChatMessages(message, history, facts), [], signal);

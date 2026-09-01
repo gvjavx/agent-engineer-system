@@ -147,15 +147,16 @@ Kalau `classifyMessageKind` bilang `chat` (bukan task), `handleChatMessage` (`ag
 - Satu panggilan AI ngerjain dua hal sekaligus: kasih balasan natural, **dan** di baris terakhir opsional nyebutin satu fakta baru yang layak diinget (`FACT: ...` atau `FACT: tidak ada`) — sengaja satu panggilan, bukan dua, biar nggak dobel biaya tiap pesan obrolan.
 - User bisa `lihat memori` (tampilin semua fakta tersimpan) atau `lupain semua` (hapus semua, minta konfirmasi dulu — ini permanen).
 
-### Chat knowledge base (Stage 0)
+### Chat knowledge base
 
-Opsional, mati default (`CHAT_KB_ENABLED`). Rencana jangka panjang: Mas ADE jawab pertanyaan non-koding dari store-nya sendiri, bukan selalu manggil LLM. Tahap 0 (yang ada sekarang) cuma **mengumpulkan** — belum ada retrieval.
+Opsional, mati default (`CHAT_KB_ENABLED`). Tujuan: pertanyaan non-koding yang **berulang** dijawab dari store, bukan manggil model lagi. Kode di `agent/chatKb.ts` + `db/chatKb.ts`.
 
-- Tiap Q&A chat bebas (`handleChatMessage`) dicatat ke `interaction_kb` (`db/chatKb.ts`) lewat `recordInteraction` (`agent/chatKb.ts`) — fire-and-forget, gagal di sini nggak pernah nyentuh balasan yang udah dikirim.
-- Pertanyaan-nya di-embed best-effort (reuse `buildEmbeddingProvider` dari `agent/rag`, `gemini-embedding-001`); baris tetap kesimpen walau embedding gagal (`embedding` NULL, bisa di-backfill nanti).
-- Jawaban aritmatika (`source: "arithmetic"` dari `agent/calc.ts`) dicatat tapi **nggak** di-embed — kalkulator udah generalisasi ke semua ekspresi, nggak ada yang perlu di-retrieve.
-- `lihat memori` nunjukin jumlahnya; `lupain semua` ikut ngehapus store ini (`chatKbRepo.clearForNumber`).
-- Tahap berikutnya (belum ada): retrieval — pertanyaan baru dicocokin ke store, mirip banget → jawab langsung tanpa LLM; nggak → LLM lalu simpan.
+- **Rekam**: tiap Q&A chat bebas (`handleChatMessage`) dicatat ke `interaction_kb` lewat `recordInteraction` — fire-and-forget, gagal di sini nggak pernah nyentuh balasan yang udah dikirim. Pertanyaan-nya di-embed (`gemini-embedding-001`, taskType `SEMANTIC_SIMILARITY`); baris tetap kesimpen walau embedding gagal (`embedding` NULL, bisa di-backfill).
+- **Ambil**: `lookupCachedAnswer` dipanggil di `generateChatReply` setelah cek aritmatika, sebelum panggilan model. Embed pertanyaan masuk, cosine lawan semua baris ter-embed milik nomor itu, kalau skor terbaik ≥ `CHAT_KB_MATCH_THRESHOLD` (default 0.95) → balikin jawaban tersimpan, `source: "kb"`, nol panggilan generate. Handler nggak nyimpen ulang hit `kb`.
+- **Kalibrasi ambang** (live, `gemini-embedding-001` + `SEMANTIC_SIMILARITY`): reword pertanyaan yang sama ~0.97+, pertanyaan beda topik sama ~0.93 ("kapan X" vs "siapa penemu X"), nggak nyambung ~0.72. 0.95 lolosin reword, tolak near-miss.
+- Jawaban aritmatika (`source: "arithmetic"`) dicatat tapi **nggak** di-embed dan nggak pernah jadi kandidat retrieval — `agent/calc.ts` udah generalisasi.
+- **Batasnya**: cuma bantu pertanyaan yang benar-benar berulang; pertanyaan baru tetap ke model. Jawaban tersimpan = rekaman jawaban model dulu (bisa basi buat hal yang berubah). Tiap pesan tetap 1 panggilan embedding (buat lookup) — buat benar-benar bebas Gemini butuh model embedding + LLM lokal.
+- `lihat memori` nunjukin jumlahnya; `lupain semua` ikut ngehapus (`chatKbRepo.clearForNumber`).
 
 ## Registrasi project & git
 

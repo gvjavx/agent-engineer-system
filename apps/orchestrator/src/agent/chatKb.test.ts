@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { recordInteraction } from "./chatKb.js";
+import { recordInteraction, lookupCachedAnswer } from "./chatKb.js";
 import { chatKbRepo } from "../db/chatKb.js";
 import type { EmbeddingProvider } from "./rag/index.js";
 
 const uid = (tag: string) => `kbtest-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+// Keyword-count vectors so two texts sharing words score high and disjoint
+// texts score 0 — enough to exercise the match threshold deterministically.
+const KW = ["sepeda", "penemu", "menemukan", "mobil", "ibukota", "australia", "kapan", "siapa", "apa", "ditemukan"];
 function fakeEmbedder(): EmbeddingProvider & { calls: number } {
   const e = {
     calls: 0,
     name: "fake",
     model: "fake",
-    identity: "fake@4",
+    identity: "fake@10",
     async embed(texts: string[]) {
       e.calls += texts.length;
-      return texts.map(() => Float32Array.from([1, 2, 3, 4]));
+      return texts.map((t) => {
+        const lo = t.toLowerCase();
+        return Float32Array.from(KW.map((k) => (lo.includes(k) ? 1 : 0)));
+      });
     },
   };
   return e;
@@ -39,7 +45,8 @@ test("recordInteraction stores the Q&A and backfills the question embedding when
   assert.equal(rows.length, 1);
   assert.equal(rows[0].question, "hari lahir Pancasila kapan?");
   assert.equal(rows[0].answer, "1 Juni");
-  assert.deepEqual([...rows[0].embedding], [1, 2, 3, 4]);
+  assert.equal(rows[0].embedding.length, KW.length);
+  assert.ok([...rows[0].embedding].some((x) => x === 1)); // "kapan" hit
 });
 
 test("an arithmetic answer is stored but never embedded", async () => {
@@ -77,4 +84,44 @@ test("clearForNumber wipes a user's stored interactions", async () => {
   assert.equal(chatKbRepo.countForNumber(from), 1);
   chatKbRepo.clearForNumber(from);
   assert.equal(chatKbRepo.countForNumber(from), 0);
+});
+
+test("lookupCachedAnswer returns a stored answer for a near-identical question, undefined otherwise", async () => {
+  const from = uid("lookup");
+  const embedder = fakeEmbedder();
+  await recordInteraction(
+    { fromNumber: from, kind: "chat_model", question: "siapa penemu sepeda?", answer: "Karl von Drais, 1817." },
+    { enabled: true, embedder }
+  );
+
+  // same words -> cosine 1.0 -> above threshold
+  const hit = await lookupCachedAnswer({ fromNumber: from, question: "siapa penemu sepeda" }, { enabled: true, embedder });
+  assert.equal(hit, "Karl von Drais, 1817.");
+
+  // disjoint words -> cosine 0 -> below threshold
+  const miss = await lookupCachedAnswer(
+    { fromNumber: from, question: "apa ibukota australia" },
+    { enabled: true, embedder }
+  );
+  assert.equal(miss, undefined);
+
+  // a different question about the same topic ("kapan" vs "siapa") shares
+  // "sepeda" but not enough -> still a miss at the default 0.95 threshold
+  const nearMiss = await lookupCachedAnswer(
+    { fromNumber: from, question: "kapan sepeda ditemukan" },
+    { enabled: true, embedder }
+  );
+  assert.equal(nearMiss, undefined);
+});
+
+test("lookupCachedAnswer no-ops when disabled, without an embedder, or with an empty store", async () => {
+  const from = uid("lookup-guards");
+  const embedder = fakeEmbedder();
+  await recordInteraction(
+    { fromNumber: from, kind: "chat_model", question: "siapa penemu sepeda?", answer: "x" },
+    { enabled: true, embedder }
+  );
+  assert.equal(await lookupCachedAnswer({ fromNumber: from, question: "siapa penemu sepeda" }, { enabled: false, embedder }), undefined);
+  assert.equal(await lookupCachedAnswer({ fromNumber: from, question: "siapa penemu sepeda" }, { enabled: true, embedder: null }), undefined);
+  assert.equal(await lookupCachedAnswer({ fromNumber: uid("empty"), question: "apa pun" }, { enabled: true, embedder }), undefined);
 });
