@@ -18,7 +18,7 @@ export type { EmbeddingProvider } from "./embeddingProvider.js";
 export function buildEmbeddingProvider(): EmbeddingProvider | undefined {
   if (!config.gemini || config.gemini.apiKeys.length === 0) return undefined;
   return new GeminiEmbeddingProvider({
-    apiKey: config.gemini.apiKeys[0],
+    apiKeys: config.gemini.apiKeys,
     model: config.rag.embedModel,
     dim: config.rag.embedDim,
   });

@@ -27,12 +27,13 @@ export interface EmbeddingProvider {
 const EMBED_BATCH_SIZE = 32;
 
 // Free-tier gemini-embedding-001 has a low per-minute request quota and 429s
-// under any real chat volume. A 429 clears within a minute, so a couple of
-// spaced retries recovers the call instead of leaving a row (or a lookup)
-// permanently unembedded. Callers that can't wait (the reply-path cache
-// lookup) pass a short AbortSignal.timeout, which breaks the retry early.
-const RATE_LIMIT_RETRIES = 3;
-const RATE_LIMIT_DELAY_MS = 6000;
+// under any real chat volume. On a 429 we rotate to the next configured API
+// key first (each key has its own quota); only once every key has 429'd do we
+// sleep out the per-minute window and try the whole ring again. Callers that
+// can't wait (the reply-path cache lookup) pass a short AbortSignal.timeout,
+// which breaks this early — a slow lookup just misses and the model answers.
+const RATE_LIMIT_FULL_CYCLES = 3;
+const RATE_LIMIT_DELAY_MS = 8000;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -53,11 +54,13 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
   name = "gemini";
   model: string;
   identity: string;
-  private client: GoogleGenAI;
+  private clients: GoogleGenAI[];
+  private keyIndex = 0;
   private dim: number;
 
-  constructor(opts: { apiKey: string; model: string; dim: number }) {
-    this.client = new GoogleGenAI({ apiKey: opts.apiKey });
+  constructor(opts: { apiKeys: string[]; model: string; dim: number }) {
+    const keys = opts.apiKeys.length > 0 ? opts.apiKeys : [""];
+    this.clients = keys.map((apiKey) => new GoogleGenAI({ apiKey }));
     this.model = opts.model;
     this.dim = opts.dim;
     this.identity = `${opts.model}@${opts.dim}`;
@@ -74,10 +77,11 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
   }
 
   private async embedBatch(batch: string[], taskType: string, signal: AbortSignal): Promise<Float32Array[]> {
-    for (let attempt = 0; ; attempt++) {
+    let cyclesWaited = 0;
+    for (;;) {
       let response;
       try {
-        response = await this.client.models.embedContent({
+        response = await this.clients[this.keyIndex].models.embedContent({
           model: this.model,
           contents: batch,
           config: {
@@ -88,8 +92,17 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
           },
         });
       } catch (err) {
-        if (extractHttpStatus(err) === 429 && attempt < RATE_LIMIT_RETRIES && !signal.aborted) {
-          await sleep(RATE_LIMIT_DELAY_MS, signal);
+        if (extractHttpStatus(err) === 429 && !signal.aborted) {
+          this.keyIndex = (this.keyIndex + 1) % this.clients.length;
+          if (this.keyIndex === 0) {
+            // A full lap of the key ring 429'd — wait out the per-minute
+            // window before another lap, up to a cap.
+            if (cyclesWaited >= RATE_LIMIT_FULL_CYCLES) {
+              throw new Error(`[gemini-embed] rate limited on every key after ${cyclesWaited} cycles`);
+            }
+            cyclesWaited++;
+            await sleep(RATE_LIMIT_DELAY_MS, signal);
+          }
           if (!signal.aborted) continue;
         }
         throw new Error(`[gemini-embed] ${err instanceof Error ? err.message : String(err)}`);
