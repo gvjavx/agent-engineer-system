@@ -91,26 +91,20 @@ GitHub: https://github.com/gvjavx/
 LinkedIn: https://www.linkedin.com/in/naufal-h-68576a197/`;
 
 // Ade's "own brain" for pure small talk ("halo", "apa kabar", dsb) — decided
-// locally, never hits an AI provider at all, not even as a first attempt.
-// Real conversations are exactly this formulaic (a greeting doesn't need a
-// creative answer), so there's nothing an AI call would add here besides
-// quota spent and latency, on a path that gets hit constantly. Two sources
-// of "learning" feed it, both without any new AI call: time-of-day (computed
-// fresh per reply, same WIB clock as currentDateLine in dynamicReplies.ts),
-// and memoryRepo — the same fact store the free-chat path already builds up
-// over real conversations — so a greeting can reference the most recent
-// thing actually learned about this user instead of being fully generic.
-function localGreetingReply(from: string): string {
+// locally, never hits an AI provider. A greeting doesn't need a creative
+// answer, so an AI call would only add quota + latency on a path hit
+// constantly. Only the time-of-day varies (WIB, same clock as currentDateLine
+// in dynamicReplies.ts). It used to also quote the most recent remembered
+// fact, but doing that on every single "halo" read as repetitive and kept
+// resurfacing weakly-judged old facts — memory still feeds the normal chat
+// path, just not this one.
+function localGreetingReply(): string {
   const hour = Number(
     new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: "Asia/Jakarta" }).format(new Date())
   );
   const timeOfDay =
     hour >= 4 && hour < 11 ? "pagi" : hour >= 11 && hour < 15 ? "siang" : hour >= 15 && hour < 18 ? "sore" : "malam";
-  const base = `Halo, selamat ${timeOfDay}! Baik nih.`;
-  const facts = memoryRepo.list(from);
-  const lastFact = facts[facts.length - 1]?.replace(/[.!?]+$/, "");
-  const recall = lastFact ? ` Btw aku masih inget: ${lastFact}.` : "";
-  return `${base}${recall} Ada yang mau dikerjain, atau ketik "bantuan" dulu kalau mau lihat-lihat perintahnya.`;
+  return `Halo, selamat ${timeOfDay}! Baik nih. Ada yang mau dikerjain, atau ketik "bantuan" dulu kalau mau lihat-lihat perintahnya.`;
 }
 
 // For non-technical "how does this work" questions — no command syntax, no
@@ -811,7 +805,7 @@ async function handleIntroCommand(from: string, question: string): Promise<void>
 }
 
 async function handleGreetingCommand(from: string): Promise<void> {
-  await sendWhatsApp(from, localGreetingReply(from));
+  await sendWhatsApp(from, localGreetingReply());
 }
 
 async function handleHelpCommand(from: string, question: string): Promise<void> {
