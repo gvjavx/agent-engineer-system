@@ -16,6 +16,10 @@ export interface ChatReplyResult {
   // near-identical earlier question. The chat handler uses this to skip
   // re-recording a KB hit.
   source?: "model" | "arithmetic" | "kb";
+  // On a "model" reply preceded by a KB lookup miss: the question's vector the
+  // lookup already computed. The handler passes it to recordInteraction so
+  // the same text isn't embedded twice.
+  questionVector?: Float32Array;
 }
 
 export interface GenerateChatReplyOpts {
@@ -104,16 +108,19 @@ export async function generateChatReply(
 
   // Already answered a near-identical question for this user? Reuse it, no
   // model call. No-ops unless the chat KB is on and has a close match.
+  let questionVector: Float32Array | undefined;
   if (opts.fromNumber) {
-    const cached = await lookupCachedAnswer({ fromNumber: opts.fromNumber, question: message }, opts.kb);
-    if (cached) return { reply: cached, source: "kb" };
+    const kb = await lookupCachedAnswer({ fromNumber: opts.fromNumber, question: message }, opts.kb);
+    if (kb.hit) return { reply: kb.hit, source: "kb" };
+    questionVector = kb.queryVector;
   }
 
   try {
     const response = await provider.chat(buildChatMessages(message, history, facts), [], signal);
     if (response.type !== "text") return undefined;
     const result = parseChatReply(response.text);
-    return result.reply ? { ...result, source: "model" } : undefined;
+    if (!result.reply) return undefined;
+    return { ...result, source: "model", ...(questionVector ? { questionVector } : {}) };
   } catch {
     return undefined;
   }

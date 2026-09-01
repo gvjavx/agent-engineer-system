@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { PROVIDER_REQUEST_TIMEOUT_MS } from "../types.js";
+import { PROVIDER_REQUEST_TIMEOUT_MS, extractHttpStatus } from "../types.js";
 
 // Separate from the chat `Provider` interface (agent/types.ts) on purpose:
 // embedding is its own API surface, only one vendor implements it here, and
@@ -16,13 +16,38 @@ export interface EmbeddingProvider {
   // response whose shape doesn't line up with the request — callers treat a
   // throw as "no retrieval this time", never as a task failure. "similarity"
   // is for symmetric text-to-text matching (the chat cache); "document"/
-  // "query" are the asymmetric pair for code retrieval.
+  // "query" are the asymmetric pair for code retrieval. A tight AbortSignal
+  // (e.g. AbortSignal.timeout) caps the 429 retry wait for latency-sensitive
+  // callers.
   embed(texts: string[], kind: "document" | "query" | "similarity", signal: AbortSignal): Promise<Float32Array[]>;
 }
 
 // Gemini caps how many inputs one embedContent call accepts, and the free
 // tier is happier with smaller payloads — stay well under both.
 const EMBED_BATCH_SIZE = 32;
+
+// Free-tier gemini-embedding-001 has a low per-minute request quota and 429s
+// under any real chat volume. A 429 clears within a minute, so a couple of
+// spaced retries recovers the call instead of leaving a row (or a lookup)
+// permanently unembedded. Callers that can't wait (the reply-path cache
+// lookup) pass a short AbortSignal.timeout, which breaks the retry early.
+const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_DELAY_MS = 6000;
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true }
+    );
+  });
+}
 
 export class GeminiEmbeddingProvider implements EmbeddingProvider {
   name = "gemini";
@@ -42,9 +67,14 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
     const taskType =
       kind === "query" ? "RETRIEVAL_QUERY" : kind === "similarity" ? "SEMANTIC_SIMILARITY" : "RETRIEVAL_DOCUMENT";
     const out: Float32Array[] = [];
-
     for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
-      const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
+      out.push(...(await this.embedBatch(texts.slice(i, i + EMBED_BATCH_SIZE), taskType, signal)));
+    }
+    return out;
+  }
+
+  private async embedBatch(batch: string[], taskType: string, signal: AbortSignal): Promise<Float32Array[]> {
+    for (let attempt = 0; ; attempt++) {
       let response;
       try {
         response = await this.client.models.embedContent({
@@ -58,6 +88,10 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
           },
         });
       } catch (err) {
+        if (extractHttpStatus(err) === 429 && attempt < RATE_LIMIT_RETRIES && !signal.aborted) {
+          await sleep(RATE_LIMIT_DELAY_MS, signal);
+          if (!signal.aborted) continue;
+        }
         throw new Error(`[gemini-embed] ${err instanceof Error ? err.message : String(err)}`);
       }
 
@@ -65,12 +99,10 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
       if (vectors.length !== batch.length) {
         throw new Error(`[gemini-embed] asked for ${batch.length} embeddings, got ${vectors.length}`);
       }
-      for (const v of vectors) {
+      return vectors.map((v) => {
         if (!v.values || v.values.length === 0) throw new Error("[gemini-embed] empty embedding in response");
-        out.push(Float32Array.from(v.values));
-      }
+        return Float32Array.from(v.values);
+      });
     }
-
-    return out;
   }
 }

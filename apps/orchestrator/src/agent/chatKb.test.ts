@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { recordInteraction, lookupCachedAnswer } from "./chatKb.js";
+import { recordInteraction, lookupCachedAnswer, backfillNullEmbeddings } from "./chatKb.js";
 import { chatKbRepo } from "../db/chatKb.js";
 import type { EmbeddingProvider } from "./rag/index.js";
 
@@ -26,9 +26,9 @@ function fakeEmbedder(): EmbeddingProvider & { calls: number } {
   return e;
 }
 
-test("recordInteraction is a no-op when the KB is disabled (the default)", async () => {
+test("recordInteraction is a no-op when the KB is disabled", async () => {
   const from = uid("disabled");
-  await recordInteraction({ fromNumber: from, kind: "chat_model", question: "q", answer: "a" });
+  await recordInteraction({ fromNumber: from, kind: "chat_model", question: "q", answer: "a" }, { enabled: false });
   assert.equal(chatKbRepo.countForNumber(from), 0);
 });
 
@@ -86,7 +86,7 @@ test("clearForNumber wipes a user's stored interactions", async () => {
   assert.equal(chatKbRepo.countForNumber(from), 0);
 });
 
-test("lookupCachedAnswer returns a stored answer for a near-identical question, undefined otherwise", async () => {
+test("lookupCachedAnswer returns a stored answer for a near-identical question, and just the vector otherwise", async () => {
   const from = uid("lookup");
   const embedder = fakeEmbedder();
   await recordInteraction(
@@ -96,14 +96,17 @@ test("lookupCachedAnswer returns a stored answer for a near-identical question, 
 
   // same words -> cosine 1.0 -> above threshold
   const hit = await lookupCachedAnswer({ fromNumber: from, question: "siapa penemu sepeda" }, { enabled: true, embedder });
-  assert.equal(hit, "Karl von Drais, 1817.");
+  assert.equal(hit.hit, "Karl von Drais, 1817.");
+  assert.ok(hit.queryVector instanceof Float32Array);
 
-  // disjoint words -> cosine 0 -> below threshold
+  // disjoint words -> cosine 0 -> below threshold: no hit, but the computed
+  // vector comes back so recording can reuse it
   const miss = await lookupCachedAnswer(
     { fromNumber: from, question: "apa ibukota australia" },
     { enabled: true, embedder }
   );
-  assert.equal(miss, undefined);
+  assert.equal(miss.hit, undefined);
+  assert.ok(miss.queryVector instanceof Float32Array);
 
   // a different question about the same topic ("kapan" vs "siapa") shares
   // "sepeda" but not enough -> still a miss at the default 0.95 threshold
@@ -111,17 +114,55 @@ test("lookupCachedAnswer returns a stored answer for a near-identical question, 
     { fromNumber: from, question: "kapan sepeda ditemukan" },
     { enabled: true, embedder }
   );
-  assert.equal(nearMiss, undefined);
+  assert.equal(nearMiss.hit, undefined);
 });
 
-test("lookupCachedAnswer no-ops when disabled, without an embedder, or with an empty store", async () => {
+test("lookupCachedAnswer returns an empty result when disabled or without an embedder", async () => {
   const from = uid("lookup-guards");
   const embedder = fakeEmbedder();
   await recordInteraction(
     { fromNumber: from, kind: "chat_model", question: "siapa penemu sepeda?", answer: "x" },
     { enabled: true, embedder }
   );
-  assert.equal(await lookupCachedAnswer({ fromNumber: from, question: "siapa penemu sepeda" }, { enabled: false, embedder }), undefined);
-  assert.equal(await lookupCachedAnswer({ fromNumber: from, question: "siapa penemu sepeda" }, { enabled: true, embedder: null }), undefined);
-  assert.equal(await lookupCachedAnswer({ fromNumber: uid("empty"), question: "apa pun" }, { enabled: true, embedder }), undefined);
+  assert.deepEqual(await lookupCachedAnswer({ fromNumber: from, question: "siapa penemu sepeda" }, { enabled: false, embedder }), {});
+  assert.deepEqual(
+    await lookupCachedAnswer({ fromNumber: from, question: "siapa penemu sepeda" }, { enabled: true, embedder: null }),
+    {}
+  );
+  // empty store: no hit, but still hands back the vector
+  const empty = await lookupCachedAnswer({ fromNumber: uid("empty"), question: "apa pun" }, { enabled: true, embedder });
+  assert.equal(empty.hit, undefined);
+  assert.ok(empty.queryVector instanceof Float32Array);
+});
+
+test("recordInteraction with a precomputed vector skips the embedding call", async () => {
+  const from = uid("precomp");
+  const embedder = fakeEmbedder();
+  await recordInteraction(
+    {
+      fromNumber: from,
+      kind: "chat_model",
+      question: "q",
+      answer: "a",
+      precomputedVector: Float32Array.from(new Array(KW.length).fill(0.5)),
+    },
+    { enabled: true, embedder }
+  );
+  assert.equal(embedder.calls, 0);
+  const rows = chatKbRepo.embeddedForNumber(from);
+  assert.equal(rows.length, 1);
+  assert.deepEqual([...rows[0].embedding], new Array(KW.length).fill(0.5));
+});
+
+test("backfillNullEmbeddings fills in rows a past failure left without a vector", async () => {
+  const from = uid("backfill");
+  // record with a null embedder -> row saved, no vector
+  await recordInteraction(
+    { fromNumber: from, kind: "chat_model", question: "siapa penemu sepeda?", answer: "Karl." },
+    { enabled: true, embedder: null }
+  );
+  assert.equal(chatKbRepo.embeddedForNumber(from).length, 0);
+
+  await backfillNullEmbeddings(from, fakeEmbedder());
+  assert.equal(chatKbRepo.embeddedForNumber(from).length, 1);
 });

@@ -68,4 +68,14 @@ export const chatKbRepo = {
       .all(fromNumber) as { id: number; question: string; answer: string; kind: string; embedding: Buffer }[];
     return rows.map((r) => ({ ...r, embedding: toFloat32Array(r.embedding) }));
   },
+
+  // Rows a past embedding failure (e.g. a 429) left without a vector — the
+  // backfill pass re-embeds these on a later lookup.
+  nullForNumber(fromNumber: string): { id: number; question: string }[] {
+    return db
+      .prepare(
+        "SELECT id, question FROM interaction_kb WHERE from_number = ? AND embedding IS NULL AND kind != 'chat_arithmetic'"
+      )
+      .all(fromNumber) as { id: number; question: string }[];
+  },
 };

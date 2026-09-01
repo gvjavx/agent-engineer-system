@@ -1156,6 +1156,7 @@ async function handleChatMessage(from: string, message: string, provider: Provid
         kind: result.source === "arithmetic" ? "chat_arithmetic" : "chat_model",
         question: message,
         answer: reply,
+        precomputedVector: result.questionVector,
       });
     }
   }

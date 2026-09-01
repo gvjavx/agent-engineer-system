@@ -145,7 +145,10 @@ test("generateChatReply falls through to the model when the KB has no close matc
     fromNumber: `cakb-none-${Date.now()}`,
     kb: { enabled: true, embedder },
   });
-  assert.deepEqual(result, { reply: "dari model", source: "model" });
+  assert.equal(result?.reply, "dari model");
+  assert.equal(result?.source, "model");
+  // the lookup-miss hands its computed vector back for reuse in recording
+  assert.ok(result?.questionVector instanceof Float32Array);
 });
 
 test("generateChatReply returns undefined on a tool_calls response", async () => {
