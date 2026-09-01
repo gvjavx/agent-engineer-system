@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { introduceYourself, explainHelp, explainInSimpleTerms } from "./dynamicReplies.js";
+import { introduceYourself, explainHelp, explainInSimpleTerms, currentDateLine } from "./dynamicReplies.js";
 import type { Provider, ProviderResponse } from "./types.js";
 
 function fakeProvider(behavior: () => Promise<ProviderResponse>): Provider {
@@ -18,6 +18,20 @@ function capturingProvider(): { provider: Provider; getPrompt: () => string } {
   };
   return { provider, getPrompt: () => seenPrompt };
 }
+
+test("currentDateLine only injects the clock when the message asks about date/time", () => {
+  // no arg = always on (back-compat for any caller that still wants it)
+  assert.match(currentDateLine(), /WIB/);
+  // date/time questions get it
+  assert.match(currentDateLine("sekarang tanggal berapa?"), /WIB/);
+  assert.match(currentDateLine("hari ini hari apa"), /WIB/);
+  assert.match(currentDateLine("jam berapa sekarang"), /WIB/);
+  assert.match(currentDateLine("tahun berapa sekarang"), /WIB/);
+  // everything else gets nothing, so the model can't volunteer the date
+  assert.equal(currentDateLine("apa kamu terhubung internet?"), "");
+  assert.equal(currentDateLine("siapa penemu sepeda?"), "");
+  assert.equal(currentDateLine("halo"), "");
+});
 
 test("introduceYourself returns the provider's answer on success", async () => {
   const provider = fakeProvider(async () => ({ type: "text", text: "Aku Mas ADE, bantuin kamu bikin aplikasi." }));

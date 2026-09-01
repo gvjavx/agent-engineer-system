@@ -18,12 +18,20 @@ async function generateReply(prompt: string, provider: Provider, signal: AbortSi
 
 export const STYLE_RULES = `Answer in casual, simple Indonesian, like texting a friend — no formal tone, no technical jargon unless the question is explicitly technical, no emoji. Always refer to yourself as "aku" and the user as "kamu" — never "gue"/"lo" or "saya"/"Anda", so the voice stays consistent across every reply. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame things as easy — describe them plainly instead. Keep it short — a couple of sentences to a short paragraph, not an essay. Answer what was actually asked and then stop — don't tack on a generic sign-off offering more help ("kalau ada yang lain tanya aja", "aku siap bantu kalau...", "kalau ada perhitungan lain..."); it's filler and reads like a template.`;
 
-// Every prompt in this file is built fresh per request, so this is always
-// the real send-time date AND time — without it the model answers a
-// "tanggal berapa hari ini?" from its training cutoff instead of reality
-// (date-only originally; real transcript showed "jam berapa sekarang?" still
-// got a hallucinated clock time, since nothing here ever told it the hour).
-export function currentDateLine(): string {
+// Only a message that's actually about the current date/time gets the real
+// clock injected. A free-tier model handed the current time volunteers it in
+// unrelated answers no matter how the prompt tells it not to — real
+// transcript: "apa kamu terhubung internet?" got "...Hari ini Selasa, 1
+// September 2026, 15.22 WIB" tacked on. Not telling it the time at all when
+// nobody asked is the only reliable fix.
+const DATE_TIME_QUESTION_RE =
+  /\b(tanggal|hari ini|harini|hari apa|tahun( ini| berapa)|jam berapa|pukul berapa|jam berapa sekarang|sekarang jam|kapan sekarang|sekarang (tanggal|hari|jam)|what (day|date|time|year)|current (date|time))\b/i;
+
+// Built fresh per request, so this is always the real send-time date + time.
+// Pass the user's message: when it isn't asking about the date/time, this
+// returns "" and the clock never enters the prompt.
+export function currentDateLine(userMessage?: string): string {
+  if (userMessage !== undefined && !DATE_TIME_QUESTION_RE.test(userMessage)) return "";
   const now = new Date();
   const today = new Intl.DateTimeFormat("id-ID", {
     weekday: "long",
@@ -38,11 +46,11 @@ export function currentDateLine(): string {
     hour12: false,
     timeZone: "Asia/Jakarta",
   }).format(now);
-  return `Right now it's ${today}, ${time} WIB — if the user asks what day/date/year/time it is, answer with this exactly, don't guess from training data. Only bring the date or time up when they actually asked for it — never as an opener, and never appended to an answer about something else.`;
+  return `Right now it's ${today}, ${time} WIB — answer the user's question about the current day/date/year/time with exactly this, don't guess from training data.`;
 }
 
 function buildIntroPrompt(question: string): string {
-  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is asking who/what you are. ${STYLE_RULES} ${currentDateLine()}
+  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is asking who/what you are. ${STYLE_RULES} ${currentDateLine(question)}
 
 Facts about you:
 - Your name is Mas ADE — "AI Developer Engineer".
@@ -66,7 +74,7 @@ export async function introduceYourself(
 // unlike intro/greeting, getting this one wrong (e.g. hallucinating a flag)
 // would send the user down a broken path, not just read a bit off-tone.
 function buildHelpPrompt(question: string, commandReference: string): string {
-  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is asking for help/how to use you, in a way that suggests they want the actual command reference (as opposed to a general non-technical "how does this work" question, which is handled elsewhere). ${STYLE_RULES} ${currentDateLine()}
+  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is asking for help/how to use you, in a way that suggests they want the actual command reference (as opposed to a general non-technical "how does this work" question, which is handled elsewhere). ${STYLE_RULES} ${currentDateLine(question)}
 
 Here is the full, exact command reference — answer using ONLY commands actually listed here, don't invent or guess at syntax that isn't shown. If the question is broad ("apa aja perintahnya"), give the full list. If it's about one specific thing, focus on that instead of dumping everything.
 
@@ -92,7 +100,7 @@ export async function explainHelp(
 // not marketing copy, so the model has room to phrase the answer naturally
 // around whatever was actually asked.
 function buildExplainPrompt(question: string): string {
-  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language — no coding knowledge needed on their end. ${currentDateLine()} The user asked a non-technical question about how you work. Answer ONLY using the facts below, in casual, simple Indonesian a complete beginner would understand — like texting a friend, not a formal explanation. Avoid technical jargon (no "command", "syntax", "repository", "API", "endpoint", "deploy", "commit", etc.) — describe things in everyday words instead. Keep it short and focused on what was actually asked, not a full re-explanation of everything every time. If the question is about the steps/process, narrate it in first person as "acting as" each role in turn (e.g. "pertama aku bertindak sebagai Product Owner, aku akan ..., abis itu aku bertindak sebagai ..."), not as a dry department list. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame this as easy — what you actually do (planning, designing, coding, testing) is real work, so describing it plainly is enough; don't undersell it by calling it easy. If the question asks about something not covered by these facts, say honestly you're not sure rather than inventing an answer, and suggest typing "bantuan" for the technical command list.
+  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language — no coding knowledge needed on their end. ${currentDateLine(question)} The user asked a non-technical question about how you work. Answer ONLY using the facts below, in casual, simple Indonesian a complete beginner would understand — like texting a friend, not a formal explanation. Avoid technical jargon (no "command", "syntax", "repository", "API", "endpoint", "deploy", "commit", etc.) — describe things in everyday words instead. Keep it short and focused on what was actually asked, not a full re-explanation of everything every time. If the question is about the steps/process, narrate it in first person as "acting as" each role in turn (e.g. "pertama aku bertindak sebagai Product Owner, aku akan ..., abis itu aku bertindak sebagai ..."), not as a dry department list. Don't open with or lean on words like "gampang"/"simpel"/"gampang kok" to frame this as easy — what you actually do (planning, designing, coding, testing) is real work, so describing it plainly is enough; don't undersell it by calling it easy. If the question asks about something not covered by these facts, say honestly you're not sure rather than inventing an answer, and suggest typing "bantuan" for the technical command list.
 
 How you actually work — for a full app-building request, you typically go
 through steps like this, narrated as "acting as" each role in turn (only the

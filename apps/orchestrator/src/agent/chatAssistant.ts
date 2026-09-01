@@ -22,13 +22,13 @@ export interface ChatReplyResult {
 // assistant turns; openAiCompatible.ts passes them through 1:1), it's just
 // never been exercised by this codebase's other one-shot callers, which all
 // bake everything into a single user message.
-function buildSystemPrompt(facts: string[]): string {
+function buildSystemPrompt(message: string, facts: string[]): string {
   const factsBlock =
     facts.length > 0
       ? `Yang udah kamu tau soal user ini dari obrolan sebelumnya:\n${facts.map((f) => `- ${f}`).join("\n")}`
       : "Belum ada yang kamu tau soal user ini dari obrolan sebelumnya.";
 
-  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES} ${currentDateLine()}
+  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES} ${currentDateLine(message)}
 
 You have no internet access, no web search, and no live data in this chat — answer from what you already know, and when something needs current information you can't be sure of, say you're not sure or can't check rather than guessing. The only time you touch a real machine is while running an actual coding task the user asked for (shell commands inside their project), never for looking things up, so don't tell the user you're "connected to the internet" or can fetch the latest info.
 
@@ -44,7 +44,7 @@ FACT: tidak ada`;
 
 function buildChatMessages(message: string, history: ChatTurn[], facts: string[]): ChatMessage[] {
   return [
-    { role: "system", content: buildSystemPrompt(facts) },
+    { role: "system", content: buildSystemPrompt(message, facts) },
     ...history.map((turn) => ({ role: turn.role, content: turn.content }) satisfies ChatMessage),
     { role: "user", content: message },
   ];
