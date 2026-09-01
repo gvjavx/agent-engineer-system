@@ -11,11 +11,11 @@ import { GeminiEmbeddingProvider, type EmbeddingProvider } from "./embeddingProv
 export { chunkFile, shouldIndexFile } from "./chunker.js";
 export type { EmbeddingProvider } from "./embeddingProvider.js";
 
-// Embedding needs a Gemini key — the free embedding endpoint is Gemini-only
-// here. `RAG_ENABLED=true` with no gemini provider configured just no-ops:
-// retrieval is strictly additive, it never blocks a task.
+// The free embedding endpoint is Gemini-only here, so this needs a Gemini
+// key and returns undefined without one. Flag-agnostic on purpose — the
+// RAG-enabled check lives in resolveDeps below, and the chat KB (agent/
+// chatKb.ts) reuses this same builder under its own flag.
 export function buildEmbeddingProvider(): EmbeddingProvider | undefined {
-  if (!config.rag.enabled) return undefined;
   if (!config.gemini || config.gemini.apiKeys.length === 0) return undefined;
   return new GeminiEmbeddingProvider({
     apiKey: config.gemini.apiKeys[0],
@@ -48,7 +48,14 @@ export interface RagDeps {
 function resolveDeps(deps: RagDeps | undefined): { store: RagStore; embedder: EmbeddingProvider | undefined } {
   return {
     store: deps?.store ?? ragRepo,
-    embedder: deps?.embedder === undefined ? buildEmbeddingProvider() : deps.embedder ?? undefined,
+    // An explicitly injected embedder (tests) bypasses the RAG_ENABLED gate;
+    // the real auto-built one only exists when the feature is turned on.
+    embedder:
+      deps?.embedder === undefined
+        ? config.rag.enabled
+          ? buildEmbeddingProvider()
+          : undefined
+        : deps.embedder ?? undefined,
   };
 }
 

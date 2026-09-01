@@ -200,6 +200,14 @@ export const config = {
     maxFilesPerIndex: Math.max(1, Number(process.env.RAG_MAX_FILES_PER_INDEX ?? 600)),
   },
 
+  // Stage 0 of the chat knowledge base: record every free-form chat Q&A into
+  // interaction_kb, embedded when a Gemini key is present. Off by default —
+  // it makes one embedding call per chat message and persists conversation
+  // content. Nothing reads the store yet; this only starts the accumulation.
+  chatKb: {
+    enabled: (process.env.CHAT_KB_ENABLED ?? "false").toLowerCase() === "true",
+  },
+
   // Optional — only set once someone actually registers a Figma OAuth app
   // and runs "hubungkan figma". Left undefined otherwise so the rest of the
   // system works fine without it.

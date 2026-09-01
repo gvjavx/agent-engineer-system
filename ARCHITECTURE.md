@@ -147,6 +147,16 @@ Kalau `classifyMessageKind` bilang `chat` (bukan task), `handleChatMessage` (`ag
 - Satu panggilan AI ngerjain dua hal sekaligus: kasih balasan natural, **dan** di baris terakhir opsional nyebutin satu fakta baru yang layak diinget (`FACT: ...` atau `FACT: tidak ada`) — sengaja satu panggilan, bukan dua, biar nggak dobel biaya tiap pesan obrolan.
 - User bisa `lihat memori` (tampilin semua fakta tersimpan) atau `lupain semua` (hapus semua, minta konfirmasi dulu — ini permanen).
 
+### Chat knowledge base (Stage 0)
+
+Opsional, mati default (`CHAT_KB_ENABLED`). Rencana jangka panjang: Mas ADE jawab pertanyaan non-koding dari store-nya sendiri, bukan selalu manggil LLM. Tahap 0 (yang ada sekarang) cuma **mengumpulkan** — belum ada retrieval.
+
+- Tiap Q&A chat bebas (`handleChatMessage`) dicatat ke `interaction_kb` (`db/chatKb.ts`) lewat `recordInteraction` (`agent/chatKb.ts`) — fire-and-forget, gagal di sini nggak pernah nyentuh balasan yang udah dikirim.
+- Pertanyaan-nya di-embed best-effort (reuse `buildEmbeddingProvider` dari `agent/rag`, `gemini-embedding-001`); baris tetap kesimpen walau embedding gagal (`embedding` NULL, bisa di-backfill nanti).
+- Jawaban aritmatika (`source: "arithmetic"` dari `agent/calc.ts`) dicatat tapi **nggak** di-embed — kalkulator udah generalisasi ke semua ekspresi, nggak ada yang perlu di-retrieve.
+- `lihat memori` nunjukin jumlahnya; `lupain semua` ikut ngehapus store ini (`chatKbRepo.clearForNumber`).
+- Tahap berikutnya (belum ada): retrieval — pertanyaan baru dicocokin ke store, mirip banget → jawab langsung tanpa LLM; nggak → LLM lalu simpan.
+
 ## Registrasi project & git
 
 `registerGitProject` → `git/repo.ts` `ensureWorkspace`: clone (kalau belum ada `.git` di `workspaces/<alias>`), lalu **deteksi branch default sebenarnya** dari `refs/remotes/origin/HEAD` (bukan asumsi `"main"` — repo yang default branch-nya beda, misal `master`, atau yang masih kosong sama sekali tanpa commit, dulu gagal dengan error git mentah yang kekirim langsung ke WhatsApp; sekarang dideteksi dan kalau beda dari yang tersimpan di DB, tabel `projects` di-self-heal). Kalau registrasi gagal di tengah jalan, baris project yang kadung dibikin di-rollback (dihapus) — supaya user bisa coba lagi tanpa kejebak status "udah ada" padahal clone-nya nggak pernah beres.
@@ -176,4 +186,5 @@ Kredensial GitHub **nggak pernah** disimpen di URL remote atau di disk — `ensu
 | `user_memory` | Fakta permanen lintas sesi soal tiap user. |
 | `chat_history` | Histori obrolan biasa terbaru (bukan task), dipangkas otomatis. |
 | `processed_messages` | Guard dedup buat webhook yang dikirim ulang (`inboundDedup.ts`) — persisten di DB, bukan `Map`, biar restart di tengah window retry (default 1 jam) nggak ngebuka celah yang harusnya ketutup. |
+| `interaction_kb` | Chat knowledge base tahap 0 (`db/chatKb.ts`) — tiap Q&A chat bebas + embedding pertanyaannya. Cuma keisi kalau `CHAT_KB_ENABLED`. Belum dibaca siapa-siapa; lihat "Chat knowledge base". |
 | `code_files` / `code_chunks` / `code_index_meta` | Index kode buat RAG (lihat "Konteks kode") — hash per file, chunk + vektor embedding, penanda HEAD/model terakhir. Cuma keisi kalau `RAG_ENABLED`. |

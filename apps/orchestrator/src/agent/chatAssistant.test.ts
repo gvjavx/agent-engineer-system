@@ -61,7 +61,11 @@ test("generateChatReply extracts a new fact when the model provides one", async 
     text: "Wah asik, semangat ya!\nFACT: lagi ngerjain project toko online",
   }));
   const result = await generateChatReply("aku lagi bikin toko online", [], [], provider, new AbortController().signal);
-  assert.deepEqual(result, { reply: "Wah asik, semangat ya!", newFact: "lagi ngerjain project toko online" });
+  assert.deepEqual(result, {
+    reply: "Wah asik, semangat ya!",
+    newFact: "lagi ngerjain project toko online",
+    source: "model",
+  });
 });
 
 test("generateChatReply answers a plain arithmetic question itself, without calling the provider", async () => {
@@ -72,7 +76,7 @@ test("generateChatReply answers a plain arithmetic question itself, without call
   });
   const result = await generateChatReply("berapa 234 x 213?", [], [], provider, new AbortController().signal);
   assert.equal(called, false);
-  assert.deepEqual(result, { reply: "234 × 213 = 49.842" });
+  assert.deepEqual(result, { reply: "234 × 213 = 49.842", source: "arithmetic" });
 });
 
 test("the chat system prompt grounds the model as having no internet access", async () => {

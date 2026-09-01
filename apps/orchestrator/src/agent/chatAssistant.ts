@@ -10,6 +10,10 @@ export interface ChatTurn {
 export interface ChatReplyResult {
   reply: string;
   newFact?: string;
+  // Where the reply came from — "arithmetic" means agent/calc.ts answered it
+  // deterministically and no model was called. Used by the chat KB so it
+  // doesn't bother storing/embedding calculations.
+  source?: "model" | "arithmetic";
 }
 
 // Real multi-turn messages (system + history + the new user turn) rather
@@ -77,13 +81,13 @@ export async function generateChatReply(
   // wrong and states it with invented precision. Nothing to remember from a
   // calculation, so no FACT extraction here.
   const arithmetic = tryEvaluateArithmetic(message);
-  if (arithmetic) return { reply: arithmetic };
+  if (arithmetic) return { reply: arithmetic, source: "arithmetic" };
 
   try {
     const response = await provider.chat(buildChatMessages(message, history, facts), [], signal);
     if (response.type !== "text") return undefined;
     const result = parseChatReply(response.text);
-    return result.reply ? result : undefined;
+    return result.reply ? { ...result, source: "model" } : undefined;
   } catch {
     return undefined;
   }

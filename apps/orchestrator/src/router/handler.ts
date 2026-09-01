@@ -15,6 +15,8 @@ import {
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
 import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch, workspacePath } from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
+import { recordInteraction } from "../agent/chatKb.js";
+import { chatKbRepo } from "../db/chatKb.js";
 import { buildProviders, splitProviderSpec, primaryModelForProvider } from "../agent/runner.js";
 import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
@@ -1005,16 +1007,20 @@ async function handleConnectFigmaCommand(from: string): Promise<void> {
 
 async function handleListMemoryCommand(from: string): Promise<void> {
   const facts = memoryRepo.list(from);
-  if (facts.length === 0) {
+  const kbCount = config.chatKb.enabled ? chatKbRepo.countForNumber(from) : 0;
+  if (facts.length === 0 && kbCount === 0) {
     await sendWhatsApp(from, "Belum ada yang aku inget soal kamu nih.");
     return;
   }
-  const list = facts.map((fact, i) => `${i + 1}. ${fact}`).join("\n");
-  await sendWhatsApp(from, `Ini yang aku inget soal kamu:\n${list}`);
+  const factList =
+    facts.length > 0 ? `Ini yang aku inget soal kamu:\n${facts.map((f, i) => `${i + 1}. ${f}`).join("\n")}` : "Belum ada fakta khusus yang aku catat soal kamu.";
+  const kbLine = kbCount > 0 ? `\n\nAku juga nyimpen ${kbCount} tanya-jawab dari obrolan kita buat belajar. "lupain semua" hapus ini juga.` : "";
+  await sendWhatsApp(from, factList + kbLine);
 }
 
 async function handleClearMemoryCommand(from: string): Promise<void> {
-  if (memoryRepo.list(from).length === 0) {
+  const kbCount = config.chatKb.enabled ? chatKbRepo.countForNumber(from) : 0;
+  if (memoryRepo.list(from).length === 0 && kbCount === 0) {
     await sendWhatsApp(from, "Belum ada yang aku inget soal kamu, jadi gak ada yang perlu dilupain.");
     return;
   }
@@ -1146,6 +1152,14 @@ async function handleChatMessage(from: string, message: string, provider: Provid
     chatHistoryRepo.append(from, "user", message);
     chatHistoryRepo.append(from, "assistant", reply);
     if (result.newFact) memoryRepo.add(from, result.newFact);
+    // Fire-and-forget: accumulates the Q&A for the chat knowledge base
+    // (Stage 0 — no retrieval yet). No-ops unless CHAT_KB_ENABLED.
+    void recordInteraction({
+      fromNumber: from,
+      kind: result.source === "arithmetic" ? "chat_arithmetic" : "chat_model",
+      question: message,
+      answer: reply,
+    });
   }
 }
 
@@ -1567,6 +1581,7 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
     conversationRepo.setPendingAction(from, null);
     if (intent === "yes") {
       memoryRepo.clear(from);
+      chatKbRepo.clearForNumber(from);
       await sendWhatsApp(from, "Oke, udah aku lupain semua ya.");
     } else if (intent === "no") {
       await sendWhatsApp(from, "Oke, gak jadi ya.");
