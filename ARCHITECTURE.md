@@ -160,7 +160,8 @@ Opsional, mati default (`CHAT_KB_ENABLED`). Konsepnya: pertanyaan non-koding **b
 - **Fallback semantik** (opt-in, `CHAT_KB_SEMANTIC=true`): kalau cocok lokal meleset, embed pertanyaan pakai **model kalimat lokal kecil** (`agent/localEmbedder.ts` — `paraphrase-multilingual-MiniLM-L12-v2` q8, ~120MB, CPU, lewat `@huggingface/transformers`; **tanpa API, tanpa rate limit**) dan cosine lawan baris ter-embed (juga di-embed lokal pas direkam), ambang `CHAT_KB_MATCH_THRESHOLD` (0.75). Nangkep parafrase makna ("tanggal berapa indonesia merdeka" ≈ "kapan hari kemerdekaan indonesia"). Model diunduh sekali ke `data/hf-cache/`, di-warm pas startup. Butuh `@huggingface/transformers` kepasang (~200MB node_modules); kalau nggak ada, fallback-nya diam-diam mati.
 - Jawaban aritmatika (`source: "arithmetic"`) dicatat tapi nggak pernah jadi kandidat — `agent/calc.ts` udah generalisasi.
 - **Batasnya**: cuma bantu pertanyaan yang beneran diulang (wording mirip). Pertanyaan baru tetap ke Gemini. Jawaban tersimpan = rekaman jawaban Gemini dulu, bisa basi buat hal yang berubah.
-- `lihat memori` nunjukin jumlahnya; `lupain semua` ikut ngehapus (`chatKbRepo.clearForNumber`).
+- `lihat memori` nunjukin jumlah tersimpan **plus statistik 30 hari**: total pertanyaan chat dan berapa persen dijawab tanpa AI (dari `chat_stats`, counter per `(hari, source)` yang di-bump di `handleChatMessage`). Ini angka pemutus — kalau persennya rendah dan tetap rendah, lapisan KB bisa dimatiin.
+- `lupain semua` ikut ngehapus `interaction_kb` (`chatKbRepo.clearForNumber`); `chat_stats` nggak (statistik agregat, bukan data pribadi).
 
 ## Registrasi project & git
 
@@ -191,5 +192,6 @@ Kredensial GitHub **nggak pernah** disimpen di URL remote atau di disk — `ensu
 | `user_memory` | Fakta permanen lintas sesi soal tiap user. |
 | `chat_history` | Histori obrolan biasa terbaru (bukan task), dipangkas otomatis. |
 | `processed_messages` | Guard dedup buat webhook yang dikirim ulang (`inboundDedup.ts`) — persisten di DB, bukan `Map`, biar restart di tengah window retry (default 1 jam) nggak ngebuka celah yang harusnya ketutup. |
-| `interaction_kb` | Chat knowledge base tahap 0 (`db/chatKb.ts`) — tiap Q&A chat bebas + embedding pertanyaannya. Cuma keisi kalau `CHAT_KB_ENABLED`. Belum dibaca siapa-siapa; lihat "Chat knowledge base". |
+| `interaction_kb` | Chat knowledge base (`db/chatKb.ts`) — tiap Q&A chat bebas, `norm_question`, opsional embedding. Cuma keisi kalau `CHAT_KB_ENABLED`. Lihat "Chat knowledge base". |
+| `chat_stats` | Counter per `(hari, source)` buat balasan chat (`model`/`kb`/`arithmetic`) — dipakai `lihat memori` buat nunjukin persen tanpa-AI. |
 | `code_files` / `code_chunks` / `code_index_meta` | Index kode buat RAG (lihat "Konteks kode") — hash per file, chunk + vektor embedding, penanda HEAD/model terakhir. Cuma keisi kalau `RAG_ENABLED`. |

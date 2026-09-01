@@ -16,7 +16,7 @@ import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../wh
 import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch, workspacePath } from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { recordInteraction } from "../agent/chatKb.js";
-import { chatKbRepo } from "../db/chatKb.js";
+import { chatKbRepo, kbStatsRepo } from "../db/chatKb.js";
 import { buildProviders, splitProviderSpec, primaryModelForProvider } from "../agent/runner.js";
 import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
@@ -1009,7 +1009,12 @@ async function handleListMemoryCommand(from: string): Promise<void> {
   const factList =
     facts.length > 0 ? `Ini yang aku inget soal kamu:\n${facts.map((f, i) => `${i + 1}. ${f}`).join("\n")}` : "Belum ada fakta khusus yang aku catat soal kamu.";
   const kbLine = kbCount > 0 ? `\n\nAku juga nyimpen ${kbCount} tanya-jawab dari obrolan kita buat belajar. "lupain semua" hapus ini juga.` : "";
-  await sendWhatsApp(from, factList + kbLine);
+  const stats = config.chatKb.enabled ? kbStatsRepo.summary(30) : undefined;
+  const statsLine =
+    stats && stats.total > 0
+      ? `\n\n30 hari terakhir: ${stats.total} pertanyaan chat, ${stats.kb + stats.arithmetic} dijawab tanpa AI (${stats.withoutAiPct}%) — ${stats.kb} dari memori, ${stats.arithmetic} hitungan.`
+      : "";
+  await sendWhatsApp(from, factList + kbLine + statsLine);
 }
 
 async function handleClearMemoryCommand(from: string): Promise<void> {
@@ -1150,6 +1155,7 @@ async function handleChatMessage(from: string, message: string, provider: Provid
     chatHistoryRepo.append(from, "user", message);
     chatHistoryRepo.append(from, "assistant", reply);
     if (result.newFact) memoryRepo.add(from, result.newFact);
+    if (config.chatKb.enabled) kbStatsRepo.bump(result.source ?? "model");
     // A "kb" reply is already in the store — re-recording would just pile up
     // duplicates. Only the model/arithmetic paths produce something new.
     if (result.source !== "kb") {

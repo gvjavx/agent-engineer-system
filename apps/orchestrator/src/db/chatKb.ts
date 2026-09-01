@@ -32,6 +32,17 @@ try {
 
 db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_kb_norm ON interaction_kb(from_number, norm_question)");
 
+// One counter per (day, reply source) so the chat-KB layer's payoff is a
+// single visible number: what share of chat replies skipped the model.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS chat_stats (
+    day TEXT NOT NULL,     -- YYYY-MM-DD, WIB
+    source TEXT NOT NULL,  -- 'model' | 'kb' | 'arithmetic'
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, source)
+  );
+`);
+
 // Chat fillers: safe to drop, never change what's being asked.
 const FILLER = new Set(
   "sih ya yah dong deh nih tuh kan kok lah pun aja saja yang tolong coba pls plis please min gan bro sis kak bang mas mbak dulu itu ini nya"
@@ -175,5 +186,40 @@ export const chatKbRepo = {
         "SELECT id, question FROM interaction_kb WHERE from_number = ? AND embedding IS NULL AND kind != 'chat_arithmetic'"
       )
       .all(fromNumber) as { id: number; question: string }[];
+  },
+};
+
+const wibDay = (d: Date): string =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(d); // YYYY-MM-DD
+
+export interface ChatStatsSummary {
+  model: number;
+  kb: number;
+  arithmetic: number;
+  total: number;
+  withoutAiPct: number;
+}
+
+export const kbStatsRepo = {
+  bump(source: string, day: string = wibDay(new Date())): void {
+    db.prepare(
+      `INSERT INTO chat_stats (day, source, count) VALUES (?, ?, 1)
+       ON CONFLICT(day, source) DO UPDATE SET count = count + 1`
+    ).run(day, source);
+  },
+
+  summary(days = 30, now: Date = new Date()): ChatStatsSummary {
+    const to = wibDay(now);
+    const from = wibDay(new Date(now.getTime() - days * 86_400_000));
+    const rows = db
+      .prepare("SELECT source, SUM(count) AS c FROM chat_stats WHERE day >= ? AND day <= ? GROUP BY source")
+      .all(from, to) as { source: string; c: number }[];
+    const by: Record<string, number> = {};
+    for (const r of rows) by[r.source] = r.c;
+    const model = by.model ?? 0;
+    const kb = by.kb ?? 0;
+    const arithmetic = by.arithmetic ?? 0;
+    const total = model + kb + arithmetic;
+    return { model, kb, arithmetic, total, withoutAiPct: total ? Math.round(((kb + arithmetic) / total) * 100) : 0 };
   },
 };

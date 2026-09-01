@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recordInteraction, lookupCachedAnswer, semanticLookup } from "./chatKb.js";
-import { chatKbRepo, normalizeQuestion } from "../db/chatKb.js";
+import { chatKbRepo, normalizeQuestion, kbStatsRepo } from "../db/chatKb.js";
 
 // Random suffixes: these hit the real sqlite file (same as every other test
 // in this codebase), so from_numbers must not collide across runs.
@@ -93,6 +93,21 @@ test("semanticLookup: cosine against stored vectors, threshold-gated, returns th
   });
   assert.equal(miss.hit, undefined);
   assert.ok(miss.queryVector instanceof Float32Array);
+});
+
+test("kbStatsRepo aggregates by source over a day window and computes the without-AI percentage", () => {
+  // a unique day far in the past so the window catches only this test's rows
+  const day = `19${Math.floor(Math.random() * 89) + 10}-06-15`;
+  for (let i = 0; i < 3; i++) kbStatsRepo.bump("model", day);
+  kbStatsRepo.bump("kb", day);
+  kbStatsRepo.bump("kb", day);
+  kbStatsRepo.bump("arithmetic", day);
+
+  const s = kbStatsRepo.summary(3, new Date(`${day}T12:00:00+07:00`));
+  assert.deepEqual(
+    { model: s.model, kb: s.kb, arithmetic: s.arithmetic, total: s.total, pct: s.withoutAiPct },
+    { model: 3, kb: 2, arithmetic: 1, total: 6, pct: 50 }
+  );
 });
 
 test("clearForNumber wipes a sender's stored interactions", async () => {
