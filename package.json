@@ -3,6 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "description": "AI agent team (PM/BA/QA/Backend/Frontend/Lead) controllable via WhatsApp, connected to GitHub repositories.",
+  "author": "Naufal Hilmi Abdurrahman",
+  "license": "MIT",
   "workspaces": [
     "apps/*"
   ],

@@ -282,3 +282,7 @@ App kita (`META_APP_ID`) harus ada di daftar `data`.
 - Role PM/BA/QA/Dev sebagai subagent terpisah, bukan satu system prompt.
 - Sandbox Docker per-task untuk isolasi eksekusi.
 - Dukungan lampiran WhatsApp berupa voice note (gambar sudah didukung, lihat "Kirim gambar buat direview/dikerjain" di atas).
+
+## Lisensi
+
+MIT — lihat [`LICENSE`](LICENSE).
