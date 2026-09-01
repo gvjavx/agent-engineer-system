@@ -200,7 +200,7 @@ export async function retrieveCodeContext(params: RetrieveParams): Promise<strin
 
     const ranked = rows
       .map((r) => ({ row: r, score: cosineSimilarity(queryVec, r.embedding) }))
-      .filter((x) => x.score > 0)
+      .filter((x) => x.score > 0 && x.score >= config.rag.minScore)
       .sort((a, b) => b.score - a.score)
       .slice(0, config.rag.topK);
     if (ranked.length === 0) return undefined;
@@ -208,7 +208,9 @@ export async function retrieveCodeContext(params: RetrieveParams): Promise<strin
     const parts: string[] = [RETRIEVAL_HEADER];
     let budget = config.rag.maxContextChars;
     for (const { row } of ranked) {
-      let body = row.content;
+      // The chunker prepends a "// <path>:<lines>" line for the embedding —
+      // strip it here since the "--- <path> ---" block header already says it.
+      let body = row.content.replace(/^\/\/ [^\n]*\r?\n/, "");
       if (body.length > PER_CHUNK_CHAR_CAP) body = body.slice(0, PER_CHUNK_CHAR_CAP) + "\n… (dipotong)";
       const block = `--- ${row.filePath}:${row.startLine}-${row.endLine} ---\n${body}`;
       if (block.length > budget) break;

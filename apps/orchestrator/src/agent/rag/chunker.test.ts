@@ -52,7 +52,10 @@ test("shouldIndexFile accepts source files and rejects noise", () => {
   assert.equal(shouldIndexFile("node_modules/foo/index.js", 10), false);
   assert.equal(shouldIndexFile("dist/bundle.js", 10), false);
   assert.equal(shouldIndexFile("app.min.js", 10), false);
-  assert.equal(shouldIndexFile("package-lock.json".replace(".json", ".lock"), 10), false);
+  assert.equal(shouldIndexFile("package-lock.json", 10), false);
+  assert.equal(shouldIndexFile("pnpm-lock.yaml", 10), false);
+  assert.equal(shouldIndexFile("Cargo.lock", 10), false);
+  assert.equal(shouldIndexFile("go.sum", 10), false);
   assert.equal(shouldIndexFile("logo.png", 10), false);
   assert.equal(shouldIndexFile("src/huge.ts", 512 * 1024), false);
   assert.equal(shouldIndexFile("noext", 10), false);

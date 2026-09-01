@@ -138,6 +138,10 @@ test("retrieveCodeContext ranks by similarity and returns a header + path:line b
   assert.ok(result);
   assert.match(result, /Relevant existing code/);
   assert.match(result, /--- src\/auth\.ts:1-20 ---/);
+  // the chunker's "// path:lines" prefix line is stripped from the shown body
+  // (the "--- path ---" header already carries it)
+  assert.doesNotMatch(result, /^\/\/ src\/auth\.ts:1-20$/m);
+  assert.match(result, /^auth login auth$/m);
   // "beta gamma" chunk shares nothing with the query — zero similarity, dropped
   assert.doesNotMatch(result, /misc\.ts/);
   // both hits present, best match first

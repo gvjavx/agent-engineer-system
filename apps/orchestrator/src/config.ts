@@ -188,6 +188,12 @@ export const config = {
     embedModel: process.env.RAG_EMBED_MODEL ?? "gemini-embedding-001",
     embedDim: Math.max(1, Number(process.env.RAG_EMBED_DIM ?? 768)),
     topK: Math.max(1, Number(process.env.RAG_TOP_K ?? 8)),
+    // Drop hits below this cosine score. Gemini embeddings have a high noise
+    // floor (unrelated code still scores ~0.5), so 0 keeps everything and
+    // relies on topK alone; ~0.6 trims weakly-related chunks once you've seen
+    // how a real repo scores. Left at 0 by default so a small repo isn't
+    // starved.
+    minScore: Math.max(0, Number(process.env.RAG_MIN_SCORE ?? 0)),
     maxContextChars: Math.max(500, Number(process.env.RAG_MAX_CONTEXT_CHARS ?? 8000)),
     chunkLines: Math.max(10, Number(process.env.RAG_CHUNK_LINES ?? 60)),
     chunkOverlap: Math.max(0, Number(process.env.RAG_CHUNK_OVERLAP ?? 10)),

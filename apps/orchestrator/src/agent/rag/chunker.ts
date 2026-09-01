@@ -59,6 +59,16 @@ const INDEXABLE_EXT = new Set([
 
 const INDEXABLE_BASENAME = new Set(["Dockerfile", "Makefile", "Rakefile", "Gemfile", ".env.example"]);
 
+// Lockfiles and checksum manifests: huge, churn constantly, and carry no
+// context worth retrieving. The .lock/.lockb ones are already caught by
+// extension below — these are the .json/.yaml/.sum ones that aren't.
+const SKIP_BASENAME = new Set([
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "go.sum",
+]);
+
 // Belt and braces: `git ls-files` already skips most of these, but a
 // kind='local' folder has no git to lean on.
 const SKIP_DIR =
@@ -73,7 +83,8 @@ export function shouldIndexFile(relPath: string, sizeBytes: number): boolean {
 
   const base = posix.split("/").pop() ?? posix;
   if (/\.min\.(js|css)$/i.test(base)) return false;
-  if (/\.(lock|map)$/i.test(base)) return false;
+  if (/\.(lock|lockb|map)$/i.test(base)) return false;
+  if (SKIP_BASENAME.has(base)) return false;
   if (INDEXABLE_BASENAME.has(base)) return true;
 
   const dot = base.lastIndexOf(".");
