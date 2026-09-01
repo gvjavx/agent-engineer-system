@@ -8,6 +8,24 @@ export interface ChatTurn {
   content: string;
 }
 
+// A standalone question doesn't need the conversation history, and handing a
+// free-tier model the previous turn makes it echo that answer into an
+// unrelated reply — real transcript: "apa kamu terhubung ke internet?" came
+// back with "Hari kemerdekaan Indonesia..." prepended from the turn before.
+// Only pull history when the new message actually leans on prior context.
+const FOLLOW_UP_RE =
+  /\b(itu|ini|tadi|barusan|terus|trus|lanjut(kan)?|abis itu|habis itu|kalau (gitu|begitu)|kalo gitu|berarti|maksudnya|gimana kalau|yang (tadi|itu|mana|pertama|kedua|barusan)|selain itu|contohnya|jelas(in|kan)|lebih (detail|lengkap)|kok (bisa|gitu)|kenapa (gitu|begitu))\b/i;
+const CONJUNCTION_START_RE = /^(dan|atau|tapi|terus|trus|lalu|jadi|kalau|kalo)\b/i;
+
+export function needsConversationContext(message: string): boolean {
+  const m = message.trim();
+  if (m.length === 0) return false;
+  if (FOLLOW_UP_RE.test(m) || CONJUNCTION_START_RE.test(m)) return true;
+  // a bare one/two-word question ("kenapa?", "terus gimana?") is almost
+  // always a follow-up to what was just said
+  return m.split(/\s+/).length <= 2 && m.endsWith("?");
+}
+
 export interface ChatReplyResult {
   reply: string;
   newFact?: string;

@@ -24,7 +24,7 @@ import { classifyIntent } from "../agent/commandIntent.js";
 import { checkNeedsClarification } from "../agent/requestClarity.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
 import { describeImage, mergeImageDescription } from "../agent/imageDescription.js";
-import { generateChatReply } from "../agent/chatAssistant.js";
+import { generateChatReply, needsConversationContext } from "../agent/chatAssistant.js";
 import type { Provider } from "../agent/types.js";
 import { explainInSimpleTerms, introduceYourself, explainHelp } from "../agent/dynamicReplies.js";
 import { listGeminiModels, listOpenAiCompatibleModels } from "../agent/modelCatalog.js";
@@ -1137,7 +1137,9 @@ async function tryHandleSemanticIntent(from: string, trimmed: string): Promise<b
 }
 
 async function handleChatMessage(from: string, message: string, provider: Provider): Promise<void> {
-  const history = chatHistoryRepo.recent(from, CHAT_HISTORY_TURNS);
+  // Only feed prior turns when the message is a follow-up — otherwise a
+  // free-tier model tends to echo the last answer into an unrelated reply.
+  const history = needsConversationContext(message) ? chatHistoryRepo.recent(from, CHAT_HISTORY_TURNS) : [];
   const facts = memoryRepo.list(from).slice(-MAX_FACTS_IN_PROMPT);
   const result = await generateChatReply(message, history, facts, provider, new AbortController().signal, {
     fromNumber: from,

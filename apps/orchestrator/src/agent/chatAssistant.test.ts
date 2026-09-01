@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { generateChatReply, parseChatReply } from "./chatAssistant.js";
+import { generateChatReply, parseChatReply, needsConversationContext } from "./chatAssistant.js";
 import { recordInteraction } from "./chatKb.js";
 import type { ChatMessage, Provider, ProviderResponse } from "./types.js";
 
@@ -28,6 +28,22 @@ test("parseChatReply is case-insensitive on the FACT marker and its no-fact valu
 test("parseChatReply returns the whole text as the reply when there's no FACT line at all", () => {
   const result = parseChatReply("Cuma jawaban biasa tanpa format apa-apa.");
   assert.deepEqual(result, { reply: "Cuma jawaban biasa tanpa format apa-apa." });
+});
+
+test("needsConversationContext: standalone questions get no history, follow-ups do", () => {
+  // standalone -> no history (this is the fix for the history-bleed transcript)
+  assert.equal(needsConversationContext("kapan hari kemerdekaan indonesia"), false);
+  assert.equal(needsConversationContext("apa kamu terhubung ke internet?"), false);
+  assert.equal(needsConversationContext("siapa penemu sepeda"), false);
+  assert.equal(needsConversationContext("halo apa kabar"), false);
+
+  // follow-ups -> pull history
+  assert.equal(needsConversationContext("terus gimana?"), true);
+  assert.equal(needsConversationContext("kenapa?"), true);
+  assert.equal(needsConversationContext("yang tadi maksudnya apa"), true);
+  assert.equal(needsConversationContext("kalau begitu gimana"), true);
+  assert.equal(needsConversationContext("jelasin dong lebih detail"), true);
+  assert.equal(needsConversationContext("terus contohnya apa"), true);
 });
 
 test("generateChatReply passes system prompt, history, and the new message in order", async () => {
