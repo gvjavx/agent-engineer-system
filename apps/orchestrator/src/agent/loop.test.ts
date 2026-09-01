@@ -124,6 +124,33 @@ test("runAgentLoop routes send_document tool calls to the sendDocument callback"
   assert.equal(result.summary, "saw: Dokumen terkirim.");
 });
 
+test("runAgentLoop injects extraSystemNotes as system messages after the main prompt, before the user turn", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+  let seen: ChatMessage[] = [];
+  const provider: Provider = {
+    name: "fake",
+    async chat(messages: ChatMessage[]): Promise<ProviderResponse> {
+      seen = messages;
+      return { type: "text", text: "done" };
+    },
+  };
+
+  await runAgentLoop(
+    baseParams({
+      providers: [provider],
+      resolveFigmaToolsFn,
+      systemPrompt: "MAIN",
+      instruction: "USER",
+      extraSystemNotes: ["RETRIEVED CODE", "  ", ""],
+    })
+  );
+
+  assert.deepEqual(
+    seen.map((m) => `${m.role}:${m.content}`),
+    ["system:MAIN", "system:RETRIEVED CODE", "user:USER"]
+  );
+});
+
 test("runAgentLoop falls back to a stub message for send_document when no callback was given", async () => {
   const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
 

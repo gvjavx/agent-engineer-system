@@ -122,6 +122,21 @@ Semua pakai pola yang sama: satu prompt, satu pesan `role:"user"`, minta jawaban
 - `isDangerousBashCommand` — pola-pola berbahaya (rm -rf ke root/home/wildcard, download-lalu-eksekusi-ke-shell, chmod 777, sudo, decode base64, reverse shell lewat netcat/`/dev/tcp`, baca file kredensial macam `.env`/`id_rsa`/`.aws/credentials`) memicu `onDangerousBash` — command itu **ditahan**, WhatsApp nanya konfirmasi user (`handlePendingBashApproval`, cuma "ya" eksak yang meloloskan, apa pun selain itu dianggap tolak). Ini heuristik pola teks, **bukan sandbox** — begitu disetujui, command jalan dengan permission penuh proses orchestrator.
 - Prompt sistem tiap fase (`systemPrompt.ts`) selalu menyertakan peringatan anti-prompt-injection: apa pun yang dibaca lewat tool (isi file, output command, konten Figma) adalah data buat diperiksa, bukan instruksi buat diikuti — kalau ada teks yang kayak nyoba ngarahkan model ("ignore previous instructions", dst), jangan dituruti, cukup disebut di ringkasan akhir.
 
+## Konteks kode (RAG)
+
+Opsional, mati secara default (`RAG_ENABLED`). Tujuannya: ngasih agent potongan kode yang relevan di awal fase, biar turn budget nggak abis buat `grep`/`find`/`read_file` nyari file. Kode di `apps/orchestrator/src/agent/rag/`.
+
+- **Embedding**: `text-embedding-004` lewat SDK Gemini yang udah kepasang (`agent/rag/embeddingProvider.ts`). Interface `EmbeddingProvider` kepisah dari `Provider` (chat) — cuma Gemini yang implement, dan `RAG_ENABLED=true` tanpa key Gemini cuma jadi no-op, nggak pernah nggagalin task.
+- **Penyimpanan**: tabel `code_files` / `code_chunks` / `code_index_meta` di `orchestrator.sqlite` (`db/rag.ts`). Vektor disimpen sebagai blob `Float32Array`; retrieval-nya cosine brute-force di JS (`cosineSimilarity` di `agent/rag/index.ts`) — cukup buat skala satu repo, `sqlite-vec` baru perlu kalau satu project nembus puluhan ribu chunk.
+- **Chunking**: window ~60 baris, overlap ~10 (`agent/rag/chunker.ts`), language-agnostic. Tiap chunk di-prefix `// <path>:<baris>` biar path ikut ke-embed. `shouldIndexFile` nyaring ekstensi + skip file > 256KB / minified / `node_modules` dsb.
+- **Indexing**: inkremental per-file lewat hash SHA-1 — cuma file yang hash-nya berubah yang di-embed ulang.
+  1. Pas registrasi project (`registerGitProject` / `confirm_add_folder` di `handler.ts`) — jalan di background, nggak nahan balasan.
+  2. Pas tiap task (`executeTask`, sebelum `runPipeline`) — refresh cepat; kalau HEAD default branch nggak gerak sejak index terakhir, langsung skip.
+  3. `hapus project` → `deleteProjectIndex`.
+  Serialisasi per-alias (`projectLocks` di `agent/rag/index.ts`) biar index dari registrasi dan dari task pertama nggak balapan.
+- **Retrieval**: `retrieveCodeContext` (`pipeline.ts` manggil per fase, query = instruksi + `phase.note`; `runner.ts` buat shortcut `semua`). Hasilnya disisipin sebagai `role:"system"` lewat `extraSystemNotes` di `runAgentLoop` — pola yang sama kayak `FIGMA_TOOLS_SYSTEM_NOTE`. `buildPhaseSystemPrompt` sendiri nggak disentuh.
+- **Selalu additive**: embedding gagal / rate limit / RAG mati → retrieval balik `undefined`, loop jalan persis kayak sebelum ada RAG. Potongan kode hasil retrieval masuk kelas data gak-tepercaya yang sama di `SHARED_UNTRUSTED_CONTENT_RULE`.
+
 ## Chat biasa & memori
 
 Kalau `classifyMessageKind` bilang `chat` (bukan task), `handleChatMessage` (`agent/chatAssistant.ts`) yang jalan — beda dari balasan statis di `dynamicReplies.ts` (dipakai buat intro/greeting/help/explain, satu tembakan tanpa histori, cuma digrounding ke fakta tetap yang ditulis di prompt):
@@ -159,3 +174,4 @@ Kredensial GitHub **nggak pernah** disimpen di URL remote atau di disk — `ensu
 | `figma_oauth` | Token OAuth Figma (single-tenant, satu baris). |
 | `user_memory` | Fakta permanen lintas sesi soal tiap user. |
 | `chat_history` | Histori obrolan biasa terbaru (bukan task), dipangkas otomatis. |
+| `code_files` / `code_chunks` / `code_index_meta` | Index kode buat RAG (lihat "Konteks kode") — hash per file, chunk + vektor embedding, penanda HEAD/model terakhir. Cuma keisi kalau `RAG_ENABLED`. |

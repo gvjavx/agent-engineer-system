@@ -174,6 +174,21 @@ export const config = {
       }
     : undefined,
 
+  // Code retrieval for the agent loop (agent/rag/*). Off by default. Needs a
+  // Gemini key for the embedding endpoint — enabled without one just no-ops,
+  // since retrieval is additive and never blocks a task. Every numeric knob
+  // is clamped so a bad .env value can't produce a zero-size window or an
+  // unbounded context block.
+  rag: {
+    enabled: (process.env.RAG_ENABLED ?? "false").toLowerCase() === "true",
+    embedModel: process.env.RAG_EMBED_MODEL ?? "text-embedding-004",
+    topK: Math.max(1, Number(process.env.RAG_TOP_K ?? 8)),
+    maxContextChars: Math.max(500, Number(process.env.RAG_MAX_CONTEXT_CHARS ?? 8000)),
+    chunkLines: Math.max(10, Number(process.env.RAG_CHUNK_LINES ?? 60)),
+    chunkOverlap: Math.max(0, Number(process.env.RAG_CHUNK_OVERLAP ?? 10)),
+    maxFilesPerIndex: Math.max(1, Number(process.env.RAG_MAX_FILES_PER_INDEX ?? 600)),
+  },
+
   // Optional — only set once someone actually registers a Figma OAuth app
   // and runs "hubungkan figma". Left undefined otherwise so the rest of the
   // system works fine without it.

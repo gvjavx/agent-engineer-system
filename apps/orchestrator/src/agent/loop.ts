@@ -17,6 +17,11 @@ export interface RunAgentLoopParams {
   // next phase's "start" notice, since two fire-and-forget sends race).
   onProgress: (text: string) => Promise<void>;
   maxTurns?: number;
+  // Extra system messages injected right after the main system prompt —
+  // currently the RAG "relevant existing code" block (see agent/rag). Kept as
+  // a plain string list so this file never has to know what produced them;
+  // an empty list (the default) leaves the loop exactly as it was.
+  extraSystemNotes?: string[];
   // DI seam for tests — real callers never pass this. Detects a Figma link
   // in the instruction and, if the account is linked, connects to Figma's
   // MCP server and returns its read-only tools.
@@ -88,6 +93,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
     abortController,
     onProgress,
     maxTurns = 40,
+    extraSystemNotes = [],
     resolveFigmaToolsFn = resolveFigmaTools,
     sendDocument = async () => "Fitur kirim dokumen belum tersedia di sini.",
     onDangerousBash = async () => false,
@@ -118,6 +124,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
 
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
+    ...extraSystemNotes.filter((note) => note.trim() !== "").map((note) => ({ role: "system" as const, content: note })),
     ...(figmaTools.kind === "ready" ? [{ role: "system" as const, content: FIGMA_TOOLS_SYSTEM_NOTE }] : []),
     { role: "user", content: instruction },
   ];

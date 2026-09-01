@@ -5,6 +5,7 @@ import { runTask as realRunTask, buildProviders as realBuildProviders, type RunT
 import { DEPARTMENT_LABELS, type DepartmentKey } from "./departments.js";
 import { waitForCheckpoint } from "./checkpoint.js";
 import { hasDesignSource } from "./designSource.js";
+import { retrieveCodeContext } from "./rag/index.js";
 import type { Provider } from "./types.js";
 
 export interface PhaseSpec {
@@ -49,6 +50,9 @@ export interface RunPipelineParams {
   // Swappable for tests — default to the real config-backed implementations.
   buildProvidersFn?: (preferredProvider?: string) => Provider[];
   runTaskFn?: (params: RunTaskParams) => Promise<RunTaskResult>;
+  // DI seam for tests. Real callers never pass this — defaults to the real
+  // agent/rag retrieval, which itself no-ops when RAG is disabled.
+  retrieveCodeContextFn?: typeof retrieveCodeContext;
   // DI seam for tests — real callers never pass this. Same pattern as
   // runTaskFn/buildProvidersFn above, added so the checkpoint loop's
   // recoverable-failure handling (Part D) is testable without depending on
@@ -114,12 +118,26 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
     buildProvidersFn = realBuildProviders,
     runTaskFn = realRunTask,
     runAgentLoopFn = realRunAgentLoop,
+    retrieveCodeContextFn = retrieveCodeContext,
   } = params;
+
+  // Retrieval is best-effort: a throw or a miss just means the phase runs
+  // with no extra context, exactly as before RAG existed.
+  const codeNotesFor = async (query: string): Promise<string[]> => {
+    const note = await retrieveCodeContextFn({
+      projectAlias,
+      query,
+      signal: abortController.signal,
+      taskId,
+    }).catch(() => undefined);
+    return note ? [note] : [];
+  };
 
   // A single "semua" phase means classification didn't find anything
   // department-specific — behave exactly like the old single-loop task.
   if (phases.length === 1 && phases[0].department === "semua") {
     const preferredProvider = departmentModelLookup("semua");
+    const extraSystemNotes = await codeNotesFor(instruction);
     return mode.kind === "git"
       ? runTaskFn({
           kind: "git",
@@ -135,6 +153,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           onProgress,
           sendDocument,
           onDangerousBash,
+          extraSystemNotes,
         })
       : runTaskFn({
           kind: "local",
@@ -148,6 +167,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           onProgress,
           sendDocument,
           onDangerousBash,
+          extraSystemNotes,
         });
   }
 
@@ -181,6 +201,10 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
 
     const providerName = departmentModelLookup(phase.department) ?? departmentModelLookup("semua");
 
+    // Query with the phase's own note folded in, so e.g. the QA phase pulls
+    // test files and the dev phase pulls the code it'll be editing.
+    const phaseCodeNotes = await codeNotesFor(`${instruction}\n\n${phase.note}`);
+
     const runPhase = () =>
       runAgentLoopFn({
         providers: buildProvidersFn(providerName),
@@ -193,6 +217,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
         maxTurns: maxTurnsForDepartment(phase.department),
         sendDocument,
         onDangerousBash,
+        extraSystemNotes: phaseCodeNotes,
       });
 
     let result = await runPhase();
@@ -318,6 +343,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           maxTurns: maxTurnsForDepartment(phase.department),
           sendDocument,
           onDangerousBash,
+          extraSystemNotes: phaseCodeNotes,
         });
 
         if (!revised.ok) {

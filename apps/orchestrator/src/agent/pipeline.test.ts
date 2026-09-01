@@ -113,6 +113,82 @@ test("multi-phase pipeline runs phases in order and hands summaries forward as c
   assert.match(seenSystemPrompts[1], /Scope-nya: cuma tambahin endpoint \/health\./);
 });
 
+test("retrieved code context is passed to each phase as extraSystemNotes, keyed by phase note", async () => {
+  const queries: string[] = [];
+  const notesSeen: (string[] | undefined)[] = [];
+
+  const retrieveCodeContextFn = async ({ query }: { query: string }): Promise<string | undefined> => {
+    queries.push(query);
+    return `CONTEXT FOR: ${query.split("\n\n")[1] ?? query}`;
+  };
+  const runAgentLoopFn = async (params: { extraSystemNotes?: string[] }): Promise<RunAgentLoopResult> => {
+    notesSeen.push(params.extraSystemNotes);
+    return { ok: true, summary: "done" };
+  };
+
+  const result = await runPipeline({
+    ...baseParams,
+    instruction: "tambahin endpoint health check",
+    phases: [
+      { department: "manajemen", note: "tentuin scope" },
+      { department: "dev", note: "implementasi" },
+    ],
+    abortController: new AbortController(),
+    onProgress: async () => {},
+    departmentModelLookup: () => "fake",
+    buildProvidersFn: () => [],
+    runAgentLoopFn,
+    retrieveCodeContextFn,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(notesSeen, [["CONTEXT FOR: tentuin scope"], ["CONTEXT FOR: implementasi"]]);
+  assert.ok(queries[0].startsWith("tambahin endpoint health check\n\ntentuin scope"));
+});
+
+test("the 'semua' shortcut hands retrieved context to runTaskFn as extraSystemNotes", async () => {
+  let received: RunTaskParams | undefined;
+  const result = await runPipeline({
+    ...baseParams,
+    instruction: "tambahin health check",
+    phases: [{ department: "semua", note: "tambahin health check" }],
+    abortController: new AbortController(),
+    onProgress: async () => {},
+    departmentModelLookup: () => undefined,
+    runTaskFn: async (p) => {
+      received = p;
+      return { ok: true, summary: "ok" };
+    },
+    buildProvidersFn: () => [],
+    retrieveCodeContextFn: async () => "RETRIEVED",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(received?.extraSystemNotes, ["RETRIEVED"]);
+});
+
+test("a retrieval that returns nothing leaves extraSystemNotes empty", async () => {
+  const notesSeen: (string[] | undefined)[] = [];
+  await runPipeline({
+    ...baseParams,
+    instruction: "do a thing",
+    phases: [
+      { department: "manajemen", note: "a" },
+      { department: "dev", note: "b" },
+    ],
+    abortController: new AbortController(),
+    onProgress: async () => {},
+    departmentModelLookup: () => "fake",
+    buildProvidersFn: () => [],
+    runAgentLoopFn: async (params: { extraSystemNotes?: string[] }): Promise<RunAgentLoopResult> => {
+      notesSeen.push(params.extraSystemNotes);
+      return { ok: true, summary: "done" };
+    },
+    retrieveCodeContextFn: async () => undefined,
+  });
+  assert.deepEqual(notesSeen, [[], []]);
+});
+
 // Regression: onProgress used to be fire-and-forget, so a phase's "beres"
 // message and the next phase's "start" message raced with no guaranteed
 // delivery order — WhatsApp could show "start" before "beres". A slow

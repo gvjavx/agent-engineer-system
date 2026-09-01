@@ -151,6 +151,12 @@ Default: agent commit langsung ke branch utama repo (`auto_merge = 'direct'`) �
 
 Setiap task — di semua mode (git, folder lokal, tiap fase pipeline) — otomatis dapat instruksi "lazy senior developer" di system prompt-nya (diadaptasi dari [ponytail](https://github.com/dietrichgebert/ponytail)): sebelum nulis kode, agent wajib naik satu-satu "tangga" ini dan berhenti di anak tangga pertama yang cocok — apa ini emang perlu ada (YAGNI) → udah ada di codebase → stdlib bisa → fitur native platform → dependency yang udah terpasang → bisa satu baris → baru terakhir, tulis kode seminimal mungkin yang benar. Ini gak mengorbankan kebenaran — validasi input, penanganan error, dan requirement eksplisit tetap wajib; "minimal" artinya solusi terkecil yang *benar*, bukan asal potong. Diff lebih kecil = lebih sedikit token dibaca/ditulis/direview, dan lebih sedikit kode yang harus dirawat ke depannya. Lihat `apps/orchestrator/src/agent/systemPrompt.ts` (`SHARED_MINIMAL_CODE_RULES`) kalau mau ubah teksnya.
 
+## Konteks kode otomatis (RAG) — opsional
+
+Mati secara default. Kalau `RAG_ENABLED=true` di `.env`, tiap project yang didaftarkan file-nya di-chunk dan di-embed sekali, lalu sebelum tiap task/fase agent dikasih potongan kode yang paling mirip dengan instruksi — jadi dia tidak habis giliran tool cuma buat `grep`/`find` nyari file yang benar. Butuh key Gemini (endpoint embedding di sini Gemini-only); dinyalakan tanpa key Gemini cuma jadi no-op, tidak pernah menggagalkan task.
+
+Index-nya inkremental (hanya file yang berubah yang di-embed ulang) dan menyegar sendiri: sekali pas project didaftarkan, lalu cek cepat tiap task (langsung skip kalau default branch belum bergerak). `hapus project` ikut menghapus index-nya. Knob-nya (`RAG_TOP_K`, `RAG_MAX_CONTEXT_CHARS`, `RAG_CHUNK_LINES`, dst) ada di `.env.example`; detail teknis di `ARCHITECTURE.md` ("Konteks kode (RAG)").
+
 ## Folder lokal (bukan repo git)
 
 Selain repo GitHub, agent juga bisa kerja langsung di folder lokal mana pun di server tempat `agent-engineer-system` ini jalan — termasuk folder project ini sendiri. Bedanya dengan `tambah project`:

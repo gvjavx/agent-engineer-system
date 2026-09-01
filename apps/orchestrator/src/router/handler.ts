@@ -13,7 +13,8 @@ import {
   type Project,
 } from "../db/index.js";
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
-import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch } from "../git/repo.js";
+import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch, workspacePath } from "../git/repo.js";
+import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { buildProviders, splitProviderSpec, primaryModelForProvider } from "../agent/runner.js";
 import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
@@ -696,6 +697,26 @@ interface LastFailedRegisterGitProject {
   repoUrl: string;
 }
 
+// Fire-and-forget: build the code index right after a project is registered
+// so the first task doesn't pay the whole cost. Says nothing unless it
+// actually indexed files — a failure, or a no-op because RAG is off, stays quiet.
+async function indexNewProjectInBackground(from: string, alias: string, mode: "git" | "local"): Promise<void> {
+  try {
+    const project = projectsRepo.get(alias);
+    if (!project) return;
+    const cwd = mode === "git" ? workspacePath(alias) : project.repo_url;
+    const res = await indexProject({ projectAlias: alias, cwd, mode, signal: new AbortController().signal });
+    if (!res.skipped && res.filesIndexed > 0) {
+      await sendWhatsApp(
+        from,
+        `Kode "${alias}" udah aku indeks (${res.filesIndexed} file) biar lebih cepet nyari konteks pas ngerjain task.`
+      );
+    }
+  } catch (err) {
+    console.error(`[rag] gagal indeks project "${alias}":`, err);
+  }
+}
+
 // Shared by the direct "tambah project <alias> <url>" command, the
 // guided_git_project wizard's final step, and handleRetryCommand below — all
 // three entry points can't silently drift apart, and a retry re-runs exactly
@@ -731,6 +752,7 @@ async function registerGitProject(from: string, alias: string, repoUrl: string):
       from,
       `Beres, "${alias}" udah terdaftar dan siap dipakai. Sekarang jadi project aktif buat chat ini.`
     );
+    void indexNewProjectInBackground(from, alias, "git");
   } catch (err) {
     // Roll back the row create() just inserted — otherwise the next "tambah
     // project" attempt for this alias hits "udah ada" even though the clone
@@ -1493,6 +1515,7 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
         from,
         `Oke, "${pending.alias}" aku daftarin ke folder itu. Sekarang jadi project aktif buat chat ini.`
       );
+      void indexNewProjectInBackground(from, pending.alias, "local");
       return true;
     }
     conversationRepo.setPendingAction(from, null);
@@ -1511,6 +1534,7 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
       const project = projectsRepo.get(pending.alias);
       projectsRepo.delete(pending.alias);
       conversationRepo.clearActiveProjectEverywhere(pending.alias);
+      deleteProjectIndex(pending.alias);
       // Only for kind='git' — the clone is disposable (re-clonable from
       // GitHub). Never for kind='local': repo_url there IS the user's real
       // folder, removeWorkspace is never called on that path.
@@ -1786,6 +1810,19 @@ async function executeTask(
         const workBranch = await createWorkBranch(cwd, taskId);
         mode = { kind: "git", defaultBranch: workspace.branch, workBranch, autoMerge: project.auto_merge };
       }
+
+      // Incremental refresh before the pipeline runs — skips fast when the
+      // default branch hasn't moved since the last index. Never blocks the
+      // task: a failure just means this run works without retrieval.
+      await indexProject({
+        projectAlias: project.alias,
+        cwd,
+        mode: project.kind === "local" ? "local" : "git",
+        signal: abortController.signal,
+        log: (m) => auditLog.add(taskId, "note", m),
+      }).catch((err) =>
+        auditLog.add(taskId, "error", `Index kode gagal: ${err instanceof Error ? err.message : String(err)}`)
+      );
 
       const sendDocument = async (relPath: string, caption: string | undefined): Promise<string> => {
         let full: string;
