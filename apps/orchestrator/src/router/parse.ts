@@ -250,6 +250,28 @@ export function isRetryCommand(text: string): boolean {
   return RETRY_PHRASES.has(text.trim().toLowerCase());
 }
 
+// "batalin yang barusan" — revert the last finished task's commits. Exact
+// phrases only: "undo" plus wordings specific enough that they can't be a
+// real task instruction ("batalin task terakhir" isn't something you'd ask
+// the agent to build).
+const UNDO_LAST_PHRASES = new Set([
+  "undo",
+  "undo dong",
+  "batalin yang barusan",
+  "batalkan yang barusan",
+  "batalin task terakhir",
+  "batalkan task terakhir",
+  "batalin commit terakhir",
+  "balikin yang terakhir",
+  "revert yang terakhir",
+  "revert task terakhir",
+  "undo task terakhir",
+]);
+
+export function isUndoLastCommand(text: string): boolean {
+  return UNDO_LAST_PHRASES.has(text.trim().toLowerCase());
+}
+
 export function isListProjectsCommand(text: string): boolean {
   return LIST_PROJECTS_PHRASES.has(text.trim().toLowerCase());
 }

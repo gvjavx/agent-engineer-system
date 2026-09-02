@@ -142,11 +142,18 @@ status                                → lihat task yang sedang berjalan + ring
 stop / batalkan                       → hentikan task yang sedang berjalan
 review PR <nomor>                     → baca diff PR di project aktif, kasih review, konfirmasi dulu sebelum posting komentar ke PR
 kerjain issue <nomor>                → baca issue GitHub di project aktif, susun rencana, garap setelah konfirmasi (PR nge-link "Closes #<nomor>")
+batalin yang barusan                 → revert commit dari task terakhir di project aktif (konfirmasi dulu, history gak dihapus)
 atur cek test <cmd> / atur cek lint <cmd> → command yang dijalanin sebelum commit; gagal = commit dibatalin ("atur cek test off" buat matiin)
 jadwalkan tiap <kapan>: <instruksi>   → task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies"
 daftar jadwal / hapus jadwal <nomor>  → lihat & batalkan task terjadwal
 bantuan                               → tampilkan daftar perintah
 ```
+
+## Batalin task terakhir
+
+`batalin yang barusan` (atau `undo`, `batalin task terakhir`) — buat project git aktif, cari task terakhir yang beneran commit + push, tampilin instruksinya, minta konfirmasi. Kalau "ya": agent `git revert` semua commit dari task itu jadi satu commit revert baru di branch utama, terus push. History-nya gak dihapus — cuma ditambahin.
+
+Ini jaring pengaman buat mode `auto_merge = 'direct'` (default) yang push langsung ke branch utama tanpa PR. Kalau di atas task itu udah ada perubahan lain, atau range-nya kena merge commit, auto-revert-nya berhenti dan agent bilang biar dibenerin manual.
 
 ## Kebijakan merge per-project
 

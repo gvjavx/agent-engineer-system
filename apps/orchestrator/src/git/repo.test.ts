@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { formatNumstat, headSha, summarizeChangesSince } from "./repo.js";
+import { formatNumstat, headSha, revertRange, summarizeChangesSince } from "./repo.js";
 
 test("formatNumstat totals the lines and lists the biggest files first", () => {
   const raw = ["4\t1\tsrc/a.ts", "0\t9\tsrc/b.ts", "12\t3\tsrc/c.ts"].join("\n");
@@ -57,5 +57,79 @@ test("summarizeChangesSince reports the diff between a base sha and HEAD", async
     assert.equal(await summarizeChangesSince(dir, await headSha(dir)), undefined);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("revertRange undoes a task's commit range as one new commit and pushes it", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "revert-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const g = (dir: string, ...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+  try {
+    execFileSync("git", ["init", "--bare", "-q", "-b", "main", origin], { stdio: "ignore" });
+    execFileSync("git", ["clone", "-q", origin, work], { stdio: "ignore" });
+    for (const [k, v] of [
+      ["user.email", "t@t.t"],
+      ["user.name", "t"],
+      ["commit.gpgsign", "false"],
+      ["core.autocrlf", "false"],
+    ]) {
+      g(work, "config", k, v);
+    }
+
+    fs.writeFileSync(path.join(work, "f.txt"), "base\n");
+    g(work, "add", "-A");
+    g(work, "commit", "-qm", "base");
+    g(work, "push", "-q", "origin", "main");
+    const base = await headSha(work);
+
+    fs.writeFileSync(path.join(work, "f.txt"), "changed by task\n");
+    fs.writeFileSync(path.join(work, "new.txt"), "added by task\n");
+    g(work, "add", "-A");
+    g(work, "commit", "-qm", "task work");
+    g(work, "push", "-q", "origin", "main");
+    const result = await headSha(work);
+
+    const res = await revertRange(work, "main", base, result, "revert: task work");
+    assert.equal(res.ok, true);
+    if (res.ok) {
+      assert.notEqual(res.head, result);
+      assert.equal(fs.readFileSync(path.join(work, "f.txt"), "utf8"), "base\n");
+      assert.equal(fs.existsSync(path.join(work, "new.txt")), false);
+    }
+    const originLog = execFileSync("git", ["-C", origin, "log", "--oneline"], { encoding: "utf8" });
+    assert.match(originLog, /revert: task work/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("revertRange reports an error instead of throwing when the range is already reverted", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "revert-noop-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const g = (dir: string, ...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+  try {
+    execFileSync("git", ["init", "--bare", "-q", "-b", "main", origin], { stdio: "ignore" });
+    execFileSync("git", ["clone", "-q", origin, work], { stdio: "ignore" });
+    for (const [k, v] of [
+      ["user.email", "t@t.t"],
+      ["user.name", "t"],
+      ["commit.gpgsign", "false"],
+      ["core.autocrlf", "false"],
+    ]) {
+      g(work, "config", k, v);
+    }
+    fs.writeFileSync(path.join(work, "f.txt"), "base\n");
+    g(work, "add", "-A");
+    g(work, "commit", "-qm", "base");
+    g(work, "push", "-q", "origin", "main");
+    const sha = await headSha(work);
+
+    // Empty range (base == result): nothing to revert.
+    const res = await revertRange(work, "main", sha, sha, "revert: nothing");
+    assert.equal(res.ok, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

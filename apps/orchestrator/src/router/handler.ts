@@ -24,6 +24,7 @@ import {
   workspacePath,
   headSha,
   latestRemoteSha,
+  revertRange,
   summarizeChangesSince,
 } from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
@@ -101,6 +102,7 @@ import {
   isListMemoryCommand,
   isClearMemoryCommand,
   isSessionHistoryCommand,
+  isUndoLastCommand,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -169,6 +171,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *stop* — batalin task yang lagi jalan di project aktif
 - *review PR <nomor>* — aku baca diff PR di project aktif, kasih review, terus tanya dulu sebelum posting sebagai komentar di PR-nya
 - *kerjain issue <nomor>* — aku baca issue GitHub-nya di project aktif (judul, deskripsi, komentar), susun rencana, dan garap setelah kamu konfirmasi. Commit/PR-nya otomatis nge-link "Closes #<nomor>"
+- *batalin yang barusan* — revert commit dari task terakhir di project aktif (konfirmasi dulu). History-nya gak dihapus, cuma ditambah commit revert terus di-push
 - *atur cek test <cmd>* / *atur cek lint <cmd>* — command yang aku jalanin sebelum commit di project aktif; kalau gagal, commit-nya dibatalin. "atur cek test off" buat matiin. Biasanya udah kedeteksi sendiri dari package.json pas project didaftarin
 - *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
 - Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
@@ -260,6 +263,18 @@ interface PendingCiFix {
   failureLog: string;
 }
 
+// Set by "batalin yang barusan" — reverting a pushed task is outward-facing
+// enough to want one confirmation. Carries the exact commit range so the
+// answer doesn't have to re-look-up which task.
+interface PendingUndoLast {
+  type: "confirm_undo_last";
+  alias: string;
+  branch: string;
+  baseSha: string;
+  resultSha: string;
+  instruction: string;
+}
+
 type PendingActionData =
   | PendingAddFolder
   | PendingDeleteProject
@@ -271,7 +286,8 @@ type PendingActionData =
   | PendingFigmaSetup
   | PendingImageFollowup
   | PendingPostPrReview
-  | PendingCiFix;
+  | PendingCiFix
+  | PendingUndoLast;
 
 const YES_NO_OPTIONS: QuickReplyOption[] = [
   { id: "ya", title: "Ya, lanjut" },
@@ -740,6 +756,11 @@ export async function handleInboundMessage(
 
   if (isSessionHistoryCommand(trimmed)) {
     await handleSessionHistoryCommand(from);
+    return;
+  }
+
+  if (isUndoLastCommand(trimmed)) {
+    await handleUndoLastCommand(from);
     return;
   }
 
@@ -1227,6 +1248,51 @@ async function handleWorkIssueCommand(from: string, issueNumber: number): Promis
   }
 
   await classifyAndPresentPlan(from, project, buildIssueInstruction(ctx), false);
+}
+
+// "batalin yang barusan" — revert the last finished git task's commits as one
+// new commit, after a confirmation (it pushes). Deterministic git op, not a
+// pipeline: same shape as postPrComment.
+async function handleUndoLastCommand(from: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu.');
+    return;
+  }
+  const project = projectsRepo.get(state.active_project_alias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${state.active_project_alias}" udah gak ada.`);
+    return;
+  }
+  if (project.kind !== "git") {
+    await sendWhatsApp(from, `"${project.alias}" itu folder lokal — gak ada commit yang bisa aku revert otomatis.`);
+    return;
+  }
+  if (getActiveTaskId(project.alias)) {
+    await sendWhatsApp(from, `Masih ada task jalan di "${project.alias}". Tunggu kelar dulu (atau "stop"), baru bisa di-undo.`);
+    return;
+  }
+  const task = tasksRepo.lastRevertableForProject(project.alias);
+  if (!task || !task.base_sha || !task.result_sha) {
+    await sendWhatsApp(from, `Gak ada task yang bisa aku undo di "${project.alias}" — belum ada yang commit + push.`);
+    return;
+  }
+
+  const pending: PendingUndoLast = {
+    type: "confirm_undo_last",
+    alias: project.alias,
+    branch: project.default_branch,
+    baseSha: task.base_sha,
+    resultSha: task.result_sha,
+    instruction: task.instruction,
+  };
+  conversationRepo.setPendingAction(from, JSON.stringify(pending));
+  await sendWhatsApp(
+    from,
+    `Mau aku balikin task terakhir di "${project.alias}"?\n"${task.instruction}"\n\n` +
+      `Aku bikin commit revert di "${project.default_branch}" terus push — perubahannya kebalik, history-nya gak dihapus.`,
+    YES_NO_OPTIONS
+  );
 }
 
 // "atur cek test/lint <cmd|off>" — the command the pre-commit gate runs for
@@ -1746,6 +1812,7 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     isListMemoryCommand(trimmed) ||
     isClearMemoryCommand(trimmed) ||
     isSessionHistoryCommand(trimmed) ||
+    isUndoLastCommand(trimmed) ||
     parseAddProject(trimmed) !== undefined ||
     isBareAddProjectCommand(trimmed) ||
     parseAddFolder(trimmed) !== undefined ||
@@ -2171,6 +2238,45 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
     } else {
       await sendWhatsApp(from, "Gak jelas jawabannya, jadi gak aku garap. Bilang lagi kalau mau CI-nya dibenerin.");
     }
+    return true;
+  }
+
+  if (pending.type === "confirm_undo_last") {
+    const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
+    conversationRepo.setPendingAction(from, null);
+    if (intent !== "yes") {
+      await sendWhatsApp(
+        from,
+        intent === "no" ? "Oke, gak jadi." : "Gak jelas jawabannya, jadi gak aku undo. Bilang lagi kalau mau."
+      );
+      return true;
+    }
+    const project = projectsRepo.get(pending.alias);
+    if (!project || project.kind !== "git") {
+      await sendWhatsApp(from, `Project "${pending.alias}" udah gak bisa dipakai, undo-nya gak jadi.`);
+      return true;
+    }
+    if (getActiveTaskId(pending.alias)) {
+      await sendWhatsApp(from, `Keburu ada task jalan lagi di "${pending.alias}". Tunggu kelar, terus minta undo lagi.`);
+      return true;
+    }
+    await sendWhatsApp(from, "Oke, aku revert & push...");
+    let cwd: string;
+    try {
+      cwd = (await ensureWorkspace(project)).dir;
+    } catch (err) {
+      await sendWhatsApp(from, `Gagal nyiapin workspace: ${err instanceof Error ? err.message : String(err)}`);
+      return true;
+    }
+    const short =
+      pending.instruction.length > 60 ? pending.instruction.slice(0, 60) + "…" : pending.instruction;
+    const res = await revertRange(cwd, pending.branch, pending.baseSha, pending.resultSha, `revert: ${short}`);
+    await sendWhatsApp(
+      from,
+      res.ok
+        ? `Udah kebalik dan ke-push ke "${pending.branch}" (${res.head.slice(0, 8)}).`
+        : `Gagal auto-revert: ${res.error}. Kemungkinan ada perubahan lain di atasnya atau ada merge commit di range-nya — mesti dibenerin manual.`
+    );
     return true;
   }
 
@@ -2632,8 +2738,12 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
       const changes =
         mode.kind === "git" && baseSha ? await summarizeChangesSince(cwd, baseSha).catch(() => undefined) : undefined;
       await sendWhatsApp(from, `Udah selesai. ${result.summary}${changes ? `\n\n${changes}` : ""}`);
-      if (mode.kind === "git" && config.ciWatch.enabled) {
-        void watchCiAndReport(from, project.alias, cwd, mode.defaultBranch);
+      if (mode.kind === "git") {
+        // Record the pushed range so "batalin yang barusan" can revert exactly
+        // this task, and kick off the CI watch on the same commit.
+        const resultSha = await latestRemoteSha(cwd, mode.defaultBranch).catch(() => undefined);
+        if (baseSha && resultSha && baseSha !== resultSha) tasksRepo.setShas(taskId, baseSha, resultSha);
+        if (config.ciWatch.enabled) void watchCiAndReport(from, project.alias, cwd, mode.defaultBranch);
       }
     } else {
       await sendWhatsApp(from, `Gagal nih. ${result.summary}`);

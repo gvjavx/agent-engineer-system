@@ -18,6 +18,8 @@ function taskRow(over: Partial<Task>): Task {
     phases_json: JSON.stringify([{ department: "semua", note: "do a thing" }]),
     checkpoints: 0,
     resume_count: 0,
+    base_sha: null,
+    result_sha: null,
     ...over,
   };
 }

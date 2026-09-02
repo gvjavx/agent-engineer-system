@@ -201,6 +201,37 @@ export async function discardWorkBranch(dir: string, defaultBranch: string, work
   await git.raw(["branch", "-D", workBranch]);
 }
 
+// Undo a finished task: revert every commit in fromSha..toSha (the task's own
+// commits) as one new commit on `branch`, then push. Pulls first so it stacks
+// on whatever else landed since. A revert conflict, or a merge commit in the
+// range (needs a mainline `-m`, which this doesn't pass), aborts cleanly and
+// returns an error for the caller to relay — those cases need a human.
+export async function revertRange(
+  dir: string,
+  branch: string,
+  fromSha: string,
+  toSha: string,
+  message: string
+): Promise<{ ok: true; head: string } | { ok: false; error: string }> {
+  const git = simpleGit(dir);
+  await git.checkout(branch);
+  await git.pull("origin", branch, { "--ff-only": null });
+  try {
+    await git.raw(["revert", "--no-commit", `${fromSha}..${toSha}`]);
+  } catch (err) {
+    await git.raw(["revert", "--abort"]).catch(() => {});
+    return { ok: false, error: err instanceof Error ? err.message.trim().split("\n")[0] : String(err) };
+  }
+  const status = await git.status();
+  if (status.staged.length === 0) {
+    await git.raw(["revert", "--abort"]).catch(() => {});
+    return { ok: false, error: "gak ada yang berubah — mungkin udah kebalik duluan" };
+  }
+  await git.commit(message);
+  await git.push("origin", branch);
+  return { ok: true, head: (await git.revparse(["HEAD"])).trim() };
+}
+
 // For kind='local' projects: no clone, no branch — the agent edits the folder
 // in place. project.repo_url holds the absolute path in this case.
 export async function ensureLocalFolder(project: Project): Promise<string> {

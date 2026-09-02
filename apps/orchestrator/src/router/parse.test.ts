@@ -36,6 +36,7 @@ import {
   isClearMemoryCommand,
   isRetryCommand,
   isSessionHistoryCommand,
+  isUndoLastCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -95,6 +96,14 @@ test("parseReviewPr returns undefined without a number or the right shape", () =
   assert.equal(parseReviewPr("review kode di halaman login"), undefined);
   assert.equal(parseReviewPr("kenapa PR #12 gagal"), undefined);
   assert.equal(parseReviewPr("review PR #0"), undefined);
+});
+
+test("isUndoLastCommand matches the exact undo phrases only", () => {
+  assert.ok(isUndoLastCommand("undo"));
+  assert.ok(isUndoLastCommand("batalin yang barusan"));
+  assert.ok(isUndoLastCommand("  Batalin Task Terakhir  "));
+  assert.ok(!isUndoLastCommand("undo the login change"));
+  assert.ok(!isUndoLastCommand("batalin project toko"));
 });
 
 test("parseWorkIssue pulls the issue number from the common phrasings", () => {

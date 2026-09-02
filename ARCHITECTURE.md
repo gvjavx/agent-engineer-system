@@ -210,6 +210,12 @@ Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task g
 
 `confirm_ci_fix` di-`handlePendingConfirmation`: "ya" → log kegagalan jadi instruksi task biasa, `classifyDepartments` fresh, `executeTask` (tanpa konfirmasi rencana — user udah nyetujui pas tap "Ya"). Task fix-nya masuk antrian project itu kayak task lain.
 
+## `batalin yang barusan` — undo task terakhir
+
+`isUndoLastCommand` (frasa persis: `undo`, `batalin yang barusan`, `batalin task terakhir`, dst) → `handleUndoLastCommand`. Cuma project git aktif, nggak ada task lagi jalan. `tasksRepo.lastRevertableForProject` ambil task `done` terakhir yang `base_sha != result_sha` (dua kolom itu diisi di ujung `runTaskPipeline` pas task git sukses — `baseSha` diambil sebelum `createWorkBranch`, `resultSha` = `latestRemoteSha` setelah push). Tampilin instruksinya + tombol Ya/Tidak, simpen `pending_action: confirm_undo_last` (bawa `baseSha`/`resultSha`/branch).
+
+"ya" di `handlePendingConfirmation` → `revertRange` (`git/repo.ts`): `checkout branch` → `pull --ff-only` → `git revert --no-commit <base>..<result>` → satu `git commit` → `push`. Kalau `revert` bentrok, atau ada merge commit di range (butuh `-m` mainline yang nggak dikirim di sini), atau range-nya kosong → `git revert --abort` + balikin error string buat diteruskan ke user, nggak throw. Deterministik, bukan lewat pipeline — sebangun sama `postPrComment` di `review PR`. Jaring pengaman buat `auto_merge = 'direct'` yang push langsung ke branch utama.
+
 ## `kerjain issue <nomor>`
 
 `parseWorkIssue` (deterministik — bawa nomor issue-nya) → `handleWorkIssueCommand`. `ensureWorkspace` project aktif (harus `kind='git'`, dan nggak ada task lagi jalan di situ) → `agent/issue.ts` `gatherIssueContext` nembak `gh issue view <n> --json number,title,body,state,labels,url,comments` (body dipotong ~6k char, sampai 6 komentar terakhir masing-masing ~800 char). Issue `CLOSED` → ditolak dengan penjelasan (buka lagi di GitHub dulu). Selain itu `buildIssueInstruction` (murni, tested) nyusun konteksnya jadi teks instruksi task biasa + baris `Closes #<n>`, terus `classifyAndPresentPlan(..., allowClarify=false)` — dari sini persis kayak instruksi free-text: klasifikasi departemen → konfirmasi rencana → pipeline. Bukan jalur eksekusi sendiri, cuma bikinin teks yang instruksi manual bakal bikin sendiri.

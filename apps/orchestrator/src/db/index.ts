@@ -43,7 +43,11 @@ db.exec(`
     -- instead of looping forever.
     phases_json TEXT,
     checkpoints INTEGER NOT NULL DEFAULT 0,
-    resume_count INTEGER NOT NULL DEFAULT 0
+    resume_count INTEGER NOT NULL DEFAULT 0,
+    -- Default-branch tip before and after a successful git task, so "batalin
+    -- yang barusan" can revert exactly that task's commits. Git tasks only.
+    base_sha TEXT,
+    result_sha TEXT
   );
 
   CREATE TABLE IF NOT EXISTS audit_log (
@@ -167,6 +171,8 @@ for (const migration of [
   "ALTER TABLE tasks ADD COLUMN resume_count INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE projects ADD COLUMN test_cmd TEXT",
   "ALTER TABLE projects ADD COLUMN lint_cmd TEXT",
+  "ALTER TABLE tasks ADD COLUMN base_sha TEXT",
+  "ALTER TABLE tasks ADD COLUMN result_sha TEXT",
 ]) {
   try {
     db.exec(migration);
@@ -242,6 +248,8 @@ export interface Task {
   phases_json: string | null;
   checkpoints: number;
   resume_count: number;
+  base_sha: string | null;
+  result_sha: string | null;
 }
 
 export const tasksRepo = {
@@ -256,6 +264,22 @@ export const tasksRepo = {
     db.prepare(
       "INSERT INTO tasks (id, project_alias, from_number, instruction, phases_json, checkpoints) VALUES (?, ?, ?, ?, ?, ?)"
     ).run(id, projectAlias, fromNumber, instruction, phasesJson, checkpoints ? 1 : 0);
+  },
+  // Default-branch tip before/after a git task — recorded on success so
+  // "batalin yang barusan" (router/handler.ts) knows the exact commit range.
+  setShas(id: string, baseSha: string, resultSha: string): void {
+    db.prepare("UPDATE tasks SET base_sha = ?, result_sha = ? WHERE id = ?").run(baseSha, resultSha, id);
+  },
+  // Most recent finished git task for a project that actually landed commits
+  // (result_sha moved past base_sha) — the candidate for an undo.
+  lastRevertableForProject(projectAlias: string): Task | undefined {
+    return db
+      .prepare(
+        `SELECT * FROM tasks WHERE project_alias = ? AND status = 'done'
+         AND base_sha IS NOT NULL AND result_sha IS NOT NULL AND base_sha != result_sha
+         ORDER BY finished_at DESC LIMIT 1`
+      )
+      .get(projectAlias) as Task | undefined;
   },
   setStatus(id: string, status: Task["status"], resultSummary?: string): void {
     db.prepare(
