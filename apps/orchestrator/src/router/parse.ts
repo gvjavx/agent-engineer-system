@@ -286,6 +286,17 @@ export function isLastDiffCommand(text: string): boolean {
   return LAST_DIFF_PHRASES.has(text.trim().toLowerCase());
 }
 
+// "tanya: gimana alur auth di project ini" — a read-only question about the
+// active repo's code, answered without the task pipeline. The colon is
+// required so it can't be confused with plain chat.
+const ASK_REPO_RE = /^(?:tanya|nanya|jelasin|jelaskan)\s*:\s*(.+)$/is;
+
+export function parseAskRepo(text: string): string | undefined {
+  const m = text.trim().match(ASK_REPO_RE);
+  const q = m?.[1]?.trim();
+  return q ? q : undefined;
+}
+
 export function isListProjectsCommand(text: string): boolean {
   return LIST_PROJECTS_PHRASES.has(text.trim().toLowerCase());
 }

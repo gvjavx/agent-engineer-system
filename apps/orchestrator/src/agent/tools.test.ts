@@ -3,7 +3,13 @@ import { test } from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { executeTool, detectMilestone, briefToolDescription, isDangerousBashCommand } from "./tools.js";
+import {
+  executeTool,
+  detectMilestone,
+  briefToolDescription,
+  isDangerousBashCommand,
+  isWriteBashCommand,
+} from "./tools.js";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "agent-tools-test-"));
@@ -93,6 +99,35 @@ test("isDangerousBashCommand leaves ordinary commands alone", () => {
   assert.equal(isDangerousBashCommand("npm test"), undefined);
   assert.equal(isDangerousBashCommand("curl https://api.github.com/repos/x/y"), undefined);
   assert.equal(isDangerousBashCommand("cat README.md"), undefined);
+});
+
+test("isWriteBashCommand flags mutating commands, lets reads through", () => {
+  for (const c of [
+    "echo hi > out.txt",
+    "rm foo.ts",
+    "git commit -m x",
+    "git checkout main",
+    "npm install lodash",
+    "pnpm add -D vitest",
+    "npx tsc",
+    "pip install requests",
+    "sed -i 's/a/b/' f.ts",
+  ]) {
+    assert.ok(isWriteBashCommand(c), `should flag: ${c}`);
+  }
+  for (const c of [
+    "grep -rn foo src",
+    "rg 'export function' -l",
+    "git log --oneline -20",
+    "git show HEAD",
+    "git diff main",
+    "cat src/index.ts",
+    "npm ls",
+    "find . -name '*.test.ts'",
+    "node -e \"1\" 2>&1",
+  ]) {
+    assert.ok(!isWriteBashCommand(c), `should allow: ${c}`);
+  }
 });
 
 test("briefToolDescription summarizes each tool kind", () => {

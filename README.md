@@ -148,6 +148,7 @@ batalin yang barusan                 → revert commit dari task terakhir di pro
 diff terakhir                        → kirim patch lengkap task terakhir sebagai lampiran file
 atur cek test <cmd> / atur cek lint <cmd> → command yang dijalanin sebelum commit; gagal = commit dibatalin ("atur cek test off" buat matiin)
 jadwalkan tiap <kapan>: <instruksi>   → task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies"
+tanya: <pertanyaan>                  → nanya soal kode di project aktif tanpa ngubah apa-apa (read-only)
 daftar jadwal / hapus jadwal <nomor>  → lihat & batalkan task terjadwal
 bantuan                               → tampilkan daftar perintah
 ```
@@ -157,6 +158,10 @@ bantuan                               → tampilkan daftar perintah
 `batalin yang barusan` (atau `undo`, `batalin task terakhir`) — buat project git aktif, cari task terakhir yang beneran commit + push, tampilin instruksinya, minta konfirmasi. Kalau "ya": agent `git revert` semua commit dari task itu jadi satu commit revert baru di branch utama, terus push. History-nya gak dihapus — cuma ditambahin.
 
 Ini jaring pengaman buat mode `auto_merge = 'direct'` (default) yang push langsung ke branch utama tanpa PR. Kalau di atas task itu udah ada perubahan lain, atau range-nya kena merge commit, auto-revert-nya berhenti dan agent bilang biar dibenerin manual.
+
+## Tanya-jawab soal kode (read-only)
+
+`tanya: <pertanyaan>` — mis. `tanya: gimana alur auth di project ini` atau `tanya: kenapa ada file scripts/foo.ts`. Agent baca-baca kode di project aktif (grep/find/`git log`/baca file, plus potongan RAG kalau nyala) terus jawab langsung — **tanpa** pipeline, tanpa branch, tanpa commit. Tool tulis (`write_file`/`edit_file`) dimatiin dan command bash yang keliatan mau ngubah sesuatu (commit/install/hapus/redirect) ditolak. Tanda titik dua wajib biar gak ketuker sama ngobrol biasa.
 
 ## Kebijakan merge per-project
 

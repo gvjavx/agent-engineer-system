@@ -1,6 +1,13 @@
 import { auditLog, providerUsageRepo } from "../db/index.js";
 import { config } from "../config.js";
-import { TOOL_SCHEMAS, executeTool, briefToolDescription, detectMilestone, isDangerousBashCommand } from "./tools.js";
+import {
+  TOOL_SCHEMAS,
+  executeTool,
+  briefToolDescription,
+  detectMilestone,
+  isDangerousBashCommand,
+  isWriteBashCommand,
+} from "./tools.js";
 import { scanStagedFiles, formatSecretHits } from "./secretScan.js";
 import { runProjectChecks, type CommitCheckSpec } from "./projectChecks.js";
 import { markRateLimited } from "./providerCooldown.js";
@@ -47,6 +54,10 @@ export interface RunAgentLoopParams {
   // failure blocks the commit (same hard-gate shape as the secret scan).
   // Undefined/empty means no gate. See agent/projectChecks.ts.
   commitChecks?: CommitCheckSpec;
+  // Read-only mode for the "tanya:" repo Q&A: only `bash` + `read_file` are
+  // offered, and a `bash` command that isWriteBashCommand is refused. The
+  // model can grep/read to answer, but not modify/commit/install.
+  readOnly?: boolean;
 }
 
 export interface RunAgentLoopResult {
@@ -107,6 +118,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
     onDangerousBash = async () => false,
     rateLimitRetryDelayMs = RATE_LIMIT_RETRY_DELAY_MS,
     commitChecks,
+    readOnly = false,
   } = params;
 
   if (providers.length === 0) {
@@ -129,7 +141,11 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
     return { ok: false, summary: `Gagal konek ke Figma: ${figmaTools.message}` };
   }
 
-  const toolSchemas: ToolSchema[] = figmaTools.kind === "ready" ? [...TOOL_SCHEMAS, ...figmaTools.schemas] : TOOL_SCHEMAS;
+  const baseSchemas: ToolSchema[] = readOnly
+    ? TOOL_SCHEMAS.filter((t) => t.name === "bash" || t.name === "read_file")
+    : TOOL_SCHEMAS;
+  const toolSchemas: ToolSchema[] =
+    figmaTools.kind === "ready" ? [...baseSchemas, ...figmaTools.schemas] : baseSchemas;
 
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt },
@@ -218,9 +234,30 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
         const milestone = detectMilestone(call.name, call.input);
         if (milestone) await onProgress(milestone);
 
+        if (readOnly && (call.name === "write_file" || call.name === "edit_file" || call.name === "send_document")) {
+          messages.push({
+            role: "tool",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: "Error: sesi ini read-only (cuma buat jawab pertanyaan soal kode). Gak bisa nulis/ngedit/ngirim file.",
+          });
+          continue;
+        }
+
         if (call.name === "bash") {
           const command = String(call.input.command ?? "");
           const isCommit = /\bgit\s+commit\b/.test(command);
+
+          if (readOnly && isWriteBashCommand(command)) {
+            messages.push({
+              role: "tool",
+              toolCallId: call.id,
+              toolName: call.name,
+              content:
+                "Error: sesi ini read-only. Command itu keliatan mau ngubah sesuatu (commit/install/hapus/tulis). Pakai command baca aja — grep/rg/find/cat/git log/git show/git diff.",
+            });
+            continue;
+          }
 
           // Hard stop before the agent commits a leaked credential — no
           // WhatsApp override, unlike the risky-command gate below. The model

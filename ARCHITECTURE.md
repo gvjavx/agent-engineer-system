@@ -220,6 +220,12 @@ Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task g
 
 `diff terakhir` (`isLastDiffCommand` → `handleLastDiffCommand`) pakai `base_sha`/`result_sha` yang sama: `diffBetween` (`git diff <base> <result>`) → kirim sebagai lampiran `.diff.txt` (`.diff`/`.patch` nggak ada di allowlist dokumen), dipotong di 4MB. Read-only.
 
+## `tanya: <pertanyaan>` — Q&A read-only atas repo
+
+`parseAskRepo` (butuh titik dua biar beda dari chat biasa) → `handleAskRepoCommand`. Project aktif (git atau folder lokal), nggak ada task lagi jalan. `ensureWorkspace`/`ensureLocalFolder` → `retrieveCodeContext` (potongan RAG, kalau nyala) → `runAgentLoop` dengan `readOnly: true`, `maxTurns: 12`, prompt dari `buildRepoQaSystemPrompt`. Nggak lewat pipeline, nggak ada `taskId` di tabel `tasks` (id-nya `ask-<uuid8>`, cuma nyangkut di `audit_log`).
+
+`readOnly` di `loop.ts`: schema tool disaring ke `bash` + `read_file` doang; kalau model tetep manggil `write_file`/`edit_file`/`send_document` atau `bash` yang `isWriteBashCommand` (`agent/tools.ts` — redirection, `rm`/`mv`/`cp`/dst, git subcommand yang mutasi, `npm/pnpm/yarn install/add/run`, `npx`, `pip install`, `sed -i`), balikin error tool dan `continue`. Heuristik, bukan sandbox — tool `bash` tetep jalan dengan permission OS orchestrator, ini cuma jaga sesi Q&A nggak nyeleneh commit/install/hapus.
+
 ## `kerjain issue <nomor>`
 
 `parseWorkIssue` (deterministik — bawa nomor issue-nya) → `handleWorkIssueCommand`. `ensureWorkspace` project aktif (harus `kind='git'`, dan nggak ada task lagi jalan di situ) → `agent/issue.ts` `gatherIssueContext` nembak `gh issue view <n> --json number,title,body,state,labels,url,comments` (body dipotong ~6k char, sampai 6 komentar terakhir masing-masing ~800 char). Issue `CLOSED` → ditolak dengan penjelasan (buka lagi di GitHub dulu). Selain itu `buildIssueInstruction` (murni, tested) nyusun konteksnya jadi teks instruksi task biasa + baris `Closes #<n>`, terus `classifyAndPresentPlan(..., allowClarify=false)` — dari sini persis kayak instruksi free-text: klasifikasi departemen → konfirmasi rencana → pipeline. Bukan jalur eksekusi sendiri, cuma bikinin teks yang instruksi manual bakal bikin sendiri.

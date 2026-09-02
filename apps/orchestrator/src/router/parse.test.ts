@@ -40,6 +40,7 @@ import {
   isSessionHistoryCommand,
   isUndoLastCommand,
   isLastDiffCommand,
+  parseAskRepo,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -114,6 +115,13 @@ test("isLastDiffCommand matches the exact diff phrases only", () => {
   assert.ok(isLastDiffCommand("  Kirim Diff  "));
   assert.ok(!isLastDiffCommand("diff terakhir sama yang sebelumnya"));
   assert.ok(!isLastDiffCommand("kirim file config.ts"));
+});
+
+test("parseAskRepo needs the colon and returns the trimmed question", () => {
+  assert.equal(parseAskRepo("tanya: gimana alur login-nya"), "gimana alur login-nya");
+  assert.equal(parseAskRepo("Jelasin :  kenapa ada file X  "), "kenapa ada file X");
+  assert.equal(parseAskRepo("tanya gimana alur login"), undefined); // no colon
+  assert.equal(parseAskRepo("tanya:"), undefined); // empty question
 });
 
 test("parseWorkIssue pulls the issue number from the common phrasings", () => {

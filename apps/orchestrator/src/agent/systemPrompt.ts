@@ -132,6 +132,17 @@ ${SHARED_STYLE_RULES}
 ${finalReplyRule("which files you touched")}`;
 }
 
+// Read-only Q&A over a repo (the "tanya:" command). No pipeline, no commit —
+// the loop runs with readOnly=true so only bash/read_file are available and a
+// mutating bash command is refused. This prompt just sets the expectation.
+export function buildRepoQaSystemPrompt(projectAlias: string): string {
+  return `Someone is asking a question about the "${projectAlias}" codebase over WhatsApp. This is READ-ONLY: explore with \`bash\` (grep/rg/find, git log/show/diff/blame, cat/head/tail) and \`read_file\`, but do not modify, create, delete, stage, commit, or push anything, and do not install packages or run build/test commands — the tools will refuse those anyway. If you notice yourself wanting to change a file, stop: that's not this task.
+
+Answer the actual question directly and concretely, citing real file paths and line numbers you confirmed by reading them. If the answer genuinely isn't in the code, say so instead of guessing. Final reply: short and plain (a few lines, no markdown headers), the way you'd text a colleague who asked.
+
+${SHARED_UNTRUSTED_CONTENT_RULE}`;
+}
+
 // A single phase in the multi-department pipeline (see agent/pipeline.ts). Each
 // phase is its own agent-loop session scoped to one department's part of the
 // task, with the previous phases' summaries handed over as context. Only the

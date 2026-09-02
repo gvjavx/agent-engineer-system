@@ -225,3 +225,21 @@ export function isDangerousBashCommand(command: string): string | undefined {
   }
   return undefined;
 }
+
+// For the read-only "tanya:" Q&A loop (agent/loop.ts's readOnly mode): refuse
+// anything that would change the workspace. Heuristic, not a sandbox — it just
+// keeps a Q&A session from accidentally committing/installing/deleting while
+// it greps around. Reads (grep/rg/find/cat/git log/git show/git diff/…) pass.
+const WRITE_BASH_PATTERNS: RegExp[] = [
+  /(^|[^0-9&<>])>>?($|[^&>])/, // output redirection to a file (not 2>&1 / 1>&2)
+  /\b(rm|rmdir|mv|cp|ln|truncate|dd|tee|chmod|chown|mkdir|touch|shred|unlink)\b/i,
+  /\bgit\s+(commit|push|merge|rebase|reset|checkout|switch|restore|clean|stash|apply|am|cherry-pick|revert|tag|add|init|clone|fetch|pull|remote|config|worktree|-C)\b/i,
+  /\b(npm|pnpm|yarn|bun)\s+(i|install|ci|add|remove|rm|uninstall|update|upgrade|publish|run|exec|dlx|link)\b/i,
+  /\bnpx\b/i,
+  /\b(pip|pip3|poetry|pipenv|gem|cargo|go)\s+(install|uninstall|add|build|get|mod)\b/i,
+  /\bsed\b[^|]*\s-i\b/i,
+];
+
+export function isWriteBashCommand(command: string): boolean {
+  return WRITE_BASH_PATTERNS.some((re) => re.test(command));
+}

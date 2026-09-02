@@ -31,7 +31,9 @@ import {
   diffBetween,
   summarizeChangesSince,
 } from "../git/repo.js";
-import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
+import { indexProject, deleteProjectIndex, retrieveCodeContext } from "../agent/rag/index.js";
+import { runAgentLoop } from "../agent/loop.js";
+import { buildRepoQaSystemPrompt } from "../agent/systemPrompt.js";
 import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
 import { detectProjectChecks } from "../agent/projectChecks.js";
 import { watchCiForSha } from "../agent/ciWatch.js";
@@ -112,6 +114,7 @@ import {
   isSessionHistoryCommand,
   isUndoLastCommand,
   isLastDiffCommand,
+  parseAskRepo,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -184,6 +187,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *kerjain issue <nomor>* — aku baca issue GitHub-nya di project aktif (judul, deskripsi, komentar), susun rencana, dan garap setelah kamu konfirmasi. Commit/PR-nya otomatis nge-link "Closes #<nomor>"
 - *batalin yang barusan* — revert commit dari task terakhir di project aktif (konfirmasi dulu). History-nya gak dihapus, cuma ditambah commit revert terus di-push
 - *diff terakhir* — kirim patch lengkap dari task terakhir sebagai lampiran file
+- *tanya: <pertanyaan>* — nanya soal kode di project aktif tanpa ngubah apa-apa (mis. "tanya: gimana alur login-nya"). Aku baca-baca kodenya terus jawab, gak nyentuh file
 - *atur cek test <cmd>* / *atur cek lint <cmd>* — command yang aku jalanin sebelum commit di project aktif; kalau gagal, commit-nya dibatalin. "atur cek test off" buat matiin. Biasanya udah kedeteksi sendiri dari package.json pas project didaftarin
 - *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
 - Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
@@ -800,6 +804,12 @@ export async function handleInboundMessage(
     return;
   }
 
+  const repoQuestion = parseAskRepo(trimmed);
+  if (repoQuestion) {
+    await handleAskRepoCommand(from, repoQuestion);
+    return;
+  }
+
   if (isRetryCommand(trimmed)) {
     await handleRetryCommand(from);
     return;
@@ -1385,6 +1395,64 @@ async function handleLastDiffCommand(from: string): Promise<void> {
     Buffer.from(diff).toString("base64"),
     `Diff task terakhir: "${task.instruction}"\n${short(task.base_sha)}..${short(task.result_sha)}${note}`
   );
+}
+
+// "tanya: <pertanyaan>" — a read-only question about the active project's
+// code. Runs the agent loop with readOnly=true (bash + read_file only, write
+// commands refused) plus any RAG context; no pipeline, no commit.
+async function handleAskRepoCommand(from: string, question: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu.');
+    return;
+  }
+  const project = projectsRepo.get(state.active_project_alias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${state.active_project_alias}" udah gak ada.`);
+    return;
+  }
+  if (getActiveTaskId(project.alias)) {
+    await sendWhatsApp(from, `Ada task jalan di "${project.alias}". Tunggu kelar dulu, baru aku bisa lihat kodenya.`);
+    return;
+  }
+  const providers = buildProviders(resolveManajemenProvider(from, state));
+  if (providers.length === 0) {
+    await sendWhatsApp(from, "Belum ada AI provider yang aktif.");
+    return;
+  }
+
+  await sendWhatsApp(from, "Bentar, aku lihat-lihat kodenya dulu...");
+
+  let cwd: string;
+  try {
+    cwd = project.kind === "local" ? await ensureLocalFolder(project) : (await ensureWorkspace(project)).dir;
+  } catch (err) {
+    await sendWhatsApp(from, `Gagal nyiapin workspace: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  const taskId = `ask-${crypto.randomUUID().slice(0, 8)}`;
+  const codeNote = await retrieveCodeContext({
+    projectAlias: project.alias,
+    query: question,
+    signal: new AbortController().signal,
+    taskId,
+  }).catch(() => undefined);
+
+  const result = await runAgentLoop({
+    providers,
+    systemPrompt: buildRepoQaSystemPrompt(project.alias),
+    instruction: question,
+    cwd,
+    taskId,
+    abortController: new AbortController(),
+    onProgress: async () => {},
+    maxTurns: 12,
+    readOnly: true,
+    extraSystemNotes: codeNote ? [codeNote] : [],
+  });
+
+  await sendWhatsApp(from, result.ok ? result.summary : `Gagal jawab: ${result.summary}`);
 }
 
 // "batalin yang barusan" — revert the last finished git task's commits as one
@@ -1992,6 +2060,7 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     isSessionHistoryCommand(trimmed) ||
     isUndoLastCommand(trimmed) ||
     isLastDiffCommand(trimmed) ||
+    parseAskRepo(trimmed) !== undefined ||
     parseAddProject(trimmed) !== undefined ||
     isBareAddProjectCommand(trimmed) ||
     parseAddFolder(trimmed) !== undefined ||
