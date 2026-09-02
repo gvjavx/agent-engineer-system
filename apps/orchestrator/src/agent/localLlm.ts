@@ -49,8 +49,39 @@ async function getPipe(): Promise<GenPipe> {
   return pipePromise;
 }
 
-// Returns the model's reply, or undefined on any failure/timeout/empty output
-// (caller then falls back to Gemini).
+// A small model fails in recognisable ways: echoing the prompt or the
+// question back, or looping the same phrase. Reject those so the reply falls
+// through to Gemini instead of shipping garbage.
+export function isUsableLocalReply(text: string, system: string, question: string): boolean {
+  const t = text.trim();
+  if (t.length < 2) return false;
+  const low = t.toLowerCase();
+
+  if (low.includes(system.toLowerCase().slice(0, 40).trim())) return false;
+
+  const q = question.toLowerCase().trim();
+  if (q.length > 8 && low.startsWith(q.slice(0, Math.min(q.length, 30))) && t.length < question.length + 15) {
+    return false;
+  }
+
+  const lines = t.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length >= 3 && new Set(lines).size <= Math.ceil(lines.length / 3)) return false;
+
+  const words = low.split(/\s+/);
+  for (let n = 3; n <= 6 && words.length >= n * 3; n++) {
+    const seen = new Map<string, number>();
+    for (let i = 0; i + n <= words.length; i++) {
+      const g = words.slice(i, i + n).join(" ");
+      const c = (seen.get(g) ?? 0) + 1;
+      if (c >= 3) return false;
+      seen.set(g, c);
+    }
+  }
+  return true;
+}
+
+// Returns the model's reply, or undefined on any failure/timeout/empty or
+// low-quality output (caller then falls back to Gemini).
 export async function generateLocalReply(system: string, userMessage: string): Promise<string | undefined> {
   try {
     const pipe = await getPipe();
@@ -64,13 +95,9 @@ export async function generateLocalReply(system: string, userMessage: string): P
 
     const gen = out?.[0]?.generated_text;
     const text =
-      typeof gen === "string"
-        ? gen
-        : Array.isArray(gen)
-          ? String(gen[gen.length - 1]?.content ?? "")
-          : "";
+      typeof gen === "string" ? gen : Array.isArray(gen) ? String(gen[gen.length - 1]?.content ?? "") : "";
     const trimmed = text.trim();
-    return trimmed.length >= 2 ? trimmed : undefined;
+    return isUsableLocalReply(trimmed, system, userMessage) ? trimmed : undefined;
   } catch {
     return undefined;
   }
