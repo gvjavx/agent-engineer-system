@@ -51,9 +51,9 @@ Ini fungsi paling sentral di seluruh sistem. Urutan pengecekan penting — makin
 4. Ada gambar?                             ──▶ handleImageMessage
 5. Cocok salah satu command deterministik  ──▶ handler masing-masing
    (intro/greeting/help/daftar project/daftar model/status/stop/
-   review PR <nomor>/hubungkan figma/lihat memori/lupain semua/
-   tambah-hapus project-folder, termasuk versi "diketik tanpa argumen"
-   yang start wizard/picker)
+   review PR <nomor>/jadwalkan .../daftar jadwal/hapus jadwal <n>/
+   hubungkan figma/lihat memori/lupain semua/tambah-hapus project-folder,
+   termasuk versi "diketik tanpa argumen" yang start wizard/picker)
 6. Cocok sentinel tombol menu "bantuan"?   ──▶ wizard/picker terkait
 7. AI: paraphrase dari salah satu command  ──▶ tryHandleSemanticCommand
    di atas? (classifyCommandIntent)
@@ -189,6 +189,12 @@ Opsional, mati default (`CHAT_KB_ENABLED`). Konsepnya: pertanyaan non-koding **b
 
 `parseReviewPr` (deterministik — ada argumen nomornya) → `handleReviewPrCommand`. Bukan lewat pipeline: cuma baca + satu panggilan model. `ensureWorkspace` project aktif (harus `kind='git'`) → `agent/prReview.ts` `gatherPrContext` nembak `gh pr view --json ...` + `gh pr diff` di workspace itu (`gh` baca `GITHUB_TOKEN` dari env, repo diinfer dari origin), diff dipotong di batas baris kalau > 24k char → `buildReviewPrompt` → `providers[0].chat` (tanpa tool) → review dibalikin ke WhatsApp. Review-nya distash di `pending_action: confirm_post_pr_review`; balas "ya" → `gh pr comment <n> --body <review>`. Nggak pernah auto-post — selalu nunggu konfirmasi.
 
+## Task terjadwal (`jadwalkan tiap <kapan>: <instruksi>`)
+
+`parseScheduleCommand` (`router/parse.ts`) misahin frasa jadwal dari instruksi di titik dua pertama; `parseSchedule` (`agent/schedule.ts`, murni + fully tested) nge-parse frasanya jadi `ScheduleSpec` — `daily` / `weekly` (dow 0=Minggu) / `monthly` (day di-clamp ke panjang bulan) / `everyHours` (n ∈ {1,2,3,4,6,8,12}). Jam default 08:00, ngerti `pagi/siang/sore/malam`. Semua wall-clock di WIB via offset tetap +7 (Indonesia nggak ada DST, jadi nggak perlu `Intl` round-trip). Baris disimpen di `scheduled_tasks` dengan `next_run_at` hasil `computeNextRun`.
+
+`startScheduleRunner` (`handler.ts`, dipanggil dari `index.ts`) — `setInterval` 60 detik, loop background **kedua** setelah `idleNotifier`. Tiap tick: `scheduledTasksRepo.due(now)` → buat tiap yang jatuh tempo, **majuin `next_run_at` dulu** (biar run lambat nggak dobel-trigger di tick berikutnya) baru `fireScheduledTask`: `classifyDepartments` fresh (deps/kode bisa geser antar-fire) → `executeTask` langsung, tanpa konfirmasi (user udah opt-in pas bikin jadwal). Project udah nggak ada → jadwalnya dihapus + user dikabarin. `hapus project` juga ngebersihin `scheduled_tasks` project itu.
+
 ## `status` — dasbor ringkas
 
 `handleStatusCommand` selain nunjukin task yang lagi jalan + posisi antrean, sekarang selalu nutup dengan `dashboardBlock`: rollup task 7 hari (`tasksRepo.stats` — selesai/gagal/batal + rata-rata durasi dari `finished_at - created_at`), baris chat-autonomy 30 hari yang sama kayak di `lihat memori` (`chatKbStatsLine`, cuma kalau `CHAT_KB_ENABLED`), dan daftar provider yang lagi di cooldown 429 (`coolingDownNow`, cuma kalau ada).
@@ -222,6 +228,7 @@ Kredensial GitHub **nggak pernah** disimpen di URL remote atau di disk — `ensu
 | `user_memory` | Fakta permanen lintas sesi soal tiap user. |
 | `chat_history` | Histori obrolan biasa terbaru (bukan task), dipangkas otomatis. |
 | `processed_messages` | Guard dedup buat webhook yang dikirim ulang (`inboundDedup.ts`) — persisten di DB, bukan `Map`, biar restart di tengah window retry (default 1 jam) nggak ngebuka celah yang harusnya ketutup. |
+| `scheduled_tasks` | Task rutin dari `jadwalkan ...` — `spec_json` (parsed `ScheduleSpec`), `next_run_at`. Runner 60-detik di `startScheduleRunner`. Lihat "Task terjadwal". |
 | `interaction_kb` | Chat knowledge base (`db/chatKb.ts`) — tiap Q&A chat bebas, `norm_question`, opsional embedding. Cuma keisi kalau `CHAT_KB_ENABLED`. Lihat "Chat knowledge base". |
 | `chat_stats` | Counter per `(hari, source)` buat balasan chat (`kb`/`arithmetic`/`model`/`model_nearmiss`) — `lihat memori` buat persen tanpa-AI + tren + near-miss. |
 | `kb_synonym_hints` | Pasangan token yang sering beda di near-miss — kandidat sinonim buat peta `SYNONYM`. `npm run kb:hints`. |

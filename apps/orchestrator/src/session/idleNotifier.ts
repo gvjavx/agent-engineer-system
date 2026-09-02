@@ -1,7 +1,8 @@
-// This codebase is otherwise 100% reactive (only ever runs in response to an
-// inbound webhook) — this is the one background process, a plain
-// setInterval inside the same long-running orchestrator process (single
-// replica, see infra/docker-compose.yml, so no distributed-lock concern).
+// This codebase is otherwise mostly reactive (runs in response to an inbound
+// webhook). This is one of two background setInterval loops in the same
+// long-running orchestrator process — the other is the scheduled-task runner
+// (router/handler.ts's startScheduleRunner). Single replica (see
+// infra/docker-compose.yml), so no distributed-lock concern.
 import { config } from "../config.js";
 import { conversationRepo } from "../db/index.js";
 import { sendWhatsApp } from "../whatsappClient.js";

@@ -129,6 +129,24 @@ db.exec(`
     wa_message_id TEXT PRIMARY KEY,
     seen_at INTEGER NOT NULL -- epoch ms
   );
+
+  -- Recurring tasks from "jadwalkan <kapan>: <instruksi>". A once-a-minute
+  -- runner (router/handler.ts's startScheduleRunner) fires the ones whose
+  -- next_run_at has passed, re-classifies departments fresh, and pushes them
+  -- through the normal pipeline. spec_json is the parsed ScheduleSpec
+  -- (agent/schedule.ts); schedule is its human label for the list.
+  CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id TEXT PRIMARY KEY,
+    from_number TEXT NOT NULL,
+    project_alias TEXT NOT NULL,
+    instruction TEXT NOT NULL,
+    schedule TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    next_run_at TEXT NOT NULL, -- ISO UTC
+    last_run_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next ON scheduled_tasks(next_run_at);
 `);
 
 // Idempotent migrations for DBs created before these columns existed.
@@ -309,6 +327,62 @@ export const tasksRepo = {
       running: count("running") + count("queued"),
       avgMinutes,
     };
+  },
+};
+
+export interface ScheduledTask {
+  id: string;
+  from_number: string;
+  project_alias: string;
+  instruction: string;
+  schedule: string;
+  spec_json: string;
+  next_run_at: string;
+  last_run_at: string | null;
+  created_at: string;
+}
+
+export const scheduledTasksRepo = {
+  create(
+    id: string,
+    fromNumber: string,
+    projectAlias: string,
+    instruction: string,
+    schedule: string,
+    specJson: string,
+    nextRunIso: string
+  ): void {
+    db.prepare(
+      `INSERT INTO scheduled_tasks (id, from_number, project_alias, instruction, schedule, spec_json, next_run_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, fromNumber, projectAlias, instruction, schedule, specJson, nextRunIso);
+  },
+  listForNumber(fromNumber: string): ScheduledTask[] {
+    return db
+      .prepare("SELECT * FROM scheduled_tasks WHERE from_number = ? ORDER BY created_at ASC")
+      .all(fromNumber) as ScheduledTask[];
+  },
+  listForProject(projectAlias: string): ScheduledTask[] {
+    return db
+      .prepare("SELECT * FROM scheduled_tasks WHERE project_alias = ? ORDER BY created_at ASC")
+      .all(projectAlias) as ScheduledTask[];
+  },
+  due(nowIso: string): ScheduledTask[] {
+    return db
+      .prepare("SELECT * FROM scheduled_tasks WHERE next_run_at <= ? ORDER BY next_run_at ASC")
+      .all(nowIso) as ScheduledTask[];
+  },
+  markRan(id: string, nextRunIso: string): void {
+    db.prepare("UPDATE scheduled_tasks SET last_run_at = datetime('now'), next_run_at = ? WHERE id = ?").run(
+      nextRunIso,
+      id
+    );
+  },
+  delete(id: string): void {
+    db.prepare("DELETE FROM scheduled_tasks WHERE id = ?").run(id);
+  },
+  deleteForProject(projectAlias: string): number {
+    return db.prepare("DELETE FROM scheduled_tasks WHERE project_alias = ?").run(projectAlias).changes;
   },
 };
 

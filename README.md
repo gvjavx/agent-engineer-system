@@ -141,6 +141,8 @@ pakai model <departemen> <nama>       → model AI khusus satu departemen (manaj
 status                                → lihat task yang sedang berjalan + ringkasan 7 hari
 stop / batalkan                       → hentikan task yang sedang berjalan
 review PR <nomor>                     → baca diff PR di project aktif, kasih review, konfirmasi dulu sebelum posting komentar ke PR
+jadwalkan tiap <kapan>: <instruksi>   → task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies"
+daftar jadwal / hapus jadwal <nomor>  → lihat & batalkan task terjadwal
 bantuan                               → tampilkan daftar perintah
 ```
 
@@ -225,6 +227,21 @@ Batasan:
 - Format yang didukung: JPEG dan PNG saja (batasan bawaan WhatsApp Cloud API untuk pesan tipe gambar — bukan batasan kita).
 - Maksimal 5MB per gambar (limit bawaan WhatsApp buat gambar masuk).
 - Butuh provider AI yang model-nya bisa vision — dari default `AI_PROVIDER_ORDER=gemini,openrouter,qwen`, cuma Gemini yang vision-capable; model coder default OpenRouter/Qwen gak bisa "lihat" gambar. Kalau semua provider yang aktif gak bisa, agent bilang jelas dan nyaranin ganti model, gak diam-diam nebak.
+
+## Task terjadwal
+
+`jadwalkan tiap <kapan>: <instruksi>` bikin task yang jalan sendiri berulang di project aktif. Contoh:
+
+```
+jadwalkan tiap senin jam 9: update dependencies lalu jalanin test
+jadwalkan tiap hari jam 7 pagi: cek lint, commit kalau bersih
+jadwalkan tiap tanggal 1: bump versi patch
+jadwalkan tiap 6 jam: sync data dari staging
+```
+
+Bentuk "kapan" yang didukung: `tiap hari [jam H]`, `tiap <senin..minggu> [jam H]`, `tiap tanggal <1-31> [jam H]`, `tiap jam`, `tiap <N> jam` (N ∈ 1/2/3/4/6/8/12). Jam boleh `H`, `H:MM`, atau ditambahi `pagi/siang/sore/malam`; kalau dihilangkan default jam 08:00. Semua waktu WIB.
+
+Pas waktunya tiba, agent nge-classify departemen ulang (biar ikut kondisi kode terkini) terus langsung jalan — tanpa nunggu konfirmasi, karena kamu udah nyetujui waktu bikin jadwalnya. `daftar jadwal` buat lihat semua (bernomor), `hapus jadwal <nomor>` buat batalin. Hapus project juga otomatis ngehapus jadwalnya.
 
 ## Ngobrol santai + memori
 

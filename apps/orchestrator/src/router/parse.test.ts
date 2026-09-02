@@ -17,6 +17,9 @@ import {
   isStatusCommand,
   isStopCommand,
   parseReviewPr,
+  parseScheduleCommand,
+  isListSchedulesCommand,
+  parseDeleteSchedule,
   isConfirmYes,
   isConfirmNo,
   isConfirmYesWithCheckpoints,
@@ -90,6 +93,31 @@ test("parseReviewPr returns undefined without a number or the right shape", () =
   assert.equal(parseReviewPr("review kode di halaman login"), undefined);
   assert.equal(parseReviewPr("kenapa PR #12 gagal"), undefined);
   assert.equal(parseReviewPr("review PR #0"), undefined);
+});
+
+test("parseScheduleCommand splits the schedule phrase from the instruction on the first colon", () => {
+  assert.deepEqual(parseScheduleCommand("jadwalkan tiap senin jam 9: update dependencies"), {
+    scheduleText: "tiap senin jam 9",
+    instruction: "update dependencies",
+  });
+  assert.deepEqual(parseScheduleCommand("jadwal tiap hari: cek lint terus commit kalau bersih"), {
+    scheduleText: "tiap hari",
+    instruction: "cek lint terus commit kalau bersih",
+  });
+  // instruction may itself contain a colon
+  assert.deepEqual(parseScheduleCommand("jadwalkan tiap 6 jam: sync data: dari staging")?.instruction, "sync data: dari staging");
+  assert.equal(parseScheduleCommand("jadwalkan tiap hari"), undefined); // no colon / instruction
+  assert.equal(parseScheduleCommand("update dependencies tiap senin"), undefined);
+});
+
+test("isListSchedulesCommand / parseDeleteSchedule", () => {
+  assert.equal(isListSchedulesCommand("daftar jadwal"), true);
+  assert.equal(isListSchedulesCommand("  Lihat Jadwal  "), true);
+  assert.equal(isListSchedulesCommand("jadwalkan tiap hari: x"), false);
+  assert.equal(parseDeleteSchedule("hapus jadwal 2"), 2);
+  assert.equal(parseDeleteSchedule("batalkan jadwal 10"), 10);
+  assert.equal(parseDeleteSchedule("hapus jadwal"), undefined);
+  assert.equal(parseDeleteSchedule("hapus jadwal semua"), undefined);
 });
 
 test("isBareDeleteProjectCommand recognizes 'hapus project' with no alias", () => {

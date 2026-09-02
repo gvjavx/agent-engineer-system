@@ -283,6 +283,47 @@ export function parseReviewPr(text: string): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
+// "jadwalkan tiap senin jam 9: update dependencies" — the schedule phrase and
+// the instruction, split on the first colon. The schedule half is validated
+// separately by agent/schedule.ts's parseSchedule.
+const SCHEDULE_CMD_RE = /^(?:jadwal|jadwalkan|schedule)\s+(.+?)\s*:\s*(.+)$/is;
+
+export interface ScheduleCommand {
+  scheduleText: string;
+  instruction: string;
+}
+
+export function parseScheduleCommand(text: string): ScheduleCommand | undefined {
+  const m = text.trim().match(SCHEDULE_CMD_RE);
+  if (!m) return undefined;
+  const scheduleText = m[1].trim();
+  const instruction = m[2].trim();
+  if (!scheduleText || !instruction) return undefined;
+  return { scheduleText, instruction };
+}
+
+const LIST_SCHEDULES_PHRASES = new Set([
+  "daftar jadwal",
+  "list jadwal",
+  "lihat jadwal",
+  "jadwal apa aja",
+  "jadwal apa saja",
+  "cek jadwal",
+]);
+
+export function isListSchedulesCommand(text: string): boolean {
+  return LIST_SCHEDULES_PHRASES.has(text.trim().toLowerCase());
+}
+
+const DELETE_SCHEDULE_RE = /^(?:hapus|batalkan|batal|stop)\s+jadwal\s+(\d{1,3})\s*$/i;
+
+export function parseDeleteSchedule(text: string): number | undefined {
+  const m = text.trim().match(DELETE_SCHEDULE_RE);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return n > 0 ? n : undefined;
+}
+
 // Short enough to plausibly be a paraphrase of the command ("sambungin akun
 // figma saya dong"), too short to be a real task instruction that happens to
 // mention both words far apart ("bikin halaman yang bisa hubungkan desain

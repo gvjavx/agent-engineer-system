@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { enqueueProjectTask, cancelActiveTask, getActiveTaskId, planResume, MAX_RESUME_ATTEMPTS } from "./taskQueue.js";
-import { tasksRepo, type Task } from "../db/index.js";
+import { tasksRepo, scheduledTasksRepo, type Task } from "../db/index.js";
 
 const settle = () => new Promise((r) => setTimeout(r, 10));
 
@@ -110,6 +110,31 @@ test("tasksRepo.pendingForProject counts queued + running oldest-first", () => {
   assert.deepEqual(pending.map((t) => t.id), ["pf-a", "pf-b"]);
   tasksRepo.setStatus("pf-a", "done");
   tasksRepo.setStatus("pf-b", "cancelled");
+});
+
+test("scheduledTasksRepo: create, due filtering, markRan advances next_run_at, deleteForProject", () => {
+  const past = new Date(Date.now() - 60_000).toISOString();
+  const future = new Date(Date.now() + 3600_000).toISOString();
+  scheduledTasksRepo.create("sc-1", "628", "proj-sch", "update deps", "tiap hari jam 07:00", "{}", past);
+  scheduledTasksRepo.create("sc-2", "628", "proj-sch", "run lint", "tiap 6 jam", "{}", future);
+  scheduledTasksRepo.create("sc-3", "628", "proj-other", "x", "tiap hari jam 08:00", "{}", past);
+
+  assert.deepEqual(scheduledTasksRepo.listForNumber("628").map((s) => s.id), ["sc-1", "sc-2", "sc-3"]);
+
+  const dueIds = scheduledTasksRepo.due(new Date().toISOString()).map((s) => s.id);
+  assert.ok(dueIds.includes("sc-1") && dueIds.includes("sc-3"));
+  assert.ok(!dueIds.includes("sc-2"), "sc-2's next run is still in the future");
+
+  scheduledTasksRepo.markRan("sc-1", future);
+  const sc1 = scheduledTasksRepo.listForNumber("628").find((s) => s.id === "sc-1")!;
+  assert.equal(sc1.next_run_at, future);
+  assert.ok(sc1.last_run_at);
+  assert.equal(scheduledTasksRepo.due(new Date().toISOString()).some((s) => s.id === "sc-1"), false);
+
+  assert.equal(scheduledTasksRepo.deleteForProject("proj-sch"), 2);
+  assert.deepEqual(scheduledTasksRepo.listForProject("proj-sch"), []);
+  assert.equal(scheduledTasksRepo.listForNumber("628").length, 1); // sc-3 survives
+  scheduledTasksRepo.delete("sc-3");
 });
 
 test("tasksRepo.stats rolls up outcomes and average duration over the window", () => {

@@ -5,12 +5,14 @@ import {
   conversationRepo,
   projectsRepo,
   tasksRepo,
+  scheduledTasksRepo,
   auditLog,
   memoryRepo,
   chatHistoryRepo,
   sessionRepo,
   figmaAppConfigRepo,
   type Project,
+  type ScheduledTask,
 } from "../db/index.js";
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
 import {
@@ -26,6 +28,7 @@ import {
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
 import { gatherPrContext, reviewPr, postPrComment } from "../agent/prReview.js";
+import { parseSchedule, computeNextRun, formatWibInstant, type ScheduleSpec } from "../agent/schedule.js";
 import { recordInteraction } from "../agent/chatKb.js";
 import { chatKbRepo, kbStatsRepo, kbHintsRepo } from "../db/chatKb.js";
 import { noteKbHit, clearKbHit, consumeKbCorrection } from "../agent/chatKb.js";
@@ -75,6 +78,9 @@ import {
   isStatusCommand,
   isStopCommand,
   parseReviewPr,
+  parseScheduleCommand,
+  isListSchedulesCommand,
+  parseDeleteSchedule,
   isConfirmYes,
   isConfirmNo,
   isConfirmYesWithCheckpoints,
@@ -155,6 +161,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *status* — cek task yang lagi jalan, plus ringkasan 7 hari
 - *stop* — batalin task yang lagi jalan di project aktif
 - *review PR <nomor>* — aku baca diff PR di project aktif, kasih review, terus tanya dulu sebelum posting sebagai komentar di PR-nya
+- *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
 - Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
 - Kirim gambar (screenshot, mockup, dsb) bareng caption instruksinya (mis. "perbaiki tampilan sesuai screenshot ini") — aku bakal liat gambarnya dulu baru mulai kerjain. Kirim tanpa caption juga boleh, nanti aku ceritain apa yang aku liat terus tanya mau diapain.
 - Atau langsung ketik aja apa yang mau dikerjain (mis. "tambahin endpoint health check"). Aku bakal tebak departemen mana yang perlu ngerjain, kasih tau rencananya, baru mulai setelah kamu konfirmasi — kalau rencananya lebih dari satu fase, kamu bisa pilih "review tiap fase" biar aku pause dulu abis tiap fase kelar, nunggu kamu approve atau minta revisi sebelum lanjut.`;
@@ -655,6 +662,23 @@ export async function handleInboundMessage(
     return;
   }
 
+  const scheduleCommand = parseScheduleCommand(trimmed);
+  if (scheduleCommand) {
+    await handleAddScheduleCommand(from, scheduleCommand.scheduleText, scheduleCommand.instruction);
+    return;
+  }
+
+  if (isListSchedulesCommand(trimmed)) {
+    await handleListSchedulesCommand(from);
+    return;
+  }
+
+  const deleteScheduleNumber = parseDeleteSchedule(trimmed);
+  if (deleteScheduleNumber !== undefined) {
+    await handleDeleteScheduleCommand(from, deleteScheduleNumber);
+    return;
+  }
+
   if (isConnectFigmaCommand(trimmed)) {
     await handleConnectFigmaCommand(from);
     return;
@@ -1098,6 +1122,129 @@ async function handleReviewPrCommand(from: string, prNumber: number): Promise<vo
   );
 }
 
+const SCHEDULE_FORMAT_HELP =
+  'Format jadwalnya belum kebaca. Contoh yang didukung:\n' +
+  '- "jadwalkan tiap hari jam 7: <instruksi>"\n' +
+  '- "jadwalkan tiap senin jam 9: <instruksi>"\n' +
+  '- "jadwalkan tiap tanggal 1 jam 8: <instruksi>"\n' +
+  '- "jadwalkan tiap 6 jam: <instruksi>"\n' +
+  'Jam boleh ditambahi pagi/siang/sore/malam, atau dihilangkan (default jam 08:00).';
+
+async function handleAddScheduleCommand(from: string, scheduleText: string, instruction: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu, baru bisa aku jadwalin.');
+    return;
+  }
+  const project = projectsRepo.get(state.active_project_alias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${state.active_project_alias}" udah gak ada. Pilih project lain dulu.`);
+    return;
+  }
+
+  const parsed = parseSchedule(scheduleText);
+  if (!parsed) {
+    await sendWhatsApp(from, SCHEDULE_FORMAT_HELP);
+    return;
+  }
+
+  const id = crypto.randomUUID();
+  const nextRun = computeNextRun(parsed.spec, Date.now());
+  scheduledTasksRepo.create(
+    id,
+    from,
+    project.alias,
+    instruction,
+    parsed.label,
+    JSON.stringify(parsed.spec),
+    new Date(nextRun).toISOString()
+  );
+
+  await sendWhatsApp(
+    from,
+    `Oke, dijadwalin buat "${project.alias}": ${parsed.label}\n"${instruction}"\n\nPertama jalan ${formatWibInstant(nextRun)}. Ketik "daftar jadwal" buat lihat semua, "hapus jadwal <nomor>" buat batalin.`
+  );
+}
+
+async function handleListSchedulesCommand(from: string): Promise<void> {
+  const rows = scheduledTasksRepo.listForNumber(from);
+  if (rows.length === 0) {
+    await sendWhatsApp(from, 'Belum ada jadwal. Bikin lewat "jadwalkan tiap <kapan>: <instruksi>".');
+    return;
+  }
+  const lines = rows.map((s, i) => {
+    const next = formatWibInstant(Date.parse(s.next_run_at));
+    return `${i + 1}. [${s.project_alias}] ${s.schedule}\n   "${s.instruction}"\n   berikutnya: ${next}`;
+  });
+  await sendWhatsApp(from, `Jadwal aktif:\n\n${lines.join("\n\n")}\n\nHapus salah satu: "hapus jadwal <nomor>".`);
+}
+
+async function handleDeleteScheduleCommand(from: string, oneBasedIndex: number): Promise<void> {
+  const rows = scheduledTasksRepo.listForNumber(from);
+  const target = rows[oneBasedIndex - 1];
+  if (!target) {
+    await sendWhatsApp(
+      from,
+      rows.length === 0
+        ? "Belum ada jadwal yang bisa dihapus."
+        : `Gak ada jadwal nomor ${oneBasedIndex}. Ketik "daftar jadwal" buat lihat nomornya.`
+    );
+    return;
+  }
+  scheduledTasksRepo.delete(target.id);
+  await sendWhatsApp(from, `Oke, jadwal "${target.instruction}" (${target.schedule}) udah aku batalin.`);
+}
+
+// Called by the once-a-minute runner when a scheduled task's next_run_at has
+// passed. Re-classifies fresh (deps/code drift between fires) and pushes it
+// through the normal pipeline — no confirmation, the user already opted in
+// when they scheduled it.
+export async function fireScheduledTask(s: ScheduledTask): Promise<void> {
+  const project = projectsRepo.get(s.project_alias);
+  if (!project) {
+    scheduledTasksRepo.delete(s.id);
+    await sendWhatsApp(
+      s.from_number,
+      `Jadwal "${s.instruction}" aku hapus — project "${s.project_alias}" udah gak terdaftar.`
+    ).catch(() => {});
+    return;
+  }
+
+  const state = conversationRepo.get(s.from_number);
+  const providers = buildProviders(resolveManajemenProvider(s.from_number, state));
+  if (providers.length === 0) {
+    await sendWhatsApp(s.from_number, `Jadwal "${s.instruction}" kelewat — belum ada AI provider yang keatur.`).catch(() => {});
+    return;
+  }
+
+  await sendWhatsApp(s.from_number, `Jadwal rutin jalan sekarang buat "${project.alias}": "${s.instruction}"`);
+
+  const phases = await classifyDepartments(s.instruction, providers[0], new AbortController().signal);
+  await executeTask(s.from_number, project, s.instruction, phases, false);
+}
+
+const SCHEDULE_TICK_MS = 60_000;
+
+// The second background process (alongside session/idleNotifier.ts). Single
+// replica, so no distributed-lock concern. next_run_at is advanced BEFORE the
+// fire so a slow run can't double-trigger on the next tick.
+export function startScheduleRunner(): void {
+  const tick = async (): Promise<void> => {
+    const nowIso = new Date().toISOString();
+    for (const s of scheduledTasksRepo.due(nowIso)) {
+      try {
+        const spec = JSON.parse(s.spec_json) as ScheduleSpec;
+        const next = computeNextRun(spec, Date.now());
+        scheduledTasksRepo.markRan(s.id, new Date(next).toISOString());
+        await fireScheduledTask(s);
+      } catch (err) {
+        console.error(`Scheduled task ${s.id} failed to fire:`, err);
+      }
+    }
+  };
+  setInterval(() => void tick().catch((err) => console.error("Schedule tick failed:", err)), SCHEDULE_TICK_MS);
+}
+
 async function handleStopCommand(from: string): Promise<void> {
   const state = conversationRepo.get(from);
   if (!state?.active_project_alias) {
@@ -1432,7 +1579,10 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     parseUseProject(trimmed) !== undefined ||
     parseUseModel(trimmed) !== undefined ||
     parseListModelsForProvider(trimmed) !== undefined ||
-    parseReviewPr(trimmed) !== undefined
+    parseReviewPr(trimmed) !== undefined ||
+    parseScheduleCommand(trimmed) !== undefined ||
+    isListSchedulesCommand(trimmed) ||
+    parseDeleteSchedule(trimmed) !== undefined
   );
 }
 
@@ -1763,21 +1913,23 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
       projectsRepo.delete(pending.alias);
       conversationRepo.clearActiveProjectEverywhere(pending.alias);
       deleteProjectIndex(pending.alias);
+      const removedSchedules = scheduledTasksRepo.deleteForProject(pending.alias);
+      const scheduleNote = removedSchedules > 0 ? ` ${removedSchedules} jadwal buat project ini ikut kehapus.` : "";
       // Only for kind='git' — the clone is disposable (re-clonable from
       // GitHub). Never for kind='local': repo_url there IS the user's real
       // folder, removeWorkspace is never called on that path.
       if (project?.kind === "git") {
         try {
           removeWorkspace(pending.alias);
-          await sendWhatsApp(from, `Oke, "${pending.alias}" udah ke-unregister dan folder clone-nya di server udah kehapus.`);
+          await sendWhatsApp(from, `Oke, "${pending.alias}" udah ke-unregister dan folder clone-nya di server udah kehapus.${scheduleNote}`);
         } catch (err) {
           await sendWhatsApp(
             from,
-            `"${pending.alias}" udah ke-unregister, tapi gagal hapus folder clone-nya di server: ${err instanceof Error ? err.message : String(err)}. Mungkin perlu dihapus manual.`
+            `"${pending.alias}" udah ke-unregister, tapi gagal hapus folder clone-nya di server: ${err instanceof Error ? err.message : String(err)}. Mungkin perlu dihapus manual.${scheduleNote}`
           );
         }
       } else {
-        await sendWhatsApp(from, `Oke, "${pending.alias}" udah ke-unregister.`);
+        await sendWhatsApp(from, `Oke, "${pending.alias}" udah ke-unregister.${scheduleNote}`);
       }
       return true;
     }
