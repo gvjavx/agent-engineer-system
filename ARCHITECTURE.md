@@ -83,6 +83,7 @@ Disimpen sebagai JSON di kolom `conversation_state.pending_action` (per nomor Wh
 | `confirm_add_folder` | Konfirmasi ya/tidak sebelum daftarin folder lokal (peringatan: bot dapet akses baca/tulis penuh ke folder itu). |
 | `confirm_delete_project` | Konfirmasi ya/tidak sebelum unregister project (nggak nyentuh disk). |
 | `confirm_pipeline` | Konfirmasi rencana task (daftar fase departemen) sebelum dieksekusi. |
+| `confirm_multi_pipeline` | Sama, tapi buat "di a, b: ..." — satu rencana, dieksekusi jadi task terpisah per repo. |
 | `confirm_clear_memory` | Konfirmasi ya/tidak sebelum menghapus semua memori soal user itu. |
 | `confirm_ci_fix` | Konfirmasi ya/tidak buat nge-garap kegagalan CI yang baru kedeteksi (bawa log kegagalannya). |
 
@@ -220,6 +221,14 @@ Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task g
 "ya" di `handlePendingConfirmation` → `revertRange` (`git/repo.ts`): `checkout branch` → `pull --ff-only` → `git revert --no-commit <base>..<result>` → satu `git commit` → `push`. Kalau `revert` bentrok, atau ada merge commit di range (butuh `-m` mainline yang nggak dikirim di sini), atau range-nya kosong → `git revert --abort` + balikin error string buat diteruskan ke user, nggak throw. Deterministik, bukan lewat pipeline — sebangun sama `postPrComment` di `review PR`. Jaring pengaman buat `auto_merge = 'direct'` yang push langsung ke branch utama.
 
 `diff terakhir` (`isLastDiffCommand` → `handleLastDiffCommand`) pakai `base_sha`/`result_sha` yang sama: `diffBetween` (`git diff <base> <result>`) → kirim sebagai lampiran `.diff.txt` (`.diff`/`.patch` nggak ada di allowlist dokumen), dipotong di 4MB. Read-only.
+
+## `deploy` — ke Vercel
+
+`isDeployCommand` → `handleDeployCommand`. Token-gated: `config.deploy.vercelToken` kosong → cuma balesan minta isi `VERCEL_TOKEN` (pola "dibangun, butuh config" yang sama kayak Figma). Ada token → `ensureWorkspace`/`ensureLocalFolder`, terus `deployToVercel` (`agent/deploy.ts`) `execFile("npx", ["--yes", "vercel@latest", "--prod", "--yes", "--token", <tok>], { cwd })`, timeout 8 menit (+ AbortController 9 menit di handler). `extractDeployUrl` (murni, tested) narik URL `*.vercel.app` dari output, fallback ke https URL pertama. Bukan pipeline.
+
+## `di a, b: <instruksi>` — multi-repo
+
+`parseMultiRepo` — `di <daftar-alias>: <instruksi>`, tiap bagian sebelum titik dua yang dipisah koma harus token alias polos (`[A-Za-z0-9._-]+`), jadi "di halaman login: ..." nggak ke-match. → `handleMultiRepoInstruction`: 1 alias → `classifyAndPresentPlan` biasa (jadi juga shortcut nge-target project non-aktif). ≥2 alias → `classifyDepartments` **sekali** (instruksi sama → departemen kemungkinan sama, hemat call), satu preview rencana, `pending_action: confirm_multi_pipeline` (bawa `aliases`/`instruction`/`phases`). "ya" → loop `executeTask(..., announce=false)` per repo — masing-masing baris `tasks` sendiri, masuk antrian project-nya sendiri, jalan paralel (dibatasi `maxConcurrentTasks`), lapor hasil sendiri-sendiri. Satu combined "jalan di N repo" di depan. Nggak ada checkpoint mode buat multi.
 
 ## `tanya: <pertanyaan>` — Q&A read-only atas repo
 

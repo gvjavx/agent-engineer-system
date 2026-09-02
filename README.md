@@ -149,6 +149,8 @@ diff terakhir                        → kirim patch lengkap task terakhir sebag
 atur cek test <cmd> / atur cek lint <cmd> → command yang dijalanin sebelum commit; gagal = commit dibatalin ("atur cek test off" buat matiin)
 jadwalkan tiap <kapan>: <instruksi>   → task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies"
 tanya: <pertanyaan>                  → nanya soal kode di project aktif tanpa ngubah apa-apa (read-only)
+deploy                               → deploy project aktif ke Vercel, balikin URL live (butuh VERCEL_TOKEN)
+di <repo1>, <repo2>: <instruksi>     → instruksi yang sama di beberapa project sekaligus (paralel)
 daftar jadwal / hapus jadwal <nomor>  → lihat & batalkan task terjadwal
 bantuan                               → tampilkan daftar perintah
 ```
@@ -158,6 +160,14 @@ bantuan                               → tampilkan daftar perintah
 `batalin yang barusan` (atau `undo`, `batalin task terakhir`) — buat project git aktif, cari task terakhir yang beneran commit + push, tampilin instruksinya, minta konfirmasi. Kalau "ya": agent `git revert` semua commit dari task itu jadi satu commit revert baru di branch utama, terus push. History-nya gak dihapus — cuma ditambahin.
 
 Ini jaring pengaman buat mode `auto_merge = 'direct'` (default) yang push langsung ke branch utama tanpa PR. Kalau di atas task itu udah ada perubahan lain, atau range-nya kena merge commit, auto-revert-nya berhenti dan agent bilang biar dibenerin manual.
+
+## Deploy ke Vercel
+
+`deploy` (atau `publish`) — deploy project aktif ke Vercel lewat CLI-nya (`npx vercel --prod`), balikin URL production-nya. Butuh `VERCEL_TOKEN` di `.env` (bikin di [vercel.com/account/tokens](https://vercel.com/account/tokens)) — tanpa itu command-nya cuma bilang perlu diisi dulu. Deteksi framework-nya diserahin ke Vercel (zero-config), jadi mayoritas repo Next/Vite/CRA/static langsung jalan; yang gak kebangun ngasih error dari CLI-nya. Timeout 9 menit (unduhan CLI pertama kali bisa lama).
+
+## Instruksi ke beberapa repo sekaligus
+
+`di <repo1>, <repo2>, ...: <instruksi>` — mis. `di api-gateway, auth-service: bump dependency X terus jalanin test`. Agent klasifikasi departemen **sekali** buat instruksi itu, tunjukin satu rencana yang nyakup semua repo, dan setelah kamu konfirmasi sekali, tiap repo dapet task-nya sendiri yang jalan paralel (dibatasi `MAX_CONCURRENT_TASKS`). Satu repo gagal gak ganggu yang lain — masing-masing lapor hasilnya sendiri. Nama repo-nya harus persis alias yang kedaftar (kalau ada yang gak dikenal atau ada spasi, dianggap kalimat biasa dan gak ke-trigger).
 
 ## Tanya-jawab soal kode (read-only)
 

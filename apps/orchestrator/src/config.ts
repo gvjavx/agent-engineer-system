@@ -208,6 +208,12 @@ export const config = {
     enabled: (process.env.SELF_REVIEW_ENABLED ?? "false").toLowerCase() === "true",
   },
 
+  // "deploy" command. Undefined (no VERCEL_TOKEN) => the command explains it
+  // needs one and does nothing. See agent/deploy.ts.
+  deploy: {
+    vercelToken: process.env.VERCEL_TOKEN || undefined,
+  },
+
   // After a git task pushes, poll the GitHub Actions runs for the pushed
   // commit; a failure is sent to WhatsApp with the log and an offer to fix
   // it. On by default; a repo with no Actions just stays quiet. See

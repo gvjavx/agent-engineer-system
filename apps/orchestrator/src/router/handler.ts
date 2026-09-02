@@ -39,6 +39,7 @@ import { detectProjectChecks } from "../agent/projectChecks.js";
 import { watchCiForSha } from "../agent/ciWatch.js";
 import { scanDiffSmells } from "../agent/diffSmells.js";
 import { buildDigestText } from "../agent/digest.js";
+import { deployToVercel } from "../agent/deploy.js";
 import { gatherPrContext, reviewPr, postPrComment, listOpenPrs, formatPrList, mergePr } from "../agent/prReview.js";
 import { gatherIssueContext, buildIssueInstruction } from "../agent/issue.js";
 import { parseSchedule, computeNextRun, formatWibInstant, type ScheduleSpec } from "../agent/schedule.js";
@@ -115,6 +116,8 @@ import {
   isUndoLastCommand,
   isLastDiffCommand,
   parseAskRepo,
+  parseMultiRepo,
+  isDeployCommand,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -188,6 +191,8 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *batalin yang barusan* — revert commit dari task terakhir di project aktif (konfirmasi dulu). History-nya gak dihapus, cuma ditambah commit revert terus di-push
 - *diff terakhir* — kirim patch lengkap dari task terakhir sebagai lampiran file
 - *tanya: <pertanyaan>* — nanya soal kode di project aktif tanpa ngubah apa-apa (mis. "tanya: gimana alur login-nya"). Aku baca-baca kodenya terus jawab, gak nyentuh file
+- *deploy* — deploy project aktif ke Vercel (butuh VERCEL_TOKEN di .env), balikin URL live-nya
+- *di <repo1>, <repo2>: <instruksi>* — jalanin instruksi yang sama di beberapa project sekaligus (paralel, konfirmasi sekali)
 - *atur cek test <cmd>* / *atur cek lint <cmd>* — command yang aku jalanin sebelum commit di project aktif; kalau gagal, commit-nya dibatalin. "atur cek test off" buat matiin. Biasanya udah kedeteksi sendiri dari package.json pas project didaftarin
 - *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
 - Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
@@ -225,6 +230,15 @@ interface PendingGuidedFolder {
 interface PendingPipeline {
   type: "confirm_pipeline";
   alias: string;
+  instruction: string;
+  phases: PhaseSpec[];
+}
+
+// "di a, b: <instruksi>" — same instruction + department plan, run as a
+// separate task per repo (parallel, bounded by MAX_CONCURRENT_TASKS).
+interface PendingMultiPipeline {
+  type: "confirm_multi_pipeline";
+  aliases: string[];
   instruction: string;
   phases: PhaseSpec[];
 }
@@ -304,6 +318,7 @@ type PendingActionData =
   | PendingGuidedGitProject
   | PendingGuidedFolder
   | PendingPipeline
+  | PendingMultiPipeline
   | PendingClearMemory
   | PendingClarifyInstruction
   | PendingFigmaSetup
@@ -812,6 +827,17 @@ export async function handleInboundMessage(
 
   if (isRetryCommand(trimmed)) {
     await handleRetryCommand(from);
+    return;
+  }
+
+  if (isDeployCommand(trimmed)) {
+    await handleDeployCommand(from);
+    return;
+  }
+
+  const multi = parseMultiRepo(trimmed);
+  if (multi) {
+    await handleMultiRepoInstruction(from, multi.aliases, multi.instruction);
     return;
   }
 
@@ -1395,6 +1421,53 @@ async function handleLastDiffCommand(from: string): Promise<void> {
     Buffer.from(diff).toString("base64"),
     `Diff task terakhir: "${task.instruction}"\n${short(task.base_sha)}..${short(task.result_sha)}${note}`
   );
+}
+
+// "deploy" — ship the active project to Vercel. Token-gated: without
+// VERCEL_TOKEN it just says so. Not a pipeline — a bounded exec + parse.
+async function handleDeployCommand(from: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu.');
+    return;
+  }
+  const project = projectsRepo.get(state.active_project_alias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${state.active_project_alias}" udah gak ada.`);
+    return;
+  }
+  if (!config.deploy.vercelToken) {
+    await sendWhatsApp(
+      from,
+      "Deploy butuh VERCEL_TOKEN di .env dulu — bikin di vercel.com/account/tokens, isi, redeploy orchestrator-nya, terus coba lagi."
+    );
+    return;
+  }
+  if (getActiveTaskId(project.alias)) {
+    await sendWhatsApp(from, `Ada task jalan di "${project.alias}". Tunggu kelar dulu.`);
+    return;
+  }
+
+  let cwd: string;
+  try {
+    cwd = project.kind === "local" ? await ensureLocalFolder(project) : (await ensureWorkspace(project)).dir;
+  } catch (err) {
+    await sendWhatsApp(from, `Gagal nyiapin workspace: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  await sendWhatsApp(
+    from,
+    `Oke, aku deploy "${project.alias}" ke Vercel. Bisa makan beberapa menit (apalagi kalau CLI-nya baru pertama diunduh)...`
+  );
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 9 * 60_000);
+  try {
+    const res = await deployToVercel(cwd, config.deploy.vercelToken, ac.signal);
+    await sendWhatsApp(from, res.ok ? `Udah live: ${res.url}` : `Gagal deploy: ${res.error}`);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // "tanya: <pertanyaan>" — a read-only question about the active project's
@@ -2579,6 +2652,30 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
     return true;
   }
 
+  if (pending.type === "confirm_multi_pipeline") {
+    conversationRepo.setPendingAction(from, null);
+    const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
+    if (intent !== "yes") {
+      await sendWhatsApp(
+        from,
+        intent === "no" ? "Oke, gak jadi." : "Gak jelas jawabannya, jadi aku batalin. Kirim lagi kalau masih mau."
+      );
+      return true;
+    }
+    const live = pending.aliases
+      .map((a) => projectsRepo.get(a))
+      .filter((p): p is Project => p !== undefined);
+    if (live.length === 0) {
+      await sendWhatsApp(from, "Semua project-nya udah gak ada, jadi gak ada yang dijalanin.");
+      return true;
+    }
+    await sendWhatsApp(from, `Oke, jalan di ${live.length} repo: ${live.map((p) => p.alias).join(", ")}.`);
+    for (const project of live) {
+      await executeTask(from, project, pending.instruction, pending.phases, false, false);
+    }
+    return true;
+  }
+
   if (pending.type === "confirm_pipeline") {
     conversationRepo.setPendingAction(from, null);
     // Exact-match only — this option is always tap-generated via the third
@@ -2715,6 +2812,47 @@ async function handleFreeTextInstruction(from: string, instruction: string): Pro
   await classifyAndPresentPlan(from, project, instruction, true);
 }
 
+// "di a, b: <instruksi>" — classify departments once, show one plan covering
+// every repo, then on "ya" enqueue an independent task per repo. One repo
+// failing doesn't touch the others.
+async function handleMultiRepoInstruction(from: string, aliases: string[], instruction: string): Promise<void> {
+  const uniq = [...new Set(aliases)];
+  const missing = uniq.filter((a) => !projectsRepo.get(a));
+  if (missing.length) {
+    await sendWhatsApp(from, `Belum kedaftar: ${missing.join(", ")}. Ketik "daftar project" buat lihat yang ada.`);
+    return;
+  }
+
+  // One alias — just target that project through the normal single-repo flow.
+  if (uniq.length === 1) {
+    const project = projectsRepo.get(uniq[0])!;
+    conversationRepo.setActiveProject(from, uniq[0]);
+    await classifyAndPresentPlan(from, project, instruction, true);
+    return;
+  }
+
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
+  if (providers.length === 0) {
+    await sendWhatsApp(from, "Belum ada AI provider yang aktif, jadi aku belum bisa kerja.");
+    return;
+  }
+
+  await sendWhatsApp(from, `Bentar, aku pikirin dulu ini kerjaan departemen mana buat ${uniq.length} repo...`);
+  const phases = await classifyDepartments(instruction, providers[0], new AbortController().signal);
+  const planLines = phases.map(
+    (p, i) => `${i + 1}. ${p.department === "semua" ? "Satu langkah umum" : DEPARTMENT_LABELS[p.department]} — ${p.note}`
+  );
+
+  const pending: PendingMultiPipeline = { type: "confirm_multi_pipeline", aliases: uniq, instruction, phases };
+  conversationRepo.setPendingAction(from, JSON.stringify(pending));
+  await sendWhatsApp(
+    from,
+    `Rencananya (dijalanin sendiri-sendiri di tiap repo, paralel):\n${planLines.join("\n")}\n\nRepo: ${uniq.join(", ")}\n\nLanjut?`,
+    YES_NO_OPTIONS
+  );
+}
+
 // Split out of handleFreeTextInstruction so a resumed clarify_instruction
 // answer (handlePendingConfirmation) can re-enter here directly with
 // allowClarify=false, instead of re-running alias/project resolution and
@@ -2772,19 +2910,24 @@ async function executeTask(
   project: Project,
   instruction: string,
   phases: PhaseSpec[],
-  checkpoints: boolean
+  checkpoints: boolean,
+  // Multi-repo fan-out sends its own combined "jalan di N repo" line and
+  // passes false so each project doesn't also ack separately.
+  announce = true
 ): Promise<void> {
   const taskId = crypto.randomUUID();
   tasksRepo.create(taskId, project.alias, from, instruction, JSON.stringify(phases), checkpoints);
 
   // create() already inserted this row as 'queued', so it's counted here too.
   const ahead = Math.max(0, tasksRepo.pendingForProject(project.alias).length - 1);
-  await sendWhatsApp(
-    from,
-    ahead > 0
-      ? `Oke, aku terima. Ada ${ahead} task lain di depannya buat "${project.alias}", jadi ini antre dulu ya.`
-      : `Oke, aku terima ya, langsung dikerjain.`
-  );
+  if (announce) {
+    await sendWhatsApp(
+      from,
+      ahead > 0
+        ? `Oke, aku terima. Ada ${ahead} task lain di depannya buat "${project.alias}", jadi ini antre dulu ya.`
+        : `Oke, aku terima ya, langsung dikerjain.`
+    );
+  }
 
   enqueueProjectTask(project.alias, taskId, (abortController) =>
     runTaskPipeline({

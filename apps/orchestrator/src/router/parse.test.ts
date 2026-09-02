@@ -41,6 +41,8 @@ import {
   isUndoLastCommand,
   isLastDiffCommand,
   parseAskRepo,
+  parseMultiRepo,
+  isDeployCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -115,6 +117,27 @@ test("isLastDiffCommand matches the exact diff phrases only", () => {
   assert.ok(isLastDiffCommand("  Kirim Diff  "));
   assert.ok(!isLastDiffCommand("diff terakhir sama yang sebelumnya"));
   assert.ok(!isLastDiffCommand("kirim file config.ts"));
+});
+
+test("parseMultiRepo splits bare aliases before the colon from the instruction", () => {
+  assert.deepEqual(parseMultiRepo("di toko, api-gateway: bump dependency lodash"), {
+    aliases: ["toko", "api-gateway"],
+    instruction: "bump dependency lodash",
+  });
+  assert.deepEqual(parseMultiRepo("di solo: fix nav"), { aliases: ["solo"], instruction: "fix nav" });
+});
+
+test("parseMultiRepo ignores natural-language 'di ...:' that isn't an alias list", () => {
+  assert.equal(parseMultiRepo("di halaman login: tambahin captcha"), undefined);
+  assert.equal(parseMultiRepo("di toko, halaman utama: ubah warna"), undefined);
+  assert.equal(parseMultiRepo("di toko:"), undefined);
+});
+
+test("isDeployCommand recognises the deploy phrases only", () => {
+  assert.ok(isDeployCommand("deploy"));
+  assert.ok(isDeployCommand("  Deploy Ke Vercel  "));
+  assert.ok(isDeployCommand("publish"));
+  assert.ok(!isDeployCommand("deploy the auth service to staging"));
 });
 
 test("parseAskRepo needs the colon and returns the trimmed question", () => {

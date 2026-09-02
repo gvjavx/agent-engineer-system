@@ -403,6 +403,46 @@ export function parseScheduleCommand(text: string): ScheduleCommand | undefined 
   return { scheduleText, instruction };
 }
 
+// "di toko, api: bump dependency X" — run one instruction in several
+// registered projects. Every comma-part before the colon has to be a bare
+// alias token, so "di halaman login: ..." (natural language) doesn't match.
+const MULTI_REPO_RE = /^di\s+(.+?)\s*:\s*([\s\S]+)$/i;
+const ALIAS_TOKEN_RE = /^[A-Za-z0-9._-]+$/;
+
+export interface MultiRepoCommand {
+  aliases: string[];
+  instruction: string;
+}
+
+export function parseMultiRepo(text: string): MultiRepoCommand | undefined {
+  const m = text.trim().match(MULTI_REPO_RE);
+  if (!m) return undefined;
+  const aliases = m[1]
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const instruction = m[2].trim();
+  if (aliases.length === 0 || !instruction) return undefined;
+  if (!aliases.every((a) => ALIAS_TOKEN_RE.test(a))) return undefined;
+  return { aliases, instruction };
+}
+
+// "deploy" / "deploy dong" / "publish" — deploy the active project. The
+// platform is fixed (Vercel) for now; a "netlify" word switches nothing yet.
+const DEPLOY_PHRASES = new Set([
+  "deploy",
+  "deploy dong",
+  "deploy sekarang",
+  "deploy ke vercel",
+  "publish",
+  "publish dong",
+  "deploy in",
+]);
+
+export function isDeployCommand(text: string): boolean {
+  return DEPLOY_PHRASES.has(text.trim().toLowerCase());
+}
+
 const LIST_SCHEDULES_PHRASES = new Set([
   "daftar jadwal",
   "list jadwal",
