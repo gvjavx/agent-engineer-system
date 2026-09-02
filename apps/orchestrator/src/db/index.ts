@@ -273,6 +273,43 @@ export const tasksRepo = {
   markResumed(id: string): void {
     db.prepare("UPDATE tasks SET status = 'queued', resume_count = resume_count + 1, finished_at = NULL WHERE id = ?").run(id);
   },
+  // Rollup over the last `days` days for the "status" dashboard.
+  stats(days = 7): {
+    total: number;
+    done: number;
+    failed: number;
+    cancelled: number;
+    running: number;
+    avgMinutes: number | null;
+  } {
+    const rows = db
+      .prepare(
+        `SELECT status, created_at, finished_at FROM tasks WHERE created_at >= datetime('now', ?)`
+      )
+      .all(`-${Math.max(1, Math.floor(days))} days`) as {
+      status: Task["status"];
+      created_at: string;
+      finished_at: string | null;
+    }[];
+
+    const count = (s: Task["status"]) => rows.filter((r) => r.status === s).length;
+    const durations = rows
+      .filter((r) => r.status === "done" && r.finished_at)
+      .map((r) => (Date.parse(r.finished_at as string) - Date.parse(r.created_at)) / 60000)
+      .filter((m) => Number.isFinite(m) && m >= 0);
+    const avgMinutes = durations.length
+      ? Math.round((durations.reduce((a, b) => a + b, 0) / durations.length) * 10) / 10
+      : null;
+
+    return {
+      total: rows.length,
+      done: count("done"),
+      failed: count("failed"),
+      cancelled: count("cancelled"),
+      running: count("running") + count("queued"),
+      avgMinutes,
+    };
+  },
 };
 
 export const auditLog = {

@@ -92,6 +92,7 @@ Dua state lain — persetujuan bash berbahaya dan checkpoint antar-fase pipeline
 - `AI_PROVIDER_ORDER` (env, default `gemini,openrouter,qwen`) → tiap nama di-expand jadi satu `Provider` per API key yang dikonfigurasi buat nama itu (`GEMINI_API_KEY=key1,key2` → 2 provider instance terpisah). Hasilnya satu array panjang, urutan provider lalu urutan key.
 - `preferred_provider` (diset lewat "pakai model semua/\<departemen\> \<nama\>") memindahkan **seluruh grup key** provider itu ke depan array, tanpa mempersempit provider lain yang tetap ada di belakang sebagai fallback.
 - Kalau satu provider/key gagal atau kena rate limit di tengah `agent/loop.ts`, loop otomatis lanjut ke entry berikutnya dalam array yang sama — **tanpa mengulang task dari awal**, cuma retry giliran itu dengan provider baru.
+- **Cooldown pasca-429** (`agent/providerCooldown.ts`): tiap instance punya `id` = `nama@model#<hash8 API key>`. Pas dapet 429, `loop.ts` panggil `markRateLimited(id)` — instance itu di-park ~60 detik. `buildProviders` dibangun ulang tiap pesan dan pass terakhirnya `deprioritizeCooledDown` mindahin instance yang lagi park ke belakang array (urutan lain tetap), jadi `[0]` dan rantai fallback dua-duanya lompatin key/model yang lagi abis kuotanya tanpa nunggu retry-delay dulu. Bukan block keras — kalau semua opsi lain juga mati, instance yang lagi cooldown tetap dicoba di urutan paling belakang.
 
 Tiap provider (`providers/gemini.ts`, `providers/openAiCompatible.ts`) implement interface `Provider` yang sama (`chat(messages, tools, signal)`, opsional `describeImage(...)`) — kode di atasnya (loop, classifier, chat assistant) nggak pernah tahu lagi vendor mana yang lagi dipakai.
 
@@ -182,6 +183,10 @@ Opsional, mati default (`CHAT_KB_ENABLED`). Konsepnya: pertanyaan non-koding **b
 - `npm run export:dataset --workspace apps/orchestrator` (`scripts/export-kb-dataset.ts`) nge-dump baris `chat_model` jadi JSONL `{"messages":[{user},{assistant}]}` — dataset siap fine-tune/distilasi buat langkah "model lokal generatif".
 - **Usul sinonim otomatis**: pas text near-miss di mana dua pertanyaan cuma beda 1-2 token per sisi, pasangan token itu di-count di `kb_synonym_hints` (`recordSynonymHint`). `lihat memori` nampilin yang count ≥ 3; `npm run kb:hints` daftar lengkap. Sinonim beneran naik ke atas seiring sampel; tinggal ditambah manual ke peta `SYNONYM`.
 - `lupain semua` ikut ngehapus `interaction_kb` (`chatKbRepo.clearForNumber`); `chat_stats` nggak (statistik agregat, bukan data pribadi).
+
+## `status` — dasbor ringkas
+
+`handleStatusCommand` selain nunjukin task yang lagi jalan + posisi antrean, sekarang selalu nutup dengan `dashboardBlock`: rollup task 7 hari (`tasksRepo.stats` — selesai/gagal/batal + rata-rata durasi dari `finished_at - created_at`), baris chat-autonomy 30 hari yang sama kayak di `lihat memori` (`chatKbStatsLine`, cuma kalau `CHAT_KB_ENABLED`), dan daftar provider yang lagi di cooldown 429 (`coolingDownNow`, cuma kalau ada).
 
 ## Registrasi project & git
 

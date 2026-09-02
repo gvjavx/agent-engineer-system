@@ -30,6 +30,7 @@ import { chatKbRepo, kbStatsRepo, kbHintsRepo } from "../db/chatKb.js";
 import { noteKbHit, clearKbHit, consumeKbCorrection } from "../agent/chatKb.js";
 import { buildProviders, splitProviderSpec, primaryModelForProvider } from "../agent/runner.js";
 import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
+import { coolingDownNow } from "../agent/providerCooldown.js";
 import { classifyDepartments } from "../agent/classifier.js";
 import { classifyIntent } from "../agent/commandIntent.js";
 import { checkNeedsClarification } from "../agent/requestClarity.js";
@@ -959,6 +960,27 @@ async function handleListModelsCommand(from: string): Promise<void> {
   );
 }
 
+// Appended to every "status" reply: a 7-day task rollup, the chat-autonomy
+// line (when the KB is on), and any provider instance currently parked on a
+// rate-limit cooldown.
+function dashboardBlock(): string {
+  const t = tasksRepo.stats(7);
+  const taskLine =
+    t.total === 0
+      ? "Task 7 hari: belum ada."
+      : `Task 7 hari: ${t.done} selesai, ${t.failed} gagal, ${t.cancelled} batal` +
+        (t.running > 0 ? `, ${t.running} antre/jalan` : "") +
+        (t.avgMinutes != null ? ` · rata-rata ~${t.avgMinutes} mnt` : "");
+
+  const cooling = coolingDownNow();
+  const coolLine = cooling.length
+    ? `\nProvider nunggu cooldown: ${cooling.map((c) => `${c.id} (${c.secondsLeft}s)`).join(", ")}`
+    : "";
+
+  // chatKbStatsLine already starts with its own "\n\n30 hari: ..." prefix.
+  return `\n\n${taskLine}${coolLine}${chatKbStatsLine()}`;
+}
+
 async function handleStatusCommand(from: string): Promise<void> {
   const state = conversationRepo.get(from);
   if (!state?.active_project_alias) {
@@ -970,9 +992,9 @@ async function handleStatusCommand(from: string): Promise<void> {
     const recent = tasksRepo.recentForNumber(from, 1)[0];
     await sendWhatsApp(
       from,
-      recent
+      (recent
         ? `Gak ada task yang lagi jalan di "${state.active_project_alias}". Task terakhir statusnya: ${recent.status}.`
-        : `Gak ada task yang lagi jalan di "${state.active_project_alias}".`
+        : `Gak ada task yang lagi jalan di "${state.active_project_alias}".`) + dashboardBlock()
     );
   } else {
     const task = tasksRepo.get(activeTaskId);
@@ -992,7 +1014,8 @@ async function handleStatusCommand(from: string): Promise<void> {
       from,
       `Masih ngerjain task di "${state.active_project_alias}" nih:\n"${task?.instruction ?? ""}"` +
         (phaseNote ? `\n\nTerakhir: ${phaseNote}` : "") +
-        queueLine,
+        queueLine +
+        dashboardBlock(),
       [{ id: "stop", title: "Stop" }]
     );
   }

@@ -111,3 +111,27 @@ test("tasksRepo.pendingForProject counts queued + running oldest-first", () => {
   tasksRepo.setStatus("pf-a", "done");
   tasksRepo.setStatus("pf-b", "cancelled");
 });
+
+test("tasksRepo.stats rolls up outcomes and average duration over the window", () => {
+  // Other tests in this file share the in-memory DB, so assert on the delta.
+  const before = tasksRepo.stats(7);
+  for (const [id, status] of [
+    ["st-1", "done"],
+    ["st-2", "done"],
+    ["st-3", "failed"],
+    ["st-4", "cancelled"],
+    ["st-5", "running"],
+  ] as const) {
+    tasksRepo.create(id, "proj-stats", "62811", id, "[]", false);
+    tasksRepo.setStatus(id, status);
+  }
+  const after = tasksRepo.stats(7);
+  assert.equal(after.done - before.done, 2);
+  assert.equal(after.failed - before.failed, 1);
+  assert.equal(after.cancelled - before.cancelled, 1);
+  assert.equal(after.running - before.running, 1);
+  assert.equal(after.total - before.total, 5);
+  // finished_at is set by setStatus at ~the same instant as created_at here,
+  // so the average is a small non-negative number, not null.
+  assert.ok(after.avgMinutes != null && after.avgMinutes >= 0);
+});

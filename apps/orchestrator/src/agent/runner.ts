@@ -3,6 +3,7 @@ import { buildGitSystemPrompt, buildLocalFolderSystemPrompt } from "./systemProm
 import { runAgentLoop } from "./loop.js";
 import { GeminiProvider } from "./providers/gemini.js";
 import { OpenAiCompatibleProvider } from "./providers/openAiCompatible.js";
+import { deprioritizeCooledDown } from "./providerCooldown.js";
 import type { Provider } from "./types.js";
 
 export type RunTaskParams = {
@@ -111,9 +112,14 @@ export function applyPreferredProvider(
 // (see config.ts) — so adding a new provider never touches this file. Also
 // used by the "daftar model" WhatsApp command to check every configured
 // provider/key's live status.
+//
+// Final pass: any instance that 429'd recently is moved to the back
+// (agent/providerCooldown.ts), so [0] and the loop's fallback order both
+// skip a known-exhausted key/model until its cooldown lapses. Rebuilt per
+// message, so it always reflects the current cooldown state.
 export function buildProviders(preferredProviderSpec?: string): Provider[] {
   const providers = config.providerOrder.flatMap((name) => buildProvidersByName(name, undefined));
-  return applyPreferredProvider(providers, preferredProviderSpec, buildProvidersByName);
+  return deprioritizeCooledDown(applyPreferredProvider(providers, preferredProviderSpec, buildProvidersByName));
 }
 
 export async function runTask(params: RunTaskParams): Promise<RunTaskResult> {

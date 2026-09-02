@@ -74,11 +74,13 @@ export function toGeminiTools(tools: ToolSchema[]) {
 export class GeminiProvider implements Provider {
   name = "gemini";
   model: string;
+  id: string;
   private client: GoogleGenAI;
 
   constructor(options: GeminiProviderOptions) {
     this.client = new GoogleGenAI({ apiKey: options.apiKey });
     this.model = options.model;
+    this.id = `gemini@${options.model}#${crypto.createHash("sha1").update(options.apiKey).digest("hex").slice(0, 8)}`;
   }
 
   async chat(messages: ChatMessage[], tools: ToolSchema[], signal: AbortSignal): Promise<ProviderResponse> {

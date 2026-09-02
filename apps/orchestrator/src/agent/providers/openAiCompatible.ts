@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import OpenAI from "openai";
 import type {
   ChatCompletionMessageParam,
@@ -65,10 +66,12 @@ export function buildOpenAiVisionMessages(
 export class OpenAiCompatibleProvider implements Provider {
   name: string;
   model: string;
+  id: string;
   private client: OpenAI;
 
   constructor(options: OpenAiCompatibleProviderOptions) {
     this.name = options.name;
+    this.id = `${options.name}@${options.model}#${crypto.createHash("sha1").update(options.apiKey).digest("hex").slice(0, 8)}`;
     // maxRetries: 0 — the SDK's own default (2 retries) would silently
     // multiply PROVIDER_REQUEST_TIMEOUT_MS below on a timeout/network error;
     // this codebase's own fallback chain (agent/loop.ts) already handles

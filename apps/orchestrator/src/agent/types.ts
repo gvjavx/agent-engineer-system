@@ -62,6 +62,11 @@ export interface Provider {
   // in the chain share a name but not a model. Test doubles that don't care
   // (most of them) just omit it.
   model?: string;
+  // Optional stable identity for this exact instance: name + model + a short
+  // hash of the API key. agent/providerCooldown.ts keys a post-429 cooldown
+  // on it so one exhausted key doesn't drag its siblings down with it. Test
+  // doubles omit it and fall back to keying on `name`.
+  id?: string;
   chat(messages: ChatMessage[], tools: ToolSchema[], signal: AbortSignal): Promise<ProviderResponse>;
   // Optional: only providers whose underlying API actually supports vision
   // implement this. Absent means "this provider can't see images" —

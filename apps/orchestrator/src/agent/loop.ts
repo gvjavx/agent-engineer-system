@@ -2,6 +2,7 @@ import { auditLog } from "../db/index.js";
 import { config } from "../config.js";
 import { TOOL_SCHEMAS, executeTool, briefToolDescription, detectMilestone, isDangerousBashCommand } from "./tools.js";
 import { scanStagedFiles, formatSecretHits } from "./secretScan.js";
+import { markRateLimited } from "./providerCooldown.js";
 import { resolveFigmaTools, type FigmaToolsResult } from "./mcp/figmaTools.js";
 import type { ChatMessage, Provider, ToolSchema } from "./types.js";
 import { ProviderError } from "./types.js";
@@ -151,6 +152,13 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
         }
         const message = err instanceof ProviderError ? err.message : String(err);
         auditLog.add(taskId, "error", message);
+
+        if (err instanceof ProviderError && err.status === 429) {
+          // Park this exact instance so the next buildProviders() (next
+          // message/task) starts past it instead of re-hitting an exhausted
+          // key/model.
+          markRateLimited(provider.id ?? provider.name);
+        }
 
         if (err instanceof ProviderError && err.status === 429 && rateLimitRetries < RATE_LIMIT_MAX_RETRIES) {
           rateLimitRetries++;
