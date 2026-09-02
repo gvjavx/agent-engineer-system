@@ -1,11 +1,12 @@
 import path from "node:path";
 import { config } from "../config.js";
 
-// Local sentence-embedding model for the chat KB's semantic paraphrase match
-// (agent/chatKb.ts). Lazy: @huggingface/transformers and the model weights
-// (~120MB, downloaded once) only load when CHAT_KB_SEMANTIC is on. CPU-only,
-// no API, no rate limit. The download is cached next to the sqlite db so it
-// survives on the same volume/mount.
+// Local sentence-embedding model, shared by the chat KB's semantic paraphrase
+// match (agent/chatKb.ts) and code retrieval (agent/rag). Lazy:
+// @huggingface/transformers and the model weights (~120MB, downloaded once)
+// only load when CHAT_KB_SEMANTIC or RAG_ENABLED is on. CPU-only, no API, no
+// rate limit. The download is cached next to the sqlite db so it survives on
+// the same volume/mount.
 
 const MODEL_ID = process.env.CHAT_KB_EMBED_MODEL ?? "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
 const CACHE_DIR = path.join(path.dirname(config.dbPath), "hf-cache");
@@ -17,6 +18,10 @@ type Dtype = (typeof DTYPES)[number];
 const DTYPE: Dtype = (DTYPES as readonly string[]).includes(process.env.CHAT_KB_EMBED_DTYPE ?? "")
   ? (process.env.CHAT_KB_EMBED_DTYPE as Dtype)
   : "q8";
+
+// Stored alongside anything embedded with this model so a model/dtype change
+// forces a re-embed instead of comparing incomparable vectors.
+export const LOCAL_EMBED_IDENTITY = `local:${MODEL_ID}@${DTYPE}`;
 
 type FeaturePipe = (text: string, opts: Record<string, unknown>) => Promise<{ data: Float32Array | number[] }>;
 

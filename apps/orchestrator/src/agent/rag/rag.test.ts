@@ -18,7 +18,6 @@ const KEYWORDS = ["alpha", "beta", "gamma", "delta", "auth", "login", "user", "t
 function fakeEmbedder(overrides: Partial<EmbeddingProvider> = {}): EmbeddingProvider {
   return {
     name: "fake",
-    model: "fake-embed-1",
     identity: "fake-embed-1@8",
     async embed(texts) {
       return texts.map((t) => {
@@ -113,11 +112,7 @@ test("retrieveCodeContext returns undefined when the index is empty", async () =
 test("retrieveCodeContext ranks by similarity and returns a header + path:line blocks", async () => {
   const store = memoryStore();
   const embedder = fakeEmbedder();
-  const [authVec, userVec, betaVec] = await embedder.embed(
-    ["auth login auth", "user profile", "beta gamma"],
-    "document",
-    new AbortController().signal
-  );
+  const [authVec, userVec, betaVec] = await embedder.embed(["auth login auth", "user profile", "beta gamma"]);
   store.replaceFile("demo", "src/auth.ts", "h1", [
     { filePath: "src/auth.ts", startLine: 1, endLine: 20, content: "// src/auth.ts:1-20\nauth login auth", embedding: authVec },
   ]);

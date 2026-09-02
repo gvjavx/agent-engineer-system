@@ -126,7 +126,7 @@ Semua pakai pola yang sama: satu prompt, satu pesan `role:"user"`, minta jawaban
 
 Opsional, mati secara default (`RAG_ENABLED`). Tujuannya: ngasih agent potongan kode yang relevan di awal fase, biar turn budget nggak abis buat `grep`/`find`/`read_file` nyari file. Kode di `apps/orchestrator/src/agent/rag/`.
 
-- **Embedding**: `text-embedding-004` lewat SDK Gemini yang udah kepasang (`agent/rag/embeddingProvider.ts`). Interface `EmbeddingProvider` kepisah dari `Provider` (chat) — cuma Gemini yang implement, dan `RAG_ENABLED=true` tanpa key Gemini cuma jadi no-op, nggak pernah nggagalin task.
+- **Embedding**: model lokal yang sama kayak chat KB (`agent/localEmbedder.ts` via `LocalEmbeddingProvider` di `agent/rag/embeddingProvider.ts`) — CPU, tanpa API, tanpa rate limit. `RAG_ENABLED=true` tanpa `@huggingface/transformers` cuma jadi no-op, nggak pernah nggagalin task. `code_index_meta.embed_model` nyimpen identitas model; ganti model → reindex penuh.
 - **Penyimpanan**: tabel `code_files` / `code_chunks` / `code_index_meta` di `orchestrator.sqlite` (`db/rag.ts`). Vektor disimpen sebagai blob `Float32Array`; retrieval-nya cosine brute-force di JS (`cosineSimilarity` di `agent/rag/index.ts`) — cukup buat skala satu repo, `sqlite-vec` baru perlu kalau satu project nembus puluhan ribu chunk.
 - **Chunking**: window ~60 baris, overlap ~10 (`agent/rag/chunker.ts`), language-agnostic. Tiap chunk di-prefix `// <path>:<baris>` biar path ikut ke-embed. `shouldIndexFile` nyaring ekstensi + skip file > 256KB / minified / `node_modules` dsb.
 - **Indexing**: inkremental per-file lewat hash SHA-1 — cuma file yang hash-nya berubah yang di-embed ulang.
@@ -163,9 +163,10 @@ Opsional, mati default (`CHAT_KB_ENABLED`). Konsepnya: pertanyaan non-koding **b
   1. `isVolatile` (`agent/chatKb.ts`) — pas rekam, pertanyaan/jawaban dengan penanda time-sensitive (harga/kurs/cuaca/"sekarang"/"terbaru"/jabatan/tahun 20xx/...) disimpan sebagai `chat_volatile` yang nggak pernah dicocokin. Bias over-flag (rugi paling banter satu panggilan model ekstra).
   2. TTL `CHAT_KB_MAX_AGE_DAYS` (default 90) — baris lebih tua di-skip pas lookup, pertanyaan balik ke model, jawaban ditimpa (insert `chat_model` ngehapus baris `norm_question` yang sama dulu).
   3. Tanda umur — jawaban dari cache yang usianya >14 hari dapet embel-embel "(ini jawaban tersimpan dari ~sebulan lalu, bisa aja udah berubah)".
-  4. Koreksi user — kalau pesan **tepat setelah** balasan `kb` itu frasa koreksi ("salah", "yang terbaru dong", "itu udah lama", ...), baris tersimpan dihapus dan pertanyaan aslinya ditanya ulang ke model. Registry in-memory `lastKbHit` (window 6 menit), dicek di `tryHandleKbCorrection` sebelum command matching.
+  4. Koreksi user — kalau pesan **tepat setelah** balasan `kb` bereaksi ke situ, baris tersimpan dihapus. Tiga bentuk (`consumeKbCorrection`): koreksi polos ("salah") → tanya ulang model; koreksi + petunjuk ("salah, mestinya X yang terjadi") → tanya ulang model dengan petunjuk itu di prompt (`extraContext`, lookup di-skip); user kasih jawabannya ("jawabannya X" / "harusnya X") → langsung disimpan tanpa panggil model. Registry in-memory `lastKbHit` (window 6 menit), dicek di `tryHandleKbCorrection` sebelum command matching.
 - **Batasnya**: cuma bantu pertanyaan yang beneran diulang (wording mirip). Pertanyaan baru tetap ke Gemini. Jawaban tersimpan bisa salah kalau Gemini-nya yang salah — koreksi user (#4) jalan keluarnya.
 - `lihat memori` nunjukin jumlah tersimpan **plus statistik 30 hari**: total pertanyaan chat dan berapa persen dijawab tanpa AI (dari `chat_stats`, counter per `(hari, source)` yang di-bump di `handleChatMessage`). Ini angka pemutus — kalau persennya rendah dan tetap rendah, lapisan KB bisa dimatiin.
+- `npm run export:dataset --workspace apps/orchestrator` (`scripts/export-kb-dataset.ts`) nge-dump baris `chat_model` jadi JSONL `{"messages":[{user},{assistant}]}` — dataset siap fine-tune/distilasi buat langkah "model lokal generatif".
 - `lupain semua` ikut ngehapus `interaction_kb` (`chatKbRepo.clearForNumber`); `chat_stats` nggak (statistik agregat, bukan data pribadi).
 
 ## Registrasi project & git

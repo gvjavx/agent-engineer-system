@@ -6,22 +6,15 @@ import { config } from "../../config.js";
 import { auditLog } from "../../db/index.js";
 import { ragRepo, type RagStore, type StoredChunk } from "../../db/rag.js";
 import { chunkFile, shouldIndexFile } from "./chunker.js";
-import { GeminiEmbeddingProvider, type EmbeddingProvider } from "./embeddingProvider.js";
+import { LocalEmbeddingProvider, type EmbeddingProvider } from "./embeddingProvider.js";
 
 export { chunkFile, shouldIndexFile } from "./chunker.js";
 export type { EmbeddingProvider } from "./embeddingProvider.js";
 
-// The free embedding endpoint is Gemini-only here, so this needs a Gemini
-// key and returns undefined without one. Flag-agnostic on purpose — the
-// RAG-enabled check lives in resolveDeps below, and the chat KB (agent/
-// chatKb.ts) reuses this same builder under its own flag.
+// A local CPU embedding model — no key needed. Flag-agnostic on purpose: the
+// RAG-enabled check lives in resolveDeps below.
 export function buildEmbeddingProvider(): EmbeddingProvider | undefined {
-  if (!config.gemini || config.gemini.apiKeys.length === 0) return undefined;
-  return new GeminiEmbeddingProvider({
-    apiKeys: config.gemini.apiKeys,
-    model: config.rag.embedModel,
-    dim: config.rag.embedDim,
-  });
+  return new LocalEmbeddingProvider();
 }
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -147,11 +140,7 @@ async function indexProjectInner(params: IndexProjectParams): Promise<IndexProje
       store.replaceFile(projectAlias, rel, hash, []);
       continue;
     }
-    const vectors = await embedder.embed(
-      chunks.map((c) => c.content),
-      "document",
-      signal
-    );
+    const vectors = await embedder.embed(chunks.map((c) => c.content));
     const stored: StoredChunk[] = chunks.map((c, i) => ({
       filePath: c.filePath,
       startLine: c.startLine,
@@ -202,7 +191,7 @@ export async function retrieveCodeContext(params: RetrieveParams): Promise<strin
     const rows = store.allForRetrieval(projectAlias);
     if (rows.length === 0) return undefined;
 
-    const [queryVec] = await embedder.embed([query.slice(0, 8000)], "query", signal);
+    const [queryVec] = await embedder.embed([query.slice(0, 8000)]);
     if (!queryVec) return undefined;
 
     const ranked = rows

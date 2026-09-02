@@ -228,6 +228,14 @@ export const chatKbRepo = {
       )
       .all(fromNumber) as { id: number; question: string }[];
   },
+
+  // Every cacheable Q&A, for exporting a fine-tuning / distillation dataset.
+  // Excludes chat_volatile (stale by nature) and chat_arithmetic (calc.ts).
+  exportModelRows(): { question: string; answer: string; created_at: string }[] {
+    return db
+      .prepare("SELECT question, answer, created_at FROM interaction_kb WHERE kind = 'chat_model' ORDER BY id")
+      .all() as { question: string; answer: string; created_at: string }[];
+  },
 };
 
 const wibDay = (d: Date): string =>

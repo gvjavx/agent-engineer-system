@@ -1148,13 +1148,19 @@ async function tryHandleSemanticIntent(from: string, trimmed: string): Promise<b
   }
 }
 
-async function handleChatMessage(from: string, message: string, provider: Provider): Promise<void> {
+async function handleChatMessage(
+  from: string,
+  message: string,
+  provider: Provider,
+  extraContext?: string
+): Promise<void> {
   // Only feed prior turns when the message is a follow-up — otherwise a
   // free-tier model tends to echo the last answer into an unrelated reply.
   const history = needsConversationContext(message) ? chatHistoryRepo.recent(from, CHAT_HISTORY_TURNS) : [];
   const facts = memoryRepo.list(from).slice(-MAX_FACTS_IN_PROMPT);
   const result = await generateChatReply(message, history, facts, provider, new AbortController().signal, {
     fromNumber: from,
+    extraContext,
   });
   const reply = result?.reply ?? "Provider yang aktif lagi susah diajak mikir buat ini, coba lagi bentar ya.";
   await sendWhatsApp(from, reply);
@@ -1182,11 +1188,18 @@ async function handleChatMessage(from: string, message: string, provider: Provid
 }
 
 // Fires only when the previous reply to this sender came from the chat KB
-// and this message is a bare correction ("salah", "yang terbaru dong", ...).
-// Drops the stale stored answer and re-asks the model for the same question.
+// and this message reacts to it — a bare correction ("salah", "yang terbaru
+// dong"), a correction with a hint, or the right answer outright.
 async function tryHandleKbCorrection(from: string, trimmed: string): Promise<boolean> {
-  const original = consumeKbCorrection(from, trimmed);
-  if (!original) return false;
+  const c = consumeKbCorrection(from, trimmed);
+  if (!c) return false;
+
+  // User supplied the answer — store it, no model call.
+  if (c.setAnswer) {
+    chatKbRepo.insert(from, "chat_model", c.question, c.setAnswer);
+    await sendWhatsApp(from, `Oke, aku ganti jawabannya jadi: ${c.setAnswer}`);
+    return true;
+  }
 
   const state = conversationRepo.get(from);
   const providers = buildProviders(resolveManajemenProvider(from, state));
@@ -1195,7 +1208,7 @@ async function tryHandleKbCorrection(from: string, trimmed: string): Promise<boo
     return true;
   }
   await sendWhatsApp(from, "Oke, jawaban tadi aku hapus. Aku tanyain ulang ya.");
-  await handleChatMessage(from, original, providers[0]);
+  await handleChatMessage(from, c.question, providers[0], c.hint);
   return true;
 }
 

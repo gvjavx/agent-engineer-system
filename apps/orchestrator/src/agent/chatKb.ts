@@ -222,6 +222,21 @@ const CORRECTION_WINDOW_MS = 6 * 60 * 1000;
 const CORRECTION_RE =
   /^\s*(salah|itu salah|bukan[,. ]*(itu|tuh)?[,.]|keliru|kurang tepat|(nggak|gak|ga) (tepat|bener|benar|update|akurat)|(itu )?(udah|udh) (lama|basi|kadaluwarsa|kadaluarsa|outdated)|yang (baru|terbaru|update)|update dong|outdated|info(nya)? (lama|basi))\b/i;
 
+// The sender giving the right answer outright.
+const SET_ANSWER_RE =
+  /\b(jawaban(?:nya)?|yang (?:bener|benar)(?:nya)?|harus(?:nya)?|seharusnya|mestinya)\s+(?:adalah\s+|itu\s+|harus(?:nya)?\s+|seharusnya\s+|mestinya\s+|yaitu\s+|:\s*)?(.{2,})$/i;
+
+// Correction filler to peel off before deciding whether what's left is a
+// useful hint or just more "that's wrong" noise.
+const HINT_STRIP_RE =
+  /^((dan|tapi|soalnya|kan|padahal|itu|udah|udh|masih|lagi|lama|basi|yang|baru|terbaru|update|outdated|kadaluwarsa|kadaluarsa)(\s+|[,.]+|$))+/i;
+
+export interface KbCorrection {
+  question: string; // the original question, to re-answer or overwrite
+  setAnswer?: string; // sender supplied the answer -> store it directly, no model
+  hint?: string; // sender added detail -> re-ask the model with this as context
+}
+
 export function noteKbHit(fromNumber: string, question: string): void {
   lastKbHit.set(fromNumber, { question, at: Date.now() });
 }
@@ -230,18 +245,31 @@ export function clearKbHit(fromNumber: string): void {
   lastKbHit.delete(fromNumber);
 }
 
-// If `message` is the sender flagging the just-served cached answer as bad,
-// delete that stored answer and return the original question to re-answer
-// fresh. Returns undefined otherwise.
-export function consumeKbCorrection(fromNumber: string, message: string): string | undefined {
+// If `message` reacts to a just-served cached answer, drop the stale row and
+// return how to fix it. undefined = not a correction.
+export function consumeKbCorrection(fromNumber: string, message: string): KbCorrection | undefined {
   const pending = lastKbHit.get(fromNumber);
   if (!pending) return undefined;
   if (Date.now() - pending.at > CORRECTION_WINDOW_MS) {
     lastKbHit.delete(fromNumber);
     return undefined;
   }
-  if (!CORRECTION_RE.test(message)) return undefined;
+
+  const set = message.match(SET_ANSWER_RE);
+  const corr = message.match(CORRECTION_RE);
+  if (!set && !corr) return undefined;
+
   lastKbHit.delete(fromNumber);
   chatKbRepo.deleteByNorm(fromNumber, normalizeQuestion(pending.question));
-  return pending.question;
+
+  if (set) return { question: pending.question, setAnswer: set[2].trim() };
+
+  const rest = message
+    .slice(corr![0].length)
+    .replace(/\b(dong|sih|tuh|deh|kok|ya)\b/gi, " ")
+    .replace(/^[\s,.;:—-]+/, "")
+    .replace(HINT_STRIP_RE, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return { question: pending.question, hint: rest.length >= 4 ? rest : undefined };
 }

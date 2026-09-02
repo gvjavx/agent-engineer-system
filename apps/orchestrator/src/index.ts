@@ -98,7 +98,7 @@ if (recovered.length > 0) {
 app.listen(config.port, () => {
   console.log(`orchestrator listening on port ${config.port}`);
   startIdleSessionScanner();
-  // Load the chat-KB embedding model in the background so the first semantic
-  // lookup isn't the one that pays the load cost. No-op unless CHAT_KB_SEMANTIC.
-  if (config.chatKb.semanticFallback) warmLocalEmbedder();
+  // Load the local embedding model in the background so the first semantic
+  // lookup / code index isn't the one that pays the load cost.
+  if (config.chatKb.semanticFallback || config.rag.enabled) warmLocalEmbedder();
 });

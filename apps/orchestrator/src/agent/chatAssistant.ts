@@ -45,6 +45,9 @@ export interface GenerateChatReplyOpts {
   // calling the model. kb carries the chat-KB test seams.
   fromNumber?: string;
   kb?: ChatKbOpts;
+  // A re-answer after the user flagged the previous (cached) answer wrong.
+  // Added to the prompt as a correction note; also skips the cache lookup.
+  extraContext?: string;
 }
 
 // Real multi-turn messages (system + history + the new user turn) rather
@@ -60,7 +63,7 @@ export interface GenerateChatReplyOpts {
 const CONNECTIVITY_RE =
   /\b(internet|online|offline|web|browsing|browser|jaringan|koneksi|terhubung|nyambung|situs|website|google|real[\s-]?time|terkini|terbaru|berita|kabar terbaru|harga (sekarang|terkini|hari ini)|kurs|cuaca|skor|live)\b|akses.*(luar|data|internet)/i;
 
-function buildSystemPrompt(message: string, facts: string[]): string {
+function buildSystemPrompt(message: string, facts: string[], extraContext?: string): string {
   const factsBlock =
     facts.length > 0
       ? `Yang udah kamu tau soal user ini dari obrolan sebelumnya:\n${facts.map((f) => `- ${f}`).join("\n")}`
@@ -70,7 +73,11 @@ function buildSystemPrompt(message: string, facts: string[]): string {
     ? "\n\nYou have no internet access, no web search, and no live data in this chat. Say plainly you can't check or look things up — don't claim you're \"connected to the internet\" or can fetch the latest info. Answer only what you already know."
     : "";
 
-  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES} ${currentDateLine(message)}${connectivityBlock}
+  const correctionBlock = extraContext
+    ? `\n\nUser bilang jawaban kamu sebelumnya buat pertanyaan ini kurang tepat. Yang mereka bilang: "${extraContext}". Jawab ulang yang benar, perhitungkan itu.`
+    : "";
+
+  return `You are Mas ADE, a WhatsApp bot that helps people build or change software just by chatting in plain language. The user is just chatting/asking something — not instructing you to build or fix anything right now. ${STYLE_RULES} ${currentDateLine(message)}${connectivityBlock}${correctionBlock}
 
 The message history below is context only, to understand what's already been discussed — answer ONLY the user's newest message. Do not restate, recap, quote, or re-answer anything from an earlier turn unless the new message explicitly asks you to — not even one sentence of it.
 
@@ -82,9 +89,14 @@ Write it in second person ("kamu lagi ngerjain...", "kamu suka...") so it reads 
 FACT: tidak ada`;
 }
 
-function buildChatMessages(message: string, history: ChatTurn[], facts: string[]): ChatMessage[] {
+function buildChatMessages(
+  message: string,
+  history: ChatTurn[],
+  facts: string[],
+  extraContext?: string
+): ChatMessage[] {
   return [
-    { role: "system", content: buildSystemPrompt(message, facts) },
+    { role: "system", content: buildSystemPrompt(message, facts, extraContext) },
     ...history.map((turn) => ({ role: turn.role, content: turn.content }) satisfies ChatMessage),
     { role: "user", content: message },
   ];
@@ -125,16 +137,16 @@ export async function generateChatReply(
   if (arithmetic) return { reply: arithmetic, source: "arithmetic" };
 
   // Already answered a near-identical question for this user? Reuse it, no
-  // model call. No-ops unless the chat KB is on and has a close match.
+  // model call. Skipped on a deliberate re-answer (extraContext).
   let questionVector: Float32Array | undefined;
-  if (opts.fromNumber) {
+  if (opts.fromNumber && !opts.extraContext) {
     const kb = await lookupCachedAnswer({ fromNumber: opts.fromNumber, question: message }, opts.kb);
     if (kb.hit) return { reply: kb.hit, source: "kb" };
     questionVector = kb.queryVector;
   }
 
   try {
-    const response = await provider.chat(buildChatMessages(message, history, facts), [], signal);
+    const response = await provider.chat(buildChatMessages(message, history, facts, opts.extraContext), [], signal);
     if (response.type !== "text") return undefined;
     const result = parseChatReply(response.text);
     if (!result.reply) return undefined;

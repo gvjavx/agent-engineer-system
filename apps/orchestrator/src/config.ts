@@ -174,25 +174,18 @@ export const config = {
       }
     : undefined,
 
-  // Code retrieval for the agent loop (agent/rag/*). Off by default. Needs a
-  // Gemini key for the embedding endpoint — enabled without one just no-ops,
-  // since retrieval is additive and never blocks a task. Every numeric knob
-  // is clamped so a bad .env value can't produce a zero-size window or an
+  // Code retrieval for the agent loop (agent/rag/*). Off by default. Embeds
+  // with the local model (agent/localEmbedder.ts) — no key, no rate limit;
+  // needs @huggingface/transformers installed, absent it just no-ops.
+  // Retrieval is additive and never blocks a task. Every numeric knob is
+  // clamped so a bad .env value can't produce a zero-size window or an
   // unbounded context block.
   rag: {
     enabled: (process.env.RAG_ENABLED ?? "false").toLowerCase() === "true",
-    // gemini-embedding-001, not text-embedding-004 — the latter 404s on
-    // v1beta for a fresh AI Studio key (verified live). 3072-dim by default;
-    // we ask for 768 to keep the sqlite blobs small. Cosine is scale-
-    // invariant so the un-normalized truncated output is fine as-is.
-    embedModel: process.env.RAG_EMBED_MODEL ?? "gemini-embedding-001",
-    embedDim: Math.max(1, Number(process.env.RAG_EMBED_DIM ?? 768)),
     topK: Math.max(1, Number(process.env.RAG_TOP_K ?? 8)),
-    // Drop hits below this cosine score. Gemini embeddings have a high noise
-    // floor (unrelated code still scores ~0.5), so 0 keeps everything and
-    // relies on topK alone; ~0.6 trims weakly-related chunks once you've seen
-    // how a real repo scores. Left at 0 by default so a small repo isn't
-    // starved.
+    // Drop hits below this cosine score. The local model still scores
+    // unrelated code well above 0, so 0 keeps everything and relies on topK;
+    // raise it once you've seen how a real repo scores.
     minScore: Math.max(0, Number(process.env.RAG_MIN_SCORE ?? 0)),
     maxContextChars: Math.max(500, Number(process.env.RAG_MAX_CONTEXT_CHARS ?? 8000)),
     chunkLines: Math.max(10, Number(process.env.RAG_CHUNK_LINES ?? 60)),

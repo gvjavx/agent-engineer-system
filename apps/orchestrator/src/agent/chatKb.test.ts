@@ -127,21 +127,29 @@ test("an older-but-in-TTL cached answer gets an age note; a fresh one doesn't", 
   assert.equal((await lookup(from, "apa itu rest api")).hit, "Gaya arsitektur buat API."); // no note, fresh
 });
 
-test("consumeKbCorrection: only fires after a noted KB hit, only for a correction phrase, once", () => {
+test("consumeKbCorrection: only after a noted KB hit, only for a correction, once — with hint / set-answer", () => {
   const from = uid("correct");
 
-  // no prior KB hit -> nothing to correct
-  assert.equal(consumeKbCorrection(from, "salah"), undefined);
+  assert.equal(consumeKbCorrection(from, "salah"), undefined); // no prior KB hit
 
   noteKbHit(from, "siapa penemu telepon");
   assert.equal(consumeKbCorrection(from, "menarik juga"), undefined); // not a correction
-  assert.equal(consumeKbCorrection(from, "salah dong, itu udah lama"), "siapa penemu telepon");
+  assert.deepEqual(consumeKbCorrection(from, "salah dong, itu udah lama"), {
+    question: "siapa penemu telepon",
+    hint: undefined,
+  });
   assert.equal(consumeKbCorrection(from, "salah"), undefined); // already consumed
 
   noteKbHit(from, "q2");
-  assert.equal(consumeKbCorrection(from, "yang terbaru dong"), "q2");
+  assert.deepEqual(consumeKbCorrection(from, "salah, harusnya Antonio Meucci"), {
+    question: "q2",
+    setAnswer: "Antonio Meucci",
+  });
 
   noteKbHit(from, "q3");
+  assert.deepEqual(consumeKbCorrection(from, "jawabannya harusnya 42"), { question: "q3", setAnswer: "42" });
+
+  noteKbHit(from, "q4");
   clearKbHit(from);
   assert.equal(consumeKbCorrection(from, "salah"), undefined); // cleared by a non-KB reply
 });
@@ -152,7 +160,7 @@ test("consumeKbCorrection drops the stale row so the question stops matching", a
   assert.equal((await lookup(from, "siapa penemu bohlam")).hit, "Thomas Edison.");
 
   noteKbHit(from, "siapa penemu bohlam");
-  assert.equal(consumeKbCorrection(from, "itu udah lama"), "siapa penemu bohlam");
+  assert.deepEqual(consumeKbCorrection(from, "itu udah lama"), { question: "siapa penemu bohlam", hint: undefined });
   assert.equal((await lookup(from, "siapa penemu bohlam")).hit, undefined); // row deleted
 });
 
