@@ -7,6 +7,18 @@ export type InteractionKind = "chat_model" | "chat_arithmetic";
 
 export type EmbedFn = (texts: string[]) => Promise<Float32Array[]>;
 
+// Questions/answers whose correct answer changes over time — never cache
+// these, always let the model answer fresh. Over-flagging is fine: the cost
+// is an extra model call, not a wrong answer.
+const VOLATILE_QUESTION_RE =
+  /\b(hari ini|harini|sekarang|saat ini|kini|terkini|terbaru|terupdate|ter-update|update terbaru|barusan|belakangan ini|akhir-akhir ini|minggu ini|bulan ini|tahun ini|besok|kemarin|lusa)\b|\b(harga|kurs|nilai tukar|cuaca|suhu|ramalan|skor|klasemen|jadwal (tayang|pertandingan|bola)|stok|ketersediaan|antrian)\b|\b(presiden|wakil presiden|menteri|gubernur|wali ?kota|bupati|ceo|direktur utama|ketua umum|juara bertahan|pemenang terakhir)\b|\b(versi (berapa|terbaru|terakhir)|rilis terbaru|latest version|current version)\b|\bberapa (umur|usia)\b/i;
+const VOLATILE_ANSWER_RE =
+  /\bper \d{1,2}\s+\p{L}+\s+\d{4}\b|\b(saat ini|hingga (saat ini|kini)|sampai (saat ini|sekarang)|per hari ini|sejauh ini|as of)\b|(Rp\s?\d|USD\s?\d|\$\s?\d|\b\d+([.,]\d+)?\s?(ribu|juta|miliar|triliun|persen|%))|\b20(2[4-9]|[3-9]\d)\b/iu;
+
+export function isVolatile(question: string, answer: string): boolean {
+  return VOLATILE_QUESTION_RE.test(question) || VOLATILE_ANSWER_RE.test(answer);
+}
+
 export interface ChatKbOpts {
   // Test seams. `enabled` overrides the config flag; `embedFn` overrides the
   // local embedding model (semantic fallback only).
@@ -49,14 +61,18 @@ export async function recordInteraction(
   const { fromNumber, kind, question, answer, precomputedVector } = params;
   if (!question.trim() || !answer.trim()) return;
 
+  // A time-sensitive answer is still logged (stats, future distillation) but
+  // as 'chat_volatile', which no lookup ever matches.
+  const storedKind = kind === "chat_model" && isVolatile(question, answer) ? "chat_volatile" : kind;
+
   let id: number;
   try {
-    id = chatKbRepo.insert(fromNumber, kind, question, answer);
+    id = chatKbRepo.insert(fromNumber, storedKind, question, answer);
   } catch {
     return;
   }
 
-  if (kind === "chat_arithmetic" || !config.chatKb.semanticFallback) return;
+  if (storedKind !== "chat_model" || !config.chatKb.semanticFallback) return;
 
   if (precomputedVector) {
     try {
@@ -95,7 +111,7 @@ export async function lookupCachedAnswer(
   const norm = normalizeQuestion(params.question);
   if (!norm) return {};
 
-  const candidates = chatKbRepo.candidatesForLocalMatch(params.fromNumber);
+  const candidates = chatKbRepo.candidatesForLocalMatch(params.fromNumber, config.chatKb.maxAgeDays);
 
   const exact = candidates.find((c) => c.normQuestion === norm);
   if (exact) return { hit: exact.answer };
@@ -141,7 +157,7 @@ export async function semanticLookup(
   const queryVec = await embedOne(embedFn, question);
   if (!queryVec) return {};
 
-  const rows = chatKbRepo.embeddedForNumber(fromNumber).filter((r) => r.kind !== "chat_arithmetic");
+  const rows = chatKbRepo.embeddedForNumber(fromNumber, config.chatKb.maxAgeDays);
   let best = { score: -1, answer: "" };
   for (const row of rows) {
     const score = cosineSimilarity(queryVec, row.embedding);

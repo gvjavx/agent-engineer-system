@@ -135,15 +135,32 @@ function toFloat32Array(buf: Buffer): Float32Array {
   return new Float32Array(copy.buffer, copy.byteOffset, Math.floor(copy.length / 4));
 }
 
+// "created_at >= now - N days", or no bound when maxAgeDays <= 0.
+function ageClause(maxAgeDays: number): { sql: string; params: string[] } {
+  return maxAgeDays > 0
+    ? { sql: " AND created_at >= datetime('now', ?)", params: [`-${Math.floor(maxAgeDays)} days`] }
+    : { sql: "", params: [] };
+}
+
 export const chatKbRepo = {
   insert(fromNumber: string, kind: string, question: string, answer: string): number {
-    return Number(
-      db
+    const norm = normalizeQuestion(question);
+    const tx = db.transaction(() => {
+      // One live row per (sender, question) for the matchable kind — a
+      // re-answer (e.g. after a TTL expiry) replaces the stale one instead of
+      // piling up.
+      if (kind === "chat_model") {
+        db.prepare(
+          "DELETE FROM interaction_kb WHERE from_number = ? AND norm_question = ? AND kind = 'chat_model'"
+        ).run(fromNumber, norm);
+      }
+      return db
         .prepare(
           "INSERT INTO interaction_kb (from_number, kind, question, norm_question, answer) VALUES (?, ?, ?, ?, ?)"
         )
-        .run(fromNumber, kind, question, normalizeQuestion(question), answer).lastInsertRowid
-    );
+        .run(fromNumber, kind, question, norm, answer).lastInsertRowid;
+    });
+    return Number(tx());
   },
 
   setEmbedding(id: number, embedding: Float32Array): void {
@@ -161,22 +178,35 @@ export const chatKbRepo = {
   },
 
   // The local repeat match works off these — no embedding involved. Newest
-  // first so an exact match picks the most recent answer.
-  candidatesForLocalMatch(fromNumber: string): LocalCandidate[] {
+  // first so an exact match picks the most recent answer. maxAgeDays > 0
+  // drops rows older than the TTL so a stale answer expires instead of being
+  // served forever.
+  candidatesForLocalMatch(fromNumber: string, maxAgeDays = 0): LocalCandidate[] {
+    const age = ageClause(maxAgeDays);
     return db
       .prepare(
-        "SELECT answer, norm_question AS normQuestion FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND norm_question IS NOT NULL AND norm_question != '' ORDER BY id DESC"
+        "SELECT answer, norm_question AS normQuestion FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND norm_question IS NOT NULL AND norm_question != ''" +
+          age.sql +
+          " ORDER BY id DESC"
       )
-      .all(fromNumber) as LocalCandidate[];
+      .all(fromNumber, ...age.params) as LocalCandidate[];
   },
 
-  // For the opt-in semantic fallback only.
-  embeddedForNumber(fromNumber: string): InteractionRow[] {
+  // For the opt-in semantic fallback only. Same 'chat_model' + TTL restriction.
+  embeddedForNumber(fromNumber: string, maxAgeDays = 0): InteractionRow[] {
+    const age = ageClause(maxAgeDays);
     const rows = db
       .prepare(
-        "SELECT id, question, answer, kind, embedding FROM interaction_kb WHERE from_number = ? AND embedding IS NOT NULL"
+        "SELECT id, question, answer, kind, embedding FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND embedding IS NOT NULL" +
+          age.sql
       )
-      .all(fromNumber) as { id: number; question: string; answer: string; kind: string; embedding: Buffer }[];
+      .all(fromNumber, ...age.params) as {
+      id: number;
+      question: string;
+      answer: string;
+      kind: string;
+      embedding: Buffer;
+    }[];
     return rows.map((r) => ({ ...r, embedding: toFloat32Array(r.embedding) }));
   },
 

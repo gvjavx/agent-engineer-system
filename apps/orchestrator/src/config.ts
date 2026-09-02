@@ -219,6 +219,10 @@ export const config = {
     // unrelated ~0.13. 0.75 clears the rewordings and rejects the near-miss;
     // a wrong reuse is worse than a miss, so bias high.
     matchThreshold: Math.min(1, Math.max(0, Number(process.env.CHAT_KB_MATCH_THRESHOLD ?? 0.75))),
+    // A cached answer older than this is ignored — the question goes back to
+    // the model and the stored answer is replaced. Backstop for facts that
+    // drift but don't trip the "volatile question" heuristic. 0 = never expire.
+    maxAgeDays: Math.max(0, Math.floor(Number(process.env.CHAT_KB_MAX_AGE_DAYS ?? 90))),
   },
 
   // Optional — only set once someone actually registers a Figma OAuth app

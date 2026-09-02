@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { recordInteraction, lookupCachedAnswer, semanticLookup } from "./chatKb.js";
+import { recordInteraction, lookupCachedAnswer, semanticLookup, isVolatile } from "./chatKb.js";
 import { chatKbRepo, normalizeQuestion, kbStatsRepo } from "../db/chatKb.js";
+import { db } from "../db/index.js";
 
 // Random suffixes: these hit the real sqlite file (same as every other test
 // in this codebase), so from_numbers must not collide across runs.
@@ -64,6 +65,46 @@ test("lookupCachedAnswer returns {} when disabled or the store is empty for this
   await seed(from, "apa kabar", "baik");
   assert.deepEqual(await lookupCachedAnswer({ fromNumber: from, question: "apa kabar" }, { enabled: false }), {});
   assert.deepEqual(await lookup(uid("empty"), "apa pun"), {});
+});
+
+test("isVolatile flags time-sensitive questions/answers, not stable facts", () => {
+  assert.equal(isVolatile("siapa presiden indonesia sekarang", "..."), true);
+  assert.equal(isVolatile("berapa harga emas hari ini", "..."), true);
+  assert.equal(isVolatile("versi terbaru node berapa", "..."), true);
+  assert.equal(isVolatile("berapa kurs dolar", "..."), true);
+  assert.equal(isVolatile("apa kabar", "Kursnya sekitar Rp 16.000 per dolar."), true); // answer-side
+  assert.equal(isVolatile("cerita dong", "Per 1 Januari 2026 aturannya berubah."), true);
+
+  assert.equal(isVolatile("kapan hari kemerdekaan indonesia", "17 Agustus 1945."), false);
+  assert.equal(isVolatile("siapa penemu sepeda", "Karl von Drais, 1817."), false);
+  assert.equal(isVolatile("apa itu fotosintesis", "Proses tumbuhan mengubah cahaya jadi energi."), false);
+});
+
+test("a volatile question is logged but never becomes a cache candidate", async () => {
+  const from = uid("volatile");
+  await recordInteraction(
+    { fromNumber: from, kind: "chat_model", question: "siapa presiden indonesia sekarang", answer: "X." },
+    { enabled: true }
+  );
+  assert.equal(chatKbRepo.countForNumber(from), 1); // still recorded (stats / future distillation)
+  assert.equal((await lookup(from, "siapa presiden indonesia sekarang")).hit, undefined); // but not served
+});
+
+test("re-answering the same question replaces the stored row instead of piling up", async () => {
+  const from = uid("dedup");
+  await seed(from, "apa ibukota australia", "Sydney."); // wrong on purpose
+  await seed(from, "apa ibukota australia?", "Canberra."); // corrected
+  assert.equal(chatKbRepo.countForNumber(from), 1);
+  assert.equal((await lookup(from, "apa ibukota australia")).hit, "Canberra.");
+});
+
+test("a cached answer past the TTL is ignored", async () => {
+  const from = uid("ttl");
+  const id = chatKbRepo.insert(from, "chat_model", "apa itu blockchain", "Buku besar terdistribusi.");
+  db.prepare("UPDATE interaction_kb SET created_at = datetime('now', '-200 days') WHERE id = ?").run(id);
+
+  // default config TTL is 90 days -> this 200-day-old row shouldn't match
+  assert.equal((await lookup(from, "apa itu blockchain")).hit, undefined);
 });
 
 test("an arithmetic row is never a local-match candidate", async () => {
