@@ -38,6 +38,20 @@ test("classifyDepartments falls back to semua when nothing parses", async () => 
   assert.deepEqual(phases, [{ department: "semua", note: "do something vague" }]);
 });
 
+test("classifyDepartments takes the local model's answer when it parses, skipping the vendor", async () => {
+  let vendorCalls = 0;
+  const provider = fakeProvider(async () => {
+    vendorCalls++;
+    return { type: "text", text: "dev: from vendor" };
+  });
+  const phases = await classifyDepartments("fix bug", provider, new AbortController().signal, {
+    localEnabled: true,
+    localGen: async () => "dev: benerin bug-nya\nqa: pastiin nggak kebawa regresi",
+  });
+  assert.deepEqual(phases.map((p) => p.department), ["dev", "qa"]);
+  assert.equal(vendorCalls, 0);
+});
+
 test("classifyDepartments falls back to semua on tool_calls response or provider error", async () => {
   const toolCallsProvider = fakeProvider(async () => ({ type: "tool_calls", calls: [] }));
   assert.deepEqual(await classifyDepartments("x", toolCallsProvider, new AbortController().signal), [

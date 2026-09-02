@@ -83,24 +83,48 @@ export function isUsableLocalReply(text: string, system: string, question: strin
   return true;
 }
 
+async function runGeneration(
+  system: string,
+  userMessage: string,
+  maxTokens: number,
+  timeoutMs: number
+): Promise<string> {
+  const pipe = await getPipe();
+  const run = pipe([{ role: "system", content: system }, { role: "user", content: userMessage }], {
+    max_new_tokens: maxTokens,
+    do_sample: false,
+    return_full_text: false,
+  });
+  const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("local llm timeout")), timeoutMs));
+  const out = await Promise.race([run, timeout]);
+
+  const gen = out?.[0]?.generated_text;
+  const text = typeof gen === "string" ? gen : Array.isArray(gen) ? String(gen[gen.length - 1]?.content ?? "") : "";
+  return text.trim();
+}
+
 // Returns the model's reply, or undefined on any failure/timeout/empty or
 // low-quality output (caller then falls back to Gemini).
 export async function generateLocalReply(system: string, userMessage: string): Promise<string | undefined> {
   try {
-    const pipe = await getPipe();
-    const run = pipe([{ role: "system", content: system }, { role: "user", content: userMessage }], {
-      max_new_tokens: MAX_NEW_TOKENS,
-      do_sample: false,
-      return_full_text: false,
-    });
-    const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("local llm timeout")), GEN_TIMEOUT_MS));
-    const out = await Promise.race([run, timeout]);
-
-    const gen = out?.[0]?.generated_text;
-    const text =
-      typeof gen === "string" ? gen : Array.isArray(gen) ? String(gen[gen.length - 1]?.content ?? "") : "";
-    const trimmed = text.trim();
+    const trimmed = await runGeneration(system, userMessage, MAX_NEW_TOKENS, GEN_TIMEOUT_MS);
     return isUsableLocalReply(trimmed, system, userMessage) ? trimmed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// For the small structured classifiers (department routing, message intent,
+// yes/no, task-clarity) — see agent/localClassifier.ts. No isUsableLocalReply
+// gate: that one is tuned for chat and would throw away a legitimately terse
+// "ANSWER: yes". The caller parses the text and keeps it only if it parses,
+// so a garbled reply just falls through to the vendor. Shorter cap + timeout
+// since these outputs are a handful of lines at most.
+const CLASSIFY_TIMEOUT_MS = Math.min(GEN_TIMEOUT_MS, 15_000);
+export async function generateStructuredLocal(system: string, userMessage: string): Promise<string | undefined> {
+  try {
+    const t = await runGeneration(system, userMessage, 160, CLASSIFY_TIMEOUT_MS);
+    return t.length >= 2 ? t : undefined;
   } catch {
     return undefined;
   }

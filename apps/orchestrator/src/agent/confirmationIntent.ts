@@ -1,3 +1,4 @@
+import { runClassifier, type LocalClassifyOpts } from "./localClassifier.js";
 import type { Provider } from "./types.js";
 
 // Fallback for interpreting a reply to a yes/no confirmation (approving a
@@ -25,24 +26,26 @@ Message: "${text}"`;
 
 const ANSWER_LINE_RE = new RegExp(`^\\s*answer\\s*:\\s*(${CONFIRMATION_INTENTS.join("|")})\\s*$`, "i");
 
-function parseConfirmationIntentResponse(text: string): ConfirmationIntent {
+function parseConfirmationLine(text: string): { value: ConfirmationIntent } | undefined {
   for (const line of text.split("\n")) {
     const match = line.match(ANSWER_LINE_RE);
-    if (match) return match[1].toLowerCase() as ConfirmationIntent;
+    if (match) return { value: match[1].toLowerCase() as ConfirmationIntent };
   }
-  return "unclear";
+  return undefined;
 }
 
 export async function classifyConfirmationIntent(
   text: string,
   provider: Provider,
-  signal: AbortSignal
+  signal: AbortSignal,
+  opts?: LocalClassifyOpts
 ): Promise<ConfirmationIntent> {
-  try {
-    const response = await provider.chat([{ role: "user", content: buildConfirmationIntentPrompt(text) }], [], signal);
-    if (response.type !== "text") return "unclear";
-    return parseConfirmationIntentResponse(response.text);
-  } catch {
-    return "unclear";
-  }
+  return runClassifier({
+    prompt: buildConfirmationIntentPrompt(text),
+    provider,
+    signal,
+    parse: parseConfirmationLine,
+    fallback: "unclear",
+    opts,
+  });
 }

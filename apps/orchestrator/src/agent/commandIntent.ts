@@ -1,3 +1,4 @@
+import { runClassifier, type LocalClassifyOpts } from "./localClassifier.js";
 import type { Provider } from "./types.js";
 
 // One classifier call instead of two back-to-back ones (used to be
@@ -55,24 +56,30 @@ Message: "${text}"`;
 const INTENT_LINE_RE = new RegExp(`^\\s*intent\\s*:\\s*(${INTENTS.join("|")})\\s*$`, "i");
 
 // Line-by-line, forgiving on purpose — free-tier models don't always follow
-// formatting instructions exactly. Falls back to "task" (not one of the
-// fixed commands, not "chat") on any parse miss — the fail-closed property
-// that must never regress: an unparseable response may never resolve to a
-// fixed command or "chat" and skip the real task pipeline.
-function parseIntentResponse(text: string): Intent {
+// formatting instructions exactly. On any parse miss, runClassifier returns
+// the "task" fallback — the fail-closed property that must never regress: an
+// unparseable response may never resolve to a fixed command or "chat" and
+// skip the real task pipeline.
+function parseIntentLine(text: string): { value: Intent } | undefined {
   for (const line of text.split("\n")) {
     const match = line.match(INTENT_LINE_RE);
-    if (match) return match[1].toLowerCase() as Intent;
+    if (match) return { value: match[1].toLowerCase() as Intent };
   }
-  return "task";
+  return undefined;
 }
 
-export async function classifyIntent(text: string, provider: Provider, signal: AbortSignal): Promise<Intent> {
-  try {
-    const response = await provider.chat([{ role: "user", content: buildIntentPrompt(text) }], [], signal);
-    if (response.type !== "text") return "task";
-    return parseIntentResponse(response.text);
-  } catch {
-    return "task";
-  }
+export async function classifyIntent(
+  text: string,
+  provider: Provider,
+  signal: AbortSignal,
+  opts?: LocalClassifyOpts
+): Promise<Intent> {
+  return runClassifier({
+    prompt: buildIntentPrompt(text),
+    provider,
+    signal,
+    parse: parseIntentLine,
+    fallback: "task",
+    opts,
+  });
 }

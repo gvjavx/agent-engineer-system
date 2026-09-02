@@ -151,6 +151,35 @@ export const config = {
   workspacesDir: process.env.WORKSPACES_DIR ?? path.join(repoRoot, "workspaces"),
   dbPath: process.env.DB_PATH ?? path.join(repoRoot, "data", "orchestrator.sqlite"),
 
+  // This orchestrator's own source tree — where .env lives in local dev. Used
+  // by agent/sandbox.ts to keep it out of a sandboxed bash command's view.
+  repoRoot,
+
+  // Hardening for the agent's `bash` tool (agent/sandbox.ts). "auto" (default):
+  // scrub the child environment down to a safe allowlist always, and add
+  // bubblewrap filesystem confinement when running on Linux with `bwrap`
+  // installed. "bwrap": require bwrap (no fs confinement if it's missing, but
+  // still scrub env). "none": env scrub only, never bwrap. "off": disable both
+  // — the pre-hardening behavior.
+  sandbox: {
+    mode: (["auto", "bwrap", "none", "off"] as const).includes(
+      (process.env.AGENT_SANDBOX ?? "auto").toLowerCase() as "auto" | "bwrap" | "none" | "off"
+    )
+      ? ((process.env.AGENT_SANDBOX ?? "auto").toLowerCase() as "auto" | "bwrap" | "none" | "off")
+      : "auto",
+    keepEnv: (process.env.AGENT_SANDBOX_KEEP_ENV ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
+
+  // Blocks the agent from committing anything that matches a high-confidence
+  // leaked-credential shape, and warns once when a freshly registered repo
+  // already contains one. On by default. See agent/secretScan.ts.
+  secretScan: {
+    enabled: (process.env.SECRET_SCAN_ENABLED ?? "true").toLowerCase() !== "false",
+  },
+
   // Free AI providers, tried in this order with automatic fallback. Only
   // providers actually listed in AI_PROVIDER_ORDER get validated/built.
   providerOrder,

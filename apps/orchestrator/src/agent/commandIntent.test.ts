@@ -55,6 +55,29 @@ test("classifyIntent falls back to task when no line matches the format", async 
   assert.equal(await classifyIntent("x", provider, new AbortController().signal), "task");
 });
 
+test("classifyIntent takes a parseable local answer, skipping the vendor", async () => {
+  let vendorCalls = 0;
+  const provider = fakeProvider(async () => {
+    vendorCalls++;
+    return { type: "text", text: "INTENT: task" };
+  });
+  const out = await classifyIntent("halo", provider, new AbortController().signal, {
+    localEnabled: true,
+    localGen: async () => "INTENT: greeting",
+  });
+  assert.equal(out, "greeting");
+  assert.equal(vendorCalls, 0);
+});
+
+test("classifyIntent falls through to the vendor when the local answer doesn't parse", async () => {
+  const provider = fakeProvider(async () => ({ type: "text", text: "INTENT: chat" }));
+  const out = await classifyIntent("gimana menurutmu", provider, new AbortController().signal, {
+    localEnabled: true,
+    localGen: async () => "hmm hard to say",
+  });
+  assert.equal(out, "chat");
+});
+
 // The fail-closed property that must never regress: neither of these failure
 // modes may ever resolve to a fixed command or "chat" and skip the real task
 // pipeline.

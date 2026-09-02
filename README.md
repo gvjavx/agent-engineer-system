@@ -165,7 +165,7 @@ Selain repo GitHub, agent juga bisa kerja langsung di folder lokal mana pun di s
 - **Butuh konfirmasi sekali di awal.** Karena ini bukan clone sekali-pakai yang gampang dibuang kalau ada yang salah (beda dengan `workspaces/<nama>` untuk repo git), agent akan tanya izin dulu ("Boleh lanjut? Balas ya/tidak") sebelum folder itu benar-benar terdaftar. Sekali diizinkan, task-task berikutnya di folder itu jalan otonom penuh seperti project git — tidak ditanya lagi setiap kali.
 - Kalau folder itu kebetulan repo git juga, agent boleh pakai `git commit` dsb dari dalam task (lewat tool `bash`), tapi itu inisiatifnya sendiri — bukan alur wajib seperti project git biasa.
 
-**Soal keamanan**: tool `read_file`/`write_file`/`edit_file` dibatasi supaya tidak bisa keluar dari folder yang didaftarkan, tapi tool `bash` **tidak** dibatasi sejauh itu — command apa pun yang dijalankan agent lewat `bash` punya akses sebesar user OS yang menjalankan proses orchestrator. Jangan daftarkan folder yang isinya kamu tidak percaya sepenuhnya untuk diotak-atik.
+**Soal keamanan**: tool `read_file`/`write_file`/`edit_file` dibatasi supaya tidak bisa keluar dari folder yang didaftarkan. Tool `bash` dikurung oleh `AGENT_SANDBOX` (lihat "Catatan keamanan") — environment-nya sudah di-scrub, dan di Linux dengan `bubblewrap` cuma folder itu yang bisa ditulis — tapi kalau `bubblewrap` tidak terpasang, command bash tetap jalan dengan akses sebesar user OS yang menjalankan orchestrator. Tetap jangan daftarkan folder yang isinya kamu tidak percaya sepenuhnya untuk diotak-atik.
 
 ## Model AI per departemen
 
@@ -239,6 +239,8 @@ Pesan yang bukan command dan bukan instruksi kerjaan (pertanyaan, komentar, basa
 - Setiap command bash/git yang dijalankan agent dicatat di tabel `audit_log`.
 - Kirim `stop`/`batalkan` kapan saja untuk menghentikan task yang sedang berjalan — ini jaring pengaman minimal karena agent berjalan otonom penuh tanpa approval per langkah.
 - `.env` menyimpan kredensial sensitif — jangan commit ke git (`.gitignore` sudah menghandle ini).
+- **Sandbox `bash`** (`AGENT_SANDBOX`, default `auto`): command yang dijalankan agent lewat `bash` cuma dapat sebagian kecil environment — kunci vendor (`GEMINI_API_KEY`, dll), `INTERNAL_SHARED_SECRET`, token Meta nggak ikut, jadi nggak bisa dibocorkan lewat `env`/`printenv`. Di Linux dengan `bubblewrap` terpasang, ditambah pengurungan filesystem: cuma workspace task itu yang bisa ditulis, `.env` dan database aplikasi ini nggak kebaca sama sekali. Pasang `bubblewrap` di image Docker biar lapis ini aktif; `AGENT_SANDBOX=off` balik ke perilaku lama.
+- **Secret scan** (`SECRET_SCAN_ENABLED`, default on): agent nggak bisa `git commit` file yang mengandung pola kredensial jelas (GitHub PAT, AWS key, private key, dll) — commit-nya dibatalkan dan agent harus membereskan dulu. Repo yang baru didaftarkan juga discan sekali; kalau sudah terlanjur ada kredensial ke-commit, kamu dapat peringatan buat me-rotate-nya.
 
 ## Pengembangan lokal
 

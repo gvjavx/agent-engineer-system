@@ -1,6 +1,7 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { bashInvocation } from "./sandbox.js";
 import type { ToolSchema } from "./types.js";
 
 export const TOOL_SCHEMAS: ToolSchema[] = [
@@ -78,10 +79,12 @@ export function resolveWithin(cwd: string, relPath: string): string {
 }
 
 async function runBash(cwd: string, command: string): Promise<string> {
+  const { file, args, env } = bashInvocation(cwd, command);
   return new Promise((resolve) => {
-    exec(
-      command,
-      { cwd, timeout: 5 * 60 * 1000, maxBuffer: 10 * 1024 * 1024, shell: process.platform === "win32" ? "bash.exe" : "/bin/bash" },
+    execFile(
+      file,
+      args,
+      { cwd, timeout: 5 * 60 * 1000, maxBuffer: 10 * 1024 * 1024, env },
       (error, stdout, stderr) => {
         const exitCode = error && typeof error.code === "number" ? error.code : error ? 1 : 0;
         resolve(

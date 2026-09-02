@@ -16,9 +16,11 @@ ENV NODE_ENV=production
 
 # git: the agent shells out to it directly (via the Bash tool) to commit/push.
 # gh: used to open and merge pull requests. python3/make/g++: build better-sqlite3's
-# native binding if no prebuilt binary matches this platform.
+# native binding if no prebuilt binary matches this platform. bubblewrap: the
+# filesystem-confinement layer for the agent's bash tool (agent/sandbox.ts) —
+# without it AGENT_SANDBOX still scrubs the environment but can't jail the fs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git curl ca-certificates gnupg python3 make g++ \
+      git curl ca-certificates gnupg python3 make g++ bubblewrap \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \

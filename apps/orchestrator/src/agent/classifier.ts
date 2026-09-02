@@ -1,4 +1,5 @@
 import { DEPARTMENT_KEYS, DEPARTMENT_LABELS, type DepartmentKey } from "./departments.js";
+import { runClassifier, type LocalClassifyOpts } from "./localClassifier.js";
 import type { Provider } from "./types.js";
 
 export interface ClassifiedPhase {
@@ -47,18 +48,18 @@ const FALLBACK = (instruction: string): ClassifiedPhase[] => [{ department: "sem
 export async function classifyDepartments(
   instruction: string,
   provider: Provider,
-  signal: AbortSignal
+  signal: AbortSignal,
+  opts?: LocalClassifyOpts
 ): Promise<ClassifiedPhase[]> {
-  try {
-    const response = await provider.chat(
-      [{ role: "user", content: buildClassifierPrompt(instruction) }],
-      [],
-      signal
-    );
-    if (response.type !== "text") return FALLBACK(instruction);
-    const phases = parseClassifierResponse(response.text);
-    return phases.length > 0 ? phases : FALLBACK(instruction);
-  } catch {
-    return FALLBACK(instruction);
-  }
+  return runClassifier({
+    prompt: buildClassifierPrompt(instruction),
+    provider,
+    signal,
+    parse: (text) => {
+      const phases = parseClassifierResponse(text);
+      return phases.length > 0 ? { value: phases } : undefined;
+    },
+    fallback: FALLBACK(instruction),
+    opts,
+  });
 }

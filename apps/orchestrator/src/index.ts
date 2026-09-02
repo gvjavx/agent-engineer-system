@@ -9,6 +9,7 @@ import { isDuplicateInboundMessage } from "./inboundDedup.js";
 import { tasksRepo } from "./db/index.js";
 import { warmLocalEmbedder } from "./agent/localEmbedder.js";
 import { warmLocalLlm } from "./agent/localLlm.js";
+import { sandboxSummary } from "./agent/sandbox.js";
 
 const app = express();
 
@@ -98,6 +99,7 @@ if (recovered.length > 0) {
 
 app.listen(config.port, () => {
   console.log(`orchestrator listening on port ${config.port}`);
+  console.log(`bash sandbox: ${sandboxSummary()}`);
   startIdleSessionScanner();
   // Load the local models in the background so the first request isn't the
   // one that pays the load cost.

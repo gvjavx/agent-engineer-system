@@ -1,5 +1,7 @@
 import { auditLog } from "../db/index.js";
+import { config } from "../config.js";
 import { TOOL_SCHEMAS, executeTool, briefToolDescription, detectMilestone, isDangerousBashCommand } from "./tools.js";
+import { scanStagedFiles, formatSecretHits } from "./secretScan.js";
 import { resolveFigmaTools, type FigmaToolsResult } from "./mcp/figmaTools.js";
 import type { ChatMessage, Provider, ToolSchema } from "./types.js";
 import { ProviderError } from "./types.js";
@@ -202,10 +204,32 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
         if (milestone) await onProgress(milestone);
 
         if (call.name === "bash") {
-          const dangerReason = isDangerousBashCommand(String(call.input.command ?? ""));
+          const command = String(call.input.command ?? "");
+
+          // Hard stop before the agent commits a leaked credential — no
+          // WhatsApp override, unlike the risky-command gate below. The model
+          // has to actually remove the secret (or explain it's a false
+          // positive in its summary) instead of retrying the commit as-is.
+          if (config.secretScan.enabled && /\bgit\s+commit\b/.test(command)) {
+            const hits = scanStagedFiles(cwd, command);
+            if (hits.length > 0) {
+              auditLog.add(taskId, "note", `Commit diblok — kredensial kedetect: ${hits.map((h) => `${h.file}:${h.line}`).join(", ")}`);
+              messages.push({
+                role: "tool",
+                toolCallId: call.id,
+                toolName: call.name,
+                content:
+                  `Error: commit dibatalin. Ada yang kelihatan seperti kredensial di file yang mau di-commit:\n${formatSecretHits(hits)}\n\n` +
+                  "Keluarin nilainya dari file (pakai env var atau placeholder). Kalau ini beneran bukan secret, jangan commit apa adanya — jelasin di ringkasan akhir aja.",
+              });
+              continue;
+            }
+          }
+
+          const dangerReason = isDangerousBashCommand(command);
           if (dangerReason) {
             auditLog.add(taskId, "note", `Nunggu konfirmasi WhatsApp buat command berisiko (${dangerReason})`);
-            const approved = await onDangerousBash(String(call.input.command ?? ""), dangerReason);
+            const approved = await onDangerousBash(command, dangerReason);
             if (abortController.signal.aborted) {
               return { ok: false, cancelled: true, summary: "Oke, task-nya udah aku batalin." };
             }

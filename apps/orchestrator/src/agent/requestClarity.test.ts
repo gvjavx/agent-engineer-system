@@ -37,6 +37,29 @@ test("checkNeedsClarification returns undefined when no line matches the format"
   assert.equal(result, undefined);
 });
 
+test("checkNeedsClarification honours a local 'CLARIFY: tidak' without calling the vendor", async () => {
+  let vendorCalls = 0;
+  const provider = fakeProvider(async () => {
+    vendorCalls++;
+    return { type: "text", text: "CLARIFY: kepo dulu dong maunya apa" };
+  });
+  const result = await checkNeedsClarification("tambahin dark mode di settings", provider, new AbortController().signal, {
+    localEnabled: true,
+    localGen: async () => "CLARIFY: tidak",
+  });
+  assert.equal(result, undefined);
+  assert.equal(vendorCalls, 0);
+});
+
+test("checkNeedsClarification falls through to the vendor when the local reply has no CLARIFY line", async () => {
+  const provider = fakeProvider(async () => ({ type: "text", text: "CLARIFY: tidak" }));
+  const result = await checkNeedsClarification("bikin toko online sepatu", provider, new AbortController().signal, {
+    localEnabled: true,
+    localGen: async () => "sepertinya cukup jelas",
+  });
+  assert.equal(result, undefined);
+});
+
 // The fail-open property that must never regress: none of these failure
 // modes may ever block a real task from being planned.
 test("checkNeedsClarification returns undefined on a tool_calls response", async () => {

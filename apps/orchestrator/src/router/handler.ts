@@ -15,6 +15,7 @@ import {
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
 import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch, workspacePath } from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
+import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
 import { recordInteraction } from "../agent/chatKb.js";
 import { chatKbRepo, kbStatsRepo, kbHintsRepo } from "../db/chatKb.js";
 import { noteKbHit, clearKbHit, consumeKbCorrection } from "../agent/chatKb.js";
@@ -708,6 +709,22 @@ async function indexNewProjectInBackground(from: string, alias: string, mode: "g
     const project = projectsRepo.get(alias);
     if (!project) return;
     const cwd = mode === "git" ? workspacePath(alias) : project.repo_url;
+
+    if (config.secretScan.enabled) {
+      try {
+        const hits = scanTrackedFiles(cwd);
+        if (hits.length > 0) {
+          await sendWhatsApp(
+            from,
+            `Heads up soal "${alias}" — ada yang kelihatan kayak kredensial ke-commit di repo:\n${formatSecretHits(hits)}\n\n` +
+              "Mending di-rotate terus dibersihin dari history, jangan sampai kepakai orang lain."
+          );
+        }
+      } catch (err) {
+        console.error(`[secret-scan] gagal scan project "${alias}":`, err);
+      }
+    }
+
     const res = await indexProject({ projectAlias: alias, cwd, mode, signal: new AbortController().signal });
     if (!res.skipped && res.filesIndexed > 0) {
       await sendWhatsApp(

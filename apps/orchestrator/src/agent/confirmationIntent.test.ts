@@ -27,6 +27,29 @@ test("classifyConfirmationIntent falls back to unclear when no line matches the 
   assert.equal(await classifyConfirmationIntent("x", provider, new AbortController().signal), "unclear");
 });
 
+test("classifyConfirmationIntent uses a parseable local answer without calling the vendor", async () => {
+  let vendorCalls = 0;
+  const provider = fakeProvider(async () => {
+    vendorCalls++;
+    return { type: "text", text: "ANSWER: no" };
+  });
+  const out = await classifyConfirmationIntent("gas", provider, new AbortController().signal, {
+    localEnabled: true,
+    localGen: async () => "ANSWER: yes",
+  });
+  assert.equal(out, "yes");
+  assert.equal(vendorCalls, 0);
+});
+
+test("classifyConfirmationIntent falls through to the vendor when the local answer is garbled", async () => {
+  const provider = fakeProvider(async () => ({ type: "text", text: "ANSWER: no" }));
+  const out = await classifyConfirmationIntent("hmm", provider, new AbortController().signal, {
+    localEnabled: true,
+    localGen: async () => "i think maybe they mean yes?",
+  });
+  assert.equal(out, "no");
+});
+
 // The fail-closed property that must never regress: neither of these
 // failure modes may ever resolve to "yes".
 test("classifyConfirmationIntent falls back to unclear on a tool_calls response", async () => {

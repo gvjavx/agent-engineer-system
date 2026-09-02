@@ -1,3 +1,4 @@
+import { runClassifier, type LocalClassifyOpts } from "./localClassifier.js";
 import type { Provider } from "./types.js";
 
 // Runs once before classifyDepartments on a fresh free-text task instruction
@@ -22,27 +23,31 @@ Instruction: "${instruction}"`;
 
 const CLARIFY_LINE_RE = /^\s*clarify\s*:\s*(.+)$/im;
 
-// Fail-open on any parse miss/error — this must never block a real task over
-// a classifier hiccup, same property commandIntent.ts's "task" fallback
+// A present "CLARIFY:" line is a good read either way: "tidak" -> no question
+// (value undefined), anything else -> that's the question. No line at all ->
+// undefined, which lets runClassifier fall through to the vendor, and its
+// fallback is also undefined (fail-open) — this must never block a real task
+// over a classifier hiccup, same property commandIntent.ts's "task" fallback
 // protects.
-function parseClarityResponse(text: string): string | undefined {
+function parseClarityLine(text: string): { value: string | undefined } | undefined {
   const match = text.match(CLARIFY_LINE_RE);
   if (!match) return undefined;
   const value = match[1].trim();
-  if (value.toLowerCase() === "tidak") return undefined;
-  return value;
+  return { value: value.toLowerCase() === "tidak" ? undefined : value };
 }
 
 export async function checkNeedsClarification(
   instruction: string,
   provider: Provider,
-  signal: AbortSignal
+  signal: AbortSignal,
+  opts?: LocalClassifyOpts
 ): Promise<string | undefined> {
-  try {
-    const response = await provider.chat([{ role: "user", content: buildClarityPrompt(instruction) }], [], signal);
-    if (response.type !== "text") return undefined;
-    return parseClarityResponse(response.text);
-  } catch {
-    return undefined;
-  }
+  return runClassifier<string | undefined>({
+    prompt: buildClarityPrompt(instruction),
+    provider,
+    signal,
+    parse: parseClarityLine,
+    fallback: undefined,
+    opts,
+  });
 }
