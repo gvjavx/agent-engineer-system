@@ -31,6 +31,8 @@ try {
 }
 
 db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_kb_norm ON interaction_kb(from_number, norm_question)");
+// For CHAT_KB_SHARED lookups, which query by norm_question across every sender.
+db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_kb_norm_shared ON interaction_kb(norm_question)");
 
 // One counter per (day, reply source) so the chat-KB layer's payoff is a
 // single visible number: what share of chat replies skipped the model.
@@ -153,17 +155,29 @@ function ageClause(maxAgeDays: number): { sql: string; params: string[] } {
     : { sql: "", params: [] };
 }
 
+// CHAT_KB_SHARED: a lookup ranges over every sender's rows, not just the
+// caller's. Recording still stamps the real from_number (provenance +
+// per-sender "lupain semua").
+function senderClause(fromNumber: string, shared: boolean): { sql: string; params: string[] } {
+  return shared ? { sql: "", params: [] } : { sql: " AND from_number = ?", params: [fromNumber] };
+}
+
 export const chatKbRepo = {
-  insert(fromNumber: string, kind: string, question: string, answer: string): number {
+  insert(fromNumber: string, kind: string, question: string, answer: string, shared = false): number {
     const norm = normalizeQuestion(question);
     const tx = db.transaction(() => {
-      // One live row per (sender, question) for the matchable kind — a
-      // re-answer (e.g. after a TTL expiry) replaces the stale one instead of
-      // piling up.
+      // One live row per question for the matchable kind — a re-answer (e.g.
+      // after a TTL expiry) replaces the stale one instead of piling up.
+      // Scoped to the sender unless shared, where the store has one entry per
+      // question regardless of who last answered it.
       if (kind === "chat_model") {
-        db.prepare(
-          "DELETE FROM interaction_kb WHERE from_number = ? AND norm_question = ? AND kind = 'chat_model'"
-        ).run(fromNumber, norm);
+        if (shared) {
+          db.prepare("DELETE FROM interaction_kb WHERE norm_question = ? AND kind = 'chat_model'").run(norm);
+        } else {
+          db.prepare(
+            "DELETE FROM interaction_kb WHERE from_number = ? AND norm_question = ? AND kind = 'chat_model'"
+          ).run(fromNumber, norm);
+        }
       }
       return db
         .prepare(
@@ -189,37 +203,48 @@ export const chatKbRepo = {
   },
 
   // Drop the matchable row(s) for one question — used when the user says a
-  // served-from-cache answer is wrong or out of date.
-  deleteByNorm(fromNumber: string, norm: string): void {
-    db.prepare(
-      "DELETE FROM interaction_kb WHERE from_number = ? AND norm_question = ? AND kind = 'chat_model'"
-    ).run(fromNumber, norm);
+  // served-from-cache answer is wrong or out of date. In shared mode a wrong
+  // answer is wrong for everyone, so it's dropped regardless of who stored it.
+  deleteByNorm(fromNumber: string, norm: string, shared = false): void {
+    if (shared) {
+      db.prepare("DELETE FROM interaction_kb WHERE norm_question = ? AND kind = 'chat_model'").run(norm);
+    } else {
+      db.prepare(
+        "DELETE FROM interaction_kb WHERE from_number = ? AND norm_question = ? AND kind = 'chat_model'"
+      ).run(fromNumber, norm);
+    }
   },
 
   // The local repeat match works off these — no embedding involved. Newest
   // first so an exact match picks the most recent answer. maxAgeDays > 0
   // drops rows older than the TTL so a stale answer expires instead of being
-  // served forever.
-  candidatesForLocalMatch(fromNumber: string, maxAgeDays = 0): LocalCandidate[] {
+  // served forever. shared ranges over every sender's rows.
+  candidatesForLocalMatch(fromNumber: string, maxAgeDays = 0, shared = false): LocalCandidate[] {
+    const sender = senderClause(fromNumber, shared);
     const age = ageClause(maxAgeDays);
     return db
       .prepare(
-        "SELECT answer, norm_question AS normQuestion, created_at AS createdAt FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND norm_question IS NOT NULL AND norm_question != ''" +
+        "SELECT answer, norm_question AS normQuestion, created_at AS createdAt FROM interaction_kb" +
+          " WHERE kind = 'chat_model' AND norm_question IS NOT NULL AND norm_question != ''" +
+          sender.sql +
           age.sql +
           " ORDER BY id DESC"
       )
-      .all(fromNumber, ...age.params) as LocalCandidate[];
+      .all(...sender.params, ...age.params) as LocalCandidate[];
   },
 
   // For the opt-in semantic fallback only. Same 'chat_model' + TTL restriction.
-  embeddedForNumber(fromNumber: string, maxAgeDays = 0): InteractionRow[] {
+  embeddedForNumber(fromNumber: string, maxAgeDays = 0, shared = false): InteractionRow[] {
+    const sender = senderClause(fromNumber, shared);
     const age = ageClause(maxAgeDays);
     const rows = db
       .prepare(
-        "SELECT id, question, answer, kind, created_at AS createdAt, embedding FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND embedding IS NOT NULL" +
+        "SELECT id, question, answer, kind, created_at AS createdAt, embedding FROM interaction_kb" +
+          " WHERE kind = 'chat_model' AND embedding IS NOT NULL" +
+          sender.sql +
           age.sql
       )
-      .all(fromNumber, ...age.params) as {
+      .all(...sender.params, ...age.params) as {
       id: number;
       question: string;
       answer: string;
@@ -230,12 +255,13 @@ export const chatKbRepo = {
     return rows.map((r) => ({ ...r, embedding: toFloat32Array(r.embedding) }));
   },
 
-  nullForNumber(fromNumber: string): { id: number; question: string }[] {
+  nullForNumber(fromNumber: string, shared = false): { id: number; question: string }[] {
+    const sender = senderClause(fromNumber, shared);
     return db
       .prepare(
-        "SELECT id, question FROM interaction_kb WHERE from_number = ? AND embedding IS NULL AND kind != 'chat_arithmetic'"
+        "SELECT id, question FROM interaction_kb WHERE embedding IS NULL AND kind != 'chat_arithmetic'" + sender.sql
       )
-      .all(fromNumber) as { id: number; question: string }[];
+      .all(...sender.params) as { id: number; question: string }[];
   },
 
   // Every cacheable Q&A, for exporting a fine-tuning / distillation dataset.

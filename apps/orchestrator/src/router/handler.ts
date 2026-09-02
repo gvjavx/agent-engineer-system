@@ -1554,7 +1554,7 @@ async function tryHandleKbCorrection(from: string, trimmed: string): Promise<boo
 
   // User supplied the answer — store it, no model call.
   if (c.setAnswer) {
-    chatKbRepo.insert(from, "chat_model", c.question, c.setAnswer);
+    chatKbRepo.insert(from, "chat_model", c.question, c.setAnswer, config.chatKb.shared);
     await sendWhatsApp(from, `Oke, aku ganti jawabannya jadi: ${c.setAnswer}`);
     return true;
   }

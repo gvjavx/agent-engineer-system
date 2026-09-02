@@ -21,14 +21,20 @@ export function isVolatile(question: string, answer: string): boolean {
 
 export interface ChatKbOpts {
   // Test seams. `enabled` overrides the config flag; `embedFn` overrides the
-  // local embedding model (semantic fallback only).
+  // local embedding model (semantic fallback only); `shared` overrides
+  // CHAT_KB_SHARED (match/record across all senders vs just this one).
   enabled?: boolean;
   embedFn?: EmbedFn;
+  shared?: boolean;
 }
 export type RecordInteractionOpts = ChatKbOpts;
 
 function resolveEmbedFn(opts: ChatKbOpts): EmbedFn {
   return opts.embedFn ?? embedLocal;
+}
+
+function resolveShared(opts: ChatKbOpts): boolean {
+  return opts.shared ?? config.chatKb.shared;
 }
 
 function tokenSet(norm: string): Set<string> {
@@ -77,7 +83,7 @@ export async function recordInteraction(
 
   let id: number;
   try {
-    id = chatKbRepo.insert(fromNumber, storedKind, question, answer);
+    id = chatKbRepo.insert(fromNumber, storedKind, question, answer, resolveShared(opts));
   } catch {
     return;
   }
@@ -143,7 +149,8 @@ export async function lookupCachedAnswer(
   const norm = normalizeQuestion(params.question);
   if (!norm) return {};
 
-  const candidates = chatKbRepo.candidatesForLocalMatch(params.fromNumber, config.chatKb.maxAgeDays);
+  const shared = resolveShared(opts);
+  const candidates = chatKbRepo.candidatesForLocalMatch(params.fromNumber, config.chatKb.maxAgeDays, shared);
 
   const exact = candidates.find((c) => c.normQuestion === norm);
   if (exact) return { hit: exact.answer + ageNote(exact.createdAt) };
@@ -195,7 +202,7 @@ export async function semanticLookup(
   const queryVec = await embedOne(embedFn, question);
   if (!queryVec) return {};
 
-  const rows = chatKbRepo.embeddedForNumber(fromNumber, config.chatKb.maxAgeDays);
+  const rows = chatKbRepo.embeddedForNumber(fromNumber, config.chatKb.maxAgeDays, resolveShared(opts));
   let best = { score: -1, answer: "", createdAt: "" };
   for (const row of rows) {
     const score = cosineSimilarity(queryVec, row.embedding);
@@ -219,7 +226,7 @@ const backfillInFlight = new Set<string>();
 // download). Best-effort, capped.
 export async function backfillNullEmbeddings(fromNumber: string, opts: ChatKbOpts = {}): Promise<void> {
   if (!config.chatKb.semanticFallback || backfillInFlight.has(fromNumber)) return;
-  const pending = chatKbRepo.nullForNumber(fromNumber).slice(0, BACKFILL_MAX_PER_RUN);
+  const pending = chatKbRepo.nullForNumber(fromNumber, resolveShared(opts)).slice(0, BACKFILL_MAX_PER_RUN);
   if (pending.length === 0) return;
 
   const embedFn = resolveEmbedFn(opts);
@@ -285,7 +292,7 @@ export function consumeKbCorrection(fromNumber: string, message: string): KbCorr
   if (!set && !corr) return undefined;
 
   lastKbHit.delete(fromNumber);
-  chatKbRepo.deleteByNorm(fromNumber, normalizeQuestion(pending.question));
+  chatKbRepo.deleteByNorm(fromNumber, normalizeQuestion(pending.question), config.chatKb.shared);
 
   if (set) return { question: pending.question, setAnswer: set[2].trim() };
 

@@ -245,6 +245,14 @@ export const config = {
     // the model and the stored answer is replaced. Backstop for facts that
     // drift but don't trip the "volatile question" heuristic. 0 = never expire.
     maxAgeDays: Math.max(0, Math.floor(Number(process.env.CHAT_KB_MAX_AGE_DAYS ?? 90))),
+    // With more than one number in ALLOWED_SENDERS: when on, a question one
+    // sender already asked is answered from the store for any sender, not
+    // just the one who first asked it — higher hit rate, fewer vendor calls.
+    // Only non-volatile factual Q&A is ever stored, so there's nothing
+    // sender-specific to leak. "lupain semua" still only clears the caller's
+    // own contributions. Off by default; a single-sender setup sees no
+    // difference either way.
+    shared: (process.env.CHAT_KB_SHARED ?? "false").toLowerCase() === "true",
   },
 
   // A small local instruct model (agent/localLlm.ts) that answers non-coding

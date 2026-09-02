@@ -262,3 +262,47 @@ test("clearForNumber wipes a sender's stored interactions", async () => {
   chatKbRepo.clearForNumber(from);
   assert.equal(chatKbRepo.countForNumber(from), 0);
 });
+
+// --- CHAT_KB_SHARED ------------------------------------------------------
+
+test("shared: a question one sender answered is served to a different sender", async () => {
+  const asker = uid("sh-a");
+  const other = uid("sh-b");
+  const q = `apa ibukota ${uid("prov")}`;
+  await recordInteraction({ fromNumber: asker, kind: "chat_model", question: q, answer: "Kota X." }, { enabled: true, shared: true });
+
+  // Non-shared lookup for `other` still misses...
+  assert.deepEqual(await lookupCachedAnswer({ fromNumber: other, question: q }, { enabled: true }), {});
+  // ...shared lookup for `other` hits the asker's row.
+  const hit = await lookupCachedAnswer({ fromNumber: other, question: q }, { enabled: true, shared: true });
+  assert.equal(hit.hit, "Kota X.");
+});
+
+test("shared: re-answering dedups to a single global row regardless of who answered", async () => {
+  const a = uid("sh-dedup-a");
+  const b = uid("sh-dedup-b");
+  const q = `berapa ${uid("x")} tambah satu`;
+  await recordInteraction({ fromNumber: a, kind: "chat_model", question: q, answer: "Dua." }, { enabled: true, shared: true });
+  await recordInteraction({ fromNumber: b, kind: "chat_model", question: q, answer: "Jawaban baru." }, { enabled: true, shared: true });
+
+  const rows = chatKbRepo.candidatesForLocalMatch(a, 0, true).filter((c) => c.normQuestion === normalizeQuestion(q));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].answer, "Jawaban baru.");
+});
+
+test("shared: a correction drops the shared row so nobody keeps getting the wrong answer", async () => {
+  const asker = uid("sh-corr-a");
+  const other = uid("sh-corr-b");
+  const q = `siapa ${uid("penemu")}`;
+  await recordInteraction({ fromNumber: asker, kind: "chat_model", question: q, answer: "Salah." }, { enabled: true, shared: true });
+  chatKbRepo.deleteByNorm(asker, normalizeQuestion(q), true);
+  assert.deepEqual(await lookupCachedAnswer({ fromNumber: other, question: q }, { enabled: true, shared: true }), {});
+});
+
+test("shared off (default): senders stay isolated", async () => {
+  const a = uid("iso-a");
+  const b = uid("iso-b");
+  const q = `apa itu ${uid("term")}`;
+  await recordInteraction({ fromNumber: a, kind: "chat_model", question: q, answer: "Definisi." }, { enabled: true });
+  assert.deepEqual(await lookupCachedAnswer({ fromNumber: b, question: q }, { enabled: true }), {});
+});
