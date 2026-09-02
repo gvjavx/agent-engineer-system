@@ -1,5 +1,5 @@
 import { config } from "../config.js";
-import { chatKbRepo, normalizeQuestion } from "../db/chatKb.js";
+import { chatKbRepo, kbHintsRepo, normalizeQuestion } from "../db/chatKb.js";
 import { cosineSimilarity } from "./rag/index.js";
 import { embedLocal } from "./localEmbedder.js";
 
@@ -40,6 +40,16 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   let inter = 0;
   for (const t of a) if (b.has(t)) inter++;
   return inter / (a.size + b.size - inter);
+}
+
+// On a text near-miss where the two questions differ by only a token or two
+// each side, those tokens are candidate synonyms — count the pairs so a
+// genuine one rises to the top over many samples.
+function recordSynonymHint(q: Set<string>, stored: Set<string>): void {
+  const qOnly = [...q].filter((t) => !stored.has(t));
+  const sOnly = [...stored].filter((t) => !q.has(t));
+  if (!qOnly.length || !sOnly.length || qOnly.length > 2 || sOnly.length > 2) return;
+  for (const a of qOnly) for (const b of sOnly) kbHintsRepo.bump(a, b);
 }
 
 // Record a chat Q&A. Fire-and-forget from the handler — a failure here must
@@ -139,15 +149,16 @@ export async function lookupCachedAnswer(
   if (exact) return { hit: exact.answer + ageNote(exact.createdAt) };
 
   const qTokens = tokenSet(norm);
-  let best = { score: 0, answer: "", createdAt: "" };
+  let best = { score: 0, answer: "", createdAt: "", normQuestion: "" };
   for (const c of candidates) {
     const score = jaccard(qTokens, tokenSet(c.normQuestion));
-    if (score > best.score) best = { score, answer: c.answer, createdAt: c.createdAt };
+    if (score > best.score) best = { score, answer: c.answer, createdAt: c.createdAt, normQuestion: c.normQuestion };
   }
   const localThreshold = config.chatKb.localMatchThreshold;
   if (best.score >= localThreshold) return { hit: best.answer + ageNote(best.createdAt) };
 
   const textNearMiss = best.score >= localThreshold - NEAR_MISS_BAND;
+  if (textNearMiss) recordSynonymHint(qTokens, tokenSet(best.normQuestion));
 
   if (config.chatKb.semanticFallback) {
     const semantic = await semanticLookup(params.fromNumber, params.question.trim(), opts);

@@ -37,9 +37,18 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_interaction_kb_norm ON interaction_kb(fr
 db.exec(`
   CREATE TABLE IF NOT EXISTS chat_stats (
     day TEXT NOT NULL,     -- YYYY-MM-DD, WIB
-    source TEXT NOT NULL,  -- 'model' | 'kb' | 'arithmetic'
+    source TEXT NOT NULL,  -- 'kb' | 'arithmetic' | 'model' | 'model_nearmiss'
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (day, source)
+  );
+
+  -- Token pairs that keep differing between a question and a near-miss stored
+  -- one — candidate synonyms to add to the SYNONYM map. token_a < token_b.
+  CREATE TABLE IF NOT EXISTS kb_synonym_hints (
+    token_a TEXT NOT NULL,
+    token_b TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (token_a, token_b)
   );
 `);
 
@@ -280,5 +289,24 @@ export const kbStatsRepo = {
       total,
       withoutAiPct: total ? Math.round(((kb + arithmetic) / total) * 100) : 0,
     };
+  },
+};
+
+export const kbHintsRepo = {
+  bump(a: string, b: string): void {
+    if (!a || !b || a === b) return;
+    const [x, y] = a < b ? [a, b] : [b, a];
+    db.prepare(
+      `INSERT INTO kb_synonym_hints (token_a, token_b, count) VALUES (?, ?, 1)
+       ON CONFLICT(token_a, token_b) DO UPDATE SET count = count + 1`
+    ).run(x, y);
+  },
+
+  top(minCount = 3, limit = 20): { a: string; b: string; count: number }[] {
+    return db
+      .prepare(
+        "SELECT token_a AS a, token_b AS b, count FROM kb_synonym_hints WHERE count >= ? ORDER BY count DESC, a LIMIT ?"
+      )
+      .all(minCount, limit) as { a: string; b: string; count: number }[];
   },
 };

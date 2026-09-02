@@ -9,7 +9,7 @@ import {
   clearKbHit,
   consumeKbCorrection,
 } from "./chatKb.js";
-import { chatKbRepo, normalizeQuestion, kbStatsRepo } from "../db/chatKb.js";
+import { chatKbRepo, normalizeQuestion, kbStatsRepo, kbHintsRepo } from "../db/chatKb.js";
 import { db } from "../db/index.js";
 
 // Random suffixes: these hit the real sqlite file (same as every other test
@@ -176,6 +176,36 @@ test("lookupCachedAnswer flags a near-miss when a stored question scores just be
   const far = await lookup(from, "resep nasi goreng");
   assert.equal(far.hit, undefined);
   assert.notEqual(far.nearMiss, true);
+});
+
+test("kbHintsRepo: order-insensitive pair counting, top() filters + ranks", () => {
+  const a = `zzhint${Math.random().toString(36).slice(2, 7)}`;
+  const b = `zzhint${Math.random().toString(36).slice(2, 7)}`;
+  kbHintsRepo.bump(a, b);
+  kbHintsRepo.bump(b, a); // same pair, reversed
+  kbHintsRepo.bump(a, b);
+  const found = kbHintsRepo.top(1, 500).find((h) => (h.a === a || h.a === b) && (h.b === a || h.b === b));
+  assert.equal(found?.count, 3);
+  // below minCount -> not returned
+  const rare = `zzrare${Math.random().toString(36).slice(2, 7)}`;
+  kbHintsRepo.bump(rare, "x");
+  assert.equal(
+    kbHintsRepo.top(3, 500).some((h) => h.a === rare || h.b === rare),
+    false
+  );
+});
+
+test("a text near-miss records a synonym hint for the differing tokens", async () => {
+  const from = uid("synhint");
+  await seed(from, "sebutkan siapa penemu asli sepeda kayuh", "Karl von Drais.");
+  const pair = (h: { a: string; b: string }) =>
+    (h.a === "kayuh" && h.b === "angin") || (h.a === "angin" && h.b === "kayuh");
+  const before = kbHintsRepo.top(1, 999).find(pair)?.count ?? 0;
+
+  // 5/6 tokens shared -> Jaccard ~0.71 (near-miss); the diff is {kayuh}/{angin}
+  await lookup(from, "sebutkan siapa penemu asli sepeda angin");
+
+  assert.equal(kbHintsRepo.top(1, 999).find(pair)?.count ?? 0, before + 1);
 });
 
 test("an arithmetic row is never a local-match candidate", async () => {

@@ -16,7 +16,7 @@ import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../wh
 import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch, workspacePath } from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { recordInteraction } from "../agent/chatKb.js";
-import { chatKbRepo, kbStatsRepo } from "../db/chatKb.js";
+import { chatKbRepo, kbStatsRepo, kbHintsRepo } from "../db/chatKb.js";
 import { noteKbHit, clearKbHit, consumeKbCorrection } from "../agent/chatKb.js";
 import { buildProviders, splitProviderSpec, primaryModelForProvider } from "../agent/runner.js";
 import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
@@ -1037,7 +1037,13 @@ function chatKbStatsLine(): string {
     s.nearMiss > 0
       ? ` Dari yang ke AI, ${s.nearMiss} nyaris cocok sama jawaban tersimpan — turunin CHAT_KB_MATCH_THRESHOLD/CHAT_KB_LOCAL_THRESHOLD bisa nambah.`
       : "";
-  return `\n\n30 hari: ${s.total} pertanyaan chat, ${s.kb + s.arithmetic} dijawab tanpa AI (${s.withoutAiPct}%)${trend} — ${s.kb} dari memori, ${s.arithmetic} hitungan.${nearMiss}`;
+  const hints = kbHintsRepo.top(3, 4);
+  const hintLine = hints.length
+    ? `\n\nKata yang sering ketuker di pertanyaan mirip: ${hints
+        .map((h) => `"${h.a}"↔"${h.b}" (${h.count}x)`)
+        .join(", ")}. Kalau emang sinonim, tambahin ke SYNONYM di db/chatKb.ts.`
+    : "";
+  return `\n\n30 hari: ${s.total} pertanyaan chat, ${s.kb + s.arithmetic} dijawab tanpa AI (${s.withoutAiPct}%)${trend} — ${s.kb} dari memori, ${s.arithmetic} hitungan.${nearMiss}${hintLine}`;
 }
 
 async function handleClearMemoryCommand(from: string): Promise<void> {

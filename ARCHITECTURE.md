@@ -167,6 +167,7 @@ Opsional, mati default (`CHAT_KB_ENABLED`). Konsepnya: pertanyaan non-koding **b
 - **Batasnya**: cuma bantu pertanyaan yang beneran diulang (wording mirip). Pertanyaan baru tetap ke Gemini. Jawaban tersimpan bisa salah kalau Gemini-nya yang salah — koreksi user (#4) jalan keluarnya.
 - `lihat memori` nunjukin jumlah tersimpan **plus statistik**: persen dijawab tanpa AI 30 hari, tren minggu-ini vs minggu-lalu, dan berapa yang **nyaris cocok** (`model_nearmiss` — pertanyaan yang skornya tepat di bawah ambang; nurunin threshold bakal nolong). Dari `chat_stats`, counter per `(hari, source)` di-bump di `handleChatMessage`. Ini angka pemutus — kalau persennya rendah dan tetap rendah, lapisan KB bisa dimatiin.
 - `npm run export:dataset --workspace apps/orchestrator` (`scripts/export-kb-dataset.ts`) nge-dump baris `chat_model` jadi JSONL `{"messages":[{user},{assistant}]}` — dataset siap fine-tune/distilasi buat langkah "model lokal generatif".
+- **Usul sinonim otomatis**: pas text near-miss di mana dua pertanyaan cuma beda 1-2 token per sisi, pasangan token itu di-count di `kb_synonym_hints` (`recordSynonymHint`). `lihat memori` nampilin yang count ≥ 3; `npm run kb:hints` daftar lengkap. Sinonim beneran naik ke atas seiring sampel; tinggal ditambah manual ke peta `SYNONYM`.
 - `lupain semua` ikut ngehapus `interaction_kb` (`chatKbRepo.clearForNumber`); `chat_stats` nggak (statistik agregat, bukan data pribadi).
 
 ## Registrasi project & git
@@ -199,5 +200,6 @@ Kredensial GitHub **nggak pernah** disimpen di URL remote atau di disk — `ensu
 | `chat_history` | Histori obrolan biasa terbaru (bukan task), dipangkas otomatis. |
 | `processed_messages` | Guard dedup buat webhook yang dikirim ulang (`inboundDedup.ts`) — persisten di DB, bukan `Map`, biar restart di tengah window retry (default 1 jam) nggak ngebuka celah yang harusnya ketutup. |
 | `interaction_kb` | Chat knowledge base (`db/chatKb.ts`) — tiap Q&A chat bebas, `norm_question`, opsional embedding. Cuma keisi kalau `CHAT_KB_ENABLED`. Lihat "Chat knowledge base". |
-| `chat_stats` | Counter per `(hari, source)` buat balasan chat (`model`/`kb`/`arithmetic`) — dipakai `lihat memori` buat nunjukin persen tanpa-AI. |
+| `chat_stats` | Counter per `(hari, source)` buat balasan chat (`kb`/`arithmetic`/`model`/`model_nearmiss`) — `lihat memori` buat persen tanpa-AI + tren + near-miss. |
+| `kb_synonym_hints` | Pasangan token yang sering beda di near-miss — kandidat sinonim buat peta `SYNONYM`. `npm run kb:hints`. |
 | `code_files` / `code_chunks` / `code_index_meta` | Index kode buat RAG (lihat "Konteks kode") — hash per file, chunk + vektor embedding, penanda HEAD/model terakhir. Cuma keisi kalau `RAG_ENABLED`. |
