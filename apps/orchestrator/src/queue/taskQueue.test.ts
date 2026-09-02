@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { enqueueProjectTask, cancelActiveTask, getActiveTaskId, planResume, MAX_RESUME_ATTEMPTS } from "./taskQueue.js";
-import { tasksRepo, scheduledTasksRepo, type Task } from "../db/index.js";
+import { tasksRepo, scheduledTasksRepo, providerUsageRepo, kvRepo, type Task } from "../db/index.js";
 import { config } from "../config.js";
 
 const settle = () => new Promise((r) => setTimeout(r, 10));
@@ -140,6 +140,19 @@ test("tasksRepo.pendingForProject counts queued + running oldest-first", () => {
   assert.deepEqual(pending.map((t) => t.id), ["pf-a", "pf-b"]);
   tasksRepo.setStatus("pf-a", "done");
   tasksRepo.setStatus("pf-b", "cancelled");
+});
+
+test("providerUsageRepo accumulates per id; kvRepo round-trips", () => {
+  const before = providerUsageRepo.today().find((u) => u.providerId === "gemini@m#abc")?.calls ?? 0;
+  providerUsageRepo.bump("gemini@m#abc");
+  providerUsageRepo.bump("gemini@m#abc");
+  const after = providerUsageRepo.today().find((u) => u.providerId === "gemini@m#abc")!.calls;
+  assert.equal(after - before, 2);
+
+  assert.equal(kvRepo.get("nope"), undefined);
+  kvRepo.set("digest:last", "2026-09-03");
+  kvRepo.set("digest:last", "2026-09-04");
+  assert.equal(kvRepo.get("digest:last"), "2026-09-04");
 });
 
 test("scheduledTasksRepo: create, due filtering, markRan advances next_run_at, deleteForProject", () => {

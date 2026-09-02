@@ -232,7 +232,7 @@ Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task g
 
 ## `status` — dasbor ringkas
 
-`handleStatusCommand` selain nunjukin task yang lagi jalan + posisi antrean, sekarang selalu nutup dengan `dashboardBlock`: rollup task 7 hari (`tasksRepo.stats` — selesai/gagal/batal + rata-rata durasi dari `finished_at - created_at`), baris chat-autonomy 30 hari yang sama kayak di `lihat memori` (`chatKbStatsLine`, cuma kalau `CHAT_KB_ENABLED`), dan daftar provider yang lagi di cooldown 429 (`coolingDownNow`, cuma kalau ada).
+`handleStatusCommand` selain nunjukin task yang lagi jalan + posisi antrean, sekarang selalu nutup dengan `dashboardBlock`: rollup task 7 hari (`tasksRepo.stats` — selesai/gagal/batal + rata-rata durasi dari `finished_at - created_at`), baris chat-autonomy 30 hari yang sama kayak di `lihat memori` (`chatKbStatsLine`, cuma kalau `CHAT_KB_ENABLED`), daftar provider yang lagi di cooldown 429 (`coolingDownNow`, cuma kalau ada), dan **panggilan AI hari ini per key/model** (`providerUsageRepo.today()` — di-bump di `runAgentLoop` tiap `provider.chat` sukses, keyed `provider.id` = `name@model#keyhash`, WIB, tabel `provider_usage`). Buat proyek aktif juga nampilin gate test/lint-nya (`activeProjectChecksLine`).
 
 ## Registrasi project & git
 
@@ -267,4 +267,6 @@ Kredensial GitHub **nggak pernah** disimpen di URL remote atau di disk — `ensu
 | `interaction_kb` | Chat knowledge base (`db/chatKb.ts`) — tiap Q&A chat bebas, `norm_question`, opsional embedding. Cuma keisi kalau `CHAT_KB_ENABLED`. Index `norm_question` doang buat lookup `CHAT_KB_SHARED`. Lihat "Chat knowledge base". |
 | `chat_stats` | Counter per `(hari, source)` buat balasan chat (`kb`/`arithmetic`/`model`/`model_nearmiss`) — `lihat memori` buat persen tanpa-AI + tren + near-miss. |
 | `kb_synonym_hints` | Pasangan token yang sering beda di near-miss — kandidat sinonim buat peta `SYNONYM`. `npm run kb:hints`. |
+| `provider_usage` | Hitungan panggilan agent-loop per `(ymd WIB, provider_id)` — buat baris "panggilan AI hari ini" di `status`. |
+| `kv` | Key/value kecil buat state yang nggak layak tabel sendiri (mis. tanggal digest harian terakhir dikirim). |
 | `code_files` / `code_chunks` / `code_index_meta` | Index kode buat RAG (lihat "Konteks kode") — hash per file, chunk + vektor embedding, penanda HEAD/model terakhir. Cuma keisi kalau `RAG_ENABLED`. |

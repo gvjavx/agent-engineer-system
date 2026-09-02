@@ -1,4 +1,4 @@
-import { auditLog } from "../db/index.js";
+import { auditLog, providerUsageRepo } from "../db/index.js";
 import { config } from "../config.js";
 import { TOOL_SCHEMAS, executeTool, briefToolDescription, detectMilestone, isDangerousBashCommand } from "./tools.js";
 import { scanStagedFiles, formatSecretHits } from "./secretScan.js";
@@ -152,6 +152,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
       try {
         response = await provider.chat(messages, toolSchemas, abortController.signal);
         rateLimitRetries = 0;
+        providerUsageRepo.bump(provider.id ?? provider.name);
       } catch (err) {
         if (abortController.signal.aborted) {
           return { ok: false, cancelled: true, summary: "Oke, task-nya udah aku batalin." };

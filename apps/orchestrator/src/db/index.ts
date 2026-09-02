@@ -155,6 +155,23 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next ON scheduled_tasks(next_run_at);
+
+  -- Per-day count of agent-loop provider calls, keyed by the provider
+  -- instance id (name@model#keyhash). Feeds the "status" dashboard so you can
+  -- see which key/model is burning quota before it 429s. WIB date.
+  CREATE TABLE IF NOT EXISTS provider_usage (
+    ymd TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (ymd, provider_id)
+  );
+
+  -- Tiny generic key/value store for small bits of app state that don't
+  -- deserve their own table (e.g. the date the daily digest last went out).
+  CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
 
 // Idempotent migrations for DBs created before these columns existed.
@@ -421,6 +438,37 @@ export const scheduledTasksRepo = {
   },
   deleteForProject(projectAlias: string): number {
     return db.prepare("DELETE FROM scheduled_tasks WHERE project_alias = ?").run(projectAlias).changes;
+  },
+};
+
+// WIB (UTC+7, no DST) calendar date as YYYY-MM-DD. Kept inline rather than
+// importing agent/schedule.ts's helpers to avoid a db <- agent import edge.
+function wibYmd(at = Date.now()): string {
+  return new Date(at + 7 * 3600_000).toISOString().slice(0, 10);
+}
+
+export const providerUsageRepo = {
+  bump(providerId: string): void {
+    db.prepare(
+      `INSERT INTO provider_usage (ymd, provider_id, calls) VALUES (?, ?, 1)
+       ON CONFLICT(ymd, provider_id) DO UPDATE SET calls = calls + 1`
+    ).run(wibYmd(), providerId);
+  },
+  today(): { providerId: string; calls: number }[] {
+    return db
+      .prepare("SELECT provider_id AS providerId, calls FROM provider_usage WHERE ymd = ? ORDER BY calls DESC")
+      .all(wibYmd()) as { providerId: string; calls: number }[];
+  },
+};
+
+export const kvRepo = {
+  get(key: string): string | undefined {
+    return (db.prepare("SELECT value FROM kv WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+  },
+  set(key: string, value: string): void {
+    db.prepare(
+      "INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    ).run(key, value);
   },
 };
 

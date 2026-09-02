@@ -7,6 +7,7 @@ import {
   tasksRepo,
   scheduledTasksRepo,
   auditLog,
+  providerUsageRepo,
   memoryRepo,
   chatHistoryRepo,
   sessionRepo,
@@ -1125,8 +1126,13 @@ function dashboardBlock(): string {
     ? `\nProvider nunggu cooldown: ${cooling.map((c) => `${c.id} (${c.secondsLeft}s)`).join(", ")}`
     : "";
 
+  const usage = providerUsageRepo.today();
+  const usageLine = usage.length
+    ? `\nPanggilan AI hari ini: ${usage.slice(0, 4).map((u) => `${u.providerId} ${u.calls}x`).join(", ")}`
+    : "";
+
   // chatKbStatsLine already starts with its own "\n\n30 hari: ..." prefix.
-  return `\n\n${taskLine}${coolLine}${chatKbStatsLine()}`;
+  return `\n\n${taskLine}${coolLine}${usageLine}${chatKbStatsLine()}`;
 }
 
 async function handleStatusCommand(from: string): Promise<void> {
