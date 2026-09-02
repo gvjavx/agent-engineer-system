@@ -122,3 +122,35 @@ export async function postPrComment(
   const res = await gh(cwd, ["pr", "comment", String(number), "--body", body]);
   return res.ok ? { ok: true } : { ok: false, error: res.error };
 }
+
+// "daftar PR" / "merge PR <n>" — light PR management over the same gh path.
+
+export interface PrListItem {
+  number: number;
+  title: string;
+  headRefName: string;
+  isDraft: boolean;
+  url: string;
+}
+
+export async function listOpenPrs(cwd: string): Promise<PrListItem[] | { error: string }> {
+  const res = await gh(cwd, ["pr", "list", "--state", "open", "-L", "30", "--json", "number,title,headRefName,isDraft,url"]);
+  if (!res.ok) return { error: res.error };
+  try {
+    return JSON.parse(res.stdout) as PrListItem[];
+  } catch {
+    return { error: "output gh nggak kebaca" };
+  }
+}
+
+export function formatPrList(items: PrListItem[]): string {
+  if (items.length === 0) return "Gak ada PR yang lagi kebuka.";
+  return items
+    .map((p) => `#${p.number}${p.isDraft ? " (draft)" : ""} — ${p.title}\n  ${p.headRefName} · ${p.url}`)
+    .join("\n");
+}
+
+export async function mergePr(cwd: string, number: number): Promise<{ ok: true } | { ok: false; error: string }> {
+  const res = await gh(cwd, ["pr", "merge", String(number), "--squash", "--delete-branch"]);
+  return res.ok ? { ok: true } : { ok: false, error: res.error };
+}

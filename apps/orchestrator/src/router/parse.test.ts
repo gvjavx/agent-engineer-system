@@ -18,6 +18,8 @@ import {
   isStopCommand,
   parseReviewPr,
   parseWorkIssue,
+  isListPrsCommand,
+  parseMergePr,
   parseSetCheck,
   parseScheduleCommand,
   isListSchedulesCommand,
@@ -120,6 +122,16 @@ test("parseWorkIssue pulls the issue number from the common phrasings", () => {
   assert.equal(parseWorkIssue("kerjain #13"), 13);
   assert.equal(parseWorkIssue("tolong selesaikan issue 340 dong"), 340);
   assert.equal(parseWorkIssue("  Beresin Issue #1  "), 1);
+});
+
+test("parseMergePr / isListPrsCommand recognise the PR-management commands", () => {
+  assert.equal(parseMergePr("merge PR #5"), 5);
+  assert.equal(parseMergePr("tolong merge pull request 12"), 12);
+  assert.equal(parseMergePr("merge branch feat/x"), undefined);
+  assert.equal(parseMergePr("review PR #5"), undefined);
+  assert.ok(isListPrsCommand("daftar PR"));
+  assert.ok(isListPrsCommand("  lihat pr  "));
+  assert.ok(!isListPrsCommand("daftar project"));
 });
 
 test("parseWorkIssue returns undefined without the issue keyword or a number", () => {

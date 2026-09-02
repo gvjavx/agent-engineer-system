@@ -355,6 +355,24 @@ export function parseSetCheck(text: string): SetCheckCommand | undefined {
   };
 }
 
+// "daftar PR" — list open pull requests in the active project.
+const LIST_PRS_PHRASES = new Set(["daftar pr", "list pr", "daftar pull request", "lihat pr", "pr apa aja", "pr apa saja"]);
+
+export function isListPrsCommand(text: string): boolean {
+  return LIST_PRS_PHRASES.has(text.trim().toLowerCase());
+}
+
+// "merge PR #5", "merge pull request 5". Deterministic (has the number), and
+// the verb "merge" keeps it clear of parseReviewPr / parseWorkIssue.
+const MERGE_PR_RE = /^(?:tolong\s+|coba\s+|bisa\s+)?merge\s+(?:pull\s*request|pull|pr)\s*#?\s*(\d{1,7})\b/i;
+
+export function parseMergePr(text: string): number | undefined {
+  const m = text.trim().match(MERGE_PR_RE);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 // "jadwalkan tiap senin jam 9: update dependencies" — the schedule phrase and
 // the instruction, split on the first colon. The schedule half is validated
 // separately by agent/schedule.ts's parseSchedule.

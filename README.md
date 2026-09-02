@@ -141,6 +141,8 @@ pakai model <departemen> <nama>       → model AI khusus satu departemen (manaj
 status                                → lihat task yang sedang berjalan + ringkasan 7 hari
 stop / batalkan                       → hentikan task yang sedang berjalan
 review PR <nomor>                     → baca diff PR di project aktif, kasih review, konfirmasi dulu sebelum posting komentar ke PR
+daftar PR                            → lihat PR yang lagi kebuka (non-draft bisa langsung di-tap buat merge)
+merge PR <nomor>                     → squash-merge PR + hapus branch-nya (konfirmasi dulu)
 kerjain issue <nomor>                → baca issue GitHub di project aktif, susun rencana, garap setelah konfirmasi (PR nge-link "Closes #<nomor>")
 batalin yang barusan                 → revert commit dari task terakhir di project aktif (konfirmasi dulu, history gak dihapus)
 diff terakhir                        → kirim patch lengkap task terakhir sebagai lampiran file

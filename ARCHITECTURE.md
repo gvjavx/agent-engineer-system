@@ -198,6 +198,8 @@ Opsional, mati default (`CHAT_KB_ENABLED`). Konsepnya: pertanyaan non-koding **b
 
 `parseReviewPr` (deterministik — ada argumen nomornya) → `handleReviewPrCommand`. Bukan lewat pipeline: cuma baca + satu panggilan model. `ensureWorkspace` project aktif (harus `kind='git'`) → `agent/prReview.ts` `gatherPrContext` nembak `gh pr view --json ...` + `gh pr diff` di workspace itu (`gh` baca `GITHUB_TOKEN` dari env, repo diinfer dari origin), diff dipotong di batas baris kalau > 24k char → `buildReviewPrompt` → `providers[0].chat` (tanpa tool) → review dibalikin ke WhatsApp. Review-nya distash di `pending_action: confirm_post_pr_review`; balas "ya" → `gh pr comment <n> --body <review>`. Nggak pernah auto-post — selalu nunggu konfirmasi.
 
+`daftar PR` (`isListPrsCommand` → `handleListPrsCommand`) — `listOpenPrs` (`gh pr list --state open --json number,title,headRefName,isDraft,url`) di clone yang udah ada, **tanpa** `ensureWorkspace`/pull, jadi tetep jalan meski ada task lagi megang workspace-nya. `formatPrList` (murni, tested) buat teksnya; PR non-draft jadi tombol `merge pr <n>`. `merge PR <nomor>` (`parseMergePr` → `handleMergePrCommand`) → `pending_action: confirm_merge_pr` → balas "ya" → `ensureWorkspace` + `mergePr` (`gh pr merge <n> --squash --delete-branch`).
+
 ## Pantau CI setelah push (`watchCiAndReport`)
 
 Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task git yang `result.ok`, dipanggil fire-and-forget (`void watchCiAndReport(...)`) — sengaja **nggak** di-await biar antrian task project itu (`taskQueue.ts`) nggak ketahan selama beberapa menit poll.

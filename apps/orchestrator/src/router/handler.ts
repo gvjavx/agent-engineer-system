@@ -32,7 +32,7 @@ import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
 import { detectProjectChecks } from "../agent/projectChecks.js";
 import { watchCiForSha } from "../agent/ciWatch.js";
-import { gatherPrContext, reviewPr, postPrComment } from "../agent/prReview.js";
+import { gatherPrContext, reviewPr, postPrComment, listOpenPrs, formatPrList, mergePr } from "../agent/prReview.js";
 import { gatherIssueContext, buildIssueInstruction } from "../agent/issue.js";
 import { parseSchedule, computeNextRun, formatWibInstant, type ScheduleSpec } from "../agent/schedule.js";
 import { recordInteraction } from "../agent/chatKb.js";
@@ -86,6 +86,8 @@ import {
   isStopCommand,
   parseReviewPr,
   parseWorkIssue,
+  isListPrsCommand,
+  parseMergePr,
   parseSetCheck,
   parseScheduleCommand,
   isListSchedulesCommand,
@@ -172,6 +174,8 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *status* — cek task yang lagi jalan, plus ringkasan 7 hari
 - *stop* — batalin task yang lagi jalan di project aktif
 - *review PR <nomor>* — aku baca diff PR di project aktif, kasih review, terus tanya dulu sebelum posting sebagai komentar di PR-nya
+- *daftar PR* — lihat PR yang lagi kebuka di project aktif (yang non-draft bisa langsung di-tap buat merge)
+- *merge PR <nomor>* — squash-merge PR itu + hapus branch-nya, konfirmasi dulu
 - *kerjain issue <nomor>* — aku baca issue GitHub-nya di project aktif (judul, deskripsi, komentar), susun rencana, dan garap setelah kamu konfirmasi. Commit/PR-nya otomatis nge-link "Closes #<nomor>"
 - *batalin yang barusan* — revert commit dari task terakhir di project aktif (konfirmasi dulu). History-nya gak dihapus, cuma ditambah commit revert terus di-push
 - *diff terakhir* — kirim patch lengkap dari task terakhir sebagai lampiran file
@@ -256,6 +260,13 @@ interface PendingPostPrReview {
   review: string;
 }
 
+// "merge PR <n>" — one confirmation before a squash-merge (+ delete branch).
+interface PendingMergePr {
+  type: "confirm_merge_pr";
+  alias: string;
+  prNumber: number;
+}
+
 // Set after a git task's CI run came back red — see watchCiAndReport. On "ya"
 // the failing log becomes a fresh task instruction routed through the normal
 // classify/pipeline flow.
@@ -289,6 +300,7 @@ type PendingActionData =
   | PendingFigmaSetup
   | PendingImageFollowup
   | PendingPostPrReview
+  | PendingMergePr
   | PendingCiFix
   | PendingUndoLast;
 
@@ -722,6 +734,17 @@ export async function handleInboundMessage(
   const issueNumber = parseWorkIssue(trimmed);
   if (issueNumber !== undefined) {
     await handleWorkIssueCommand(from, issueNumber);
+    return;
+  }
+
+  if (isListPrsCommand(trimmed)) {
+    await handleListPrsCommand(from);
+    return;
+  }
+
+  const mergePrNumber = parseMergePr(trimmed);
+  if (mergePrNumber !== undefined) {
+    await handleMergePrCommand(from, mergePrNumber);
     return;
   }
 
@@ -1204,6 +1227,49 @@ async function handleReviewPrCommand(from: string, prNumber: number): Promise<vo
   await sendWhatsApp(
     from,
     `Review PR #${prNumber} — ${ctx.title}\n(${ctx.changedFiles} file, +${ctx.additions} −${ctx.deletions})\n\n${review}\n\nBalas "ya" kalau mau aku post ini sebagai komentar di PR-nya.`,
+    YES_NO_OPTIONS
+  );
+}
+
+// "daftar PR" — read-only, runs gh in the existing clone (no fresh pull, so
+// it works even while a task holds the workspace).
+async function handleListPrsCommand(from: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  const project = state?.active_project_alias ? projectsRepo.get(state.active_project_alias) : undefined;
+  if (!project || project.kind !== "git") {
+    await sendWhatsApp(from, 'Belum ada project git aktif. Ketik "pakai <nama>" dulu.');
+    return;
+  }
+  const cwd = workspacePath(project.alias);
+  if (!fs.existsSync(path.join(cwd, ".git"))) {
+    await sendWhatsApp(from, `Workspace "${project.alias}" belum kesiapin. Coba lagi bentar.`);
+    return;
+  }
+  const prs = await listOpenPrs(cwd);
+  if ("error" in prs) {
+    await sendWhatsApp(from, `Gagal ambil daftar PR: ${prs.error}`);
+    return;
+  }
+  const options: QuickReplyOption[] = prs
+    .filter((p) => !p.isDraft)
+    .slice(0, 8)
+    .map((p) => ({ id: `merge pr ${p.number}`, title: `Merge #${p.number}`, description: p.title }));
+  await sendWhatsApp(from, formatPrList(prs), options.length ? options : undefined, options.length ? "Merge PR" : undefined);
+}
+
+// "merge PR <n>" — squash-merge + delete branch, after one confirmation.
+async function handleMergePrCommand(from: string, prNumber: number): Promise<void> {
+  const state = conversationRepo.get(from);
+  const project = state?.active_project_alias ? projectsRepo.get(state.active_project_alias) : undefined;
+  if (!project || project.kind !== "git") {
+    await sendWhatsApp(from, 'Belum ada project git aktif. Ketik "pakai <nama>" dulu.');
+    return;
+  }
+  const pending: PendingMergePr = { type: "confirm_merge_pr", alias: project.alias, prNumber };
+  conversationRepo.setPendingAction(from, JSON.stringify(pending));
+  await sendWhatsApp(
+    from,
+    `Merge PR #${prNumber} di "${project.alias}" pakai squash, terus hapus branch-nya. Lanjut?`,
     YES_NO_OPTIONS
   );
 }
@@ -1886,6 +1952,8 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     parseListModelsForProvider(trimmed) !== undefined ||
     parseReviewPr(trimmed) !== undefined ||
     parseWorkIssue(trimmed) !== undefined ||
+    isListPrsCommand(trimmed) ||
+    parseMergePr(trimmed) !== undefined ||
     parseSetCheck(trimmed) !== undefined ||
     parseScheduleCommand(trimmed) !== undefined ||
     isListSchedulesCommand(trimmed) ||
@@ -2338,6 +2406,40 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
       res.ok
         ? `Udah kebalik dan ke-push ke "${pending.branch}" (${res.head.slice(0, 8)}).`
         : `Gagal auto-revert: ${res.error}. Kemungkinan ada perubahan lain di atasnya atau ada merge commit di range-nya — mesti dibenerin manual.`
+    );
+    return true;
+  }
+
+  if (pending.type === "confirm_merge_pr") {
+    const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
+    conversationRepo.setPendingAction(from, null);
+    if (intent !== "yes") {
+      await sendWhatsApp(
+        from,
+        intent === "no" ? "Oke, gak jadi di-merge." : "Gak jelas jawabannya, jadi gak aku merge."
+      );
+      return true;
+    }
+    const project = projectsRepo.get(pending.alias);
+    if (!project || project.kind !== "git") {
+      await sendWhatsApp(from, `Project "${pending.alias}" udah gak bisa dipakai.`);
+      return true;
+    }
+    if (getActiveTaskId(pending.alias)) {
+      await sendWhatsApp(from, `Ada task jalan di "${pending.alias}". Tunggu kelar dulu, terus minta merge lagi.`);
+      return true;
+    }
+    let cwd: string;
+    try {
+      cwd = (await ensureWorkspace(project)).dir;
+    } catch (err) {
+      await sendWhatsApp(from, `Gagal nyiapin workspace: ${err instanceof Error ? err.message : String(err)}`);
+      return true;
+    }
+    const res = await mergePr(cwd, pending.prNumber);
+    await sendWhatsApp(
+      from,
+      res.ok ? `PR #${pending.prNumber} udah ke-merge (squash) dan branch-nya dihapus.` : `Gagal merge PR #${pending.prNumber}: ${res.error}`
     );
     return true;
   }

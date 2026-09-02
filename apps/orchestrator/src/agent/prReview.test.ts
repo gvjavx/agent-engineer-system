@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { truncateDiff, buildReviewPrompt, type PrContext } from "./prReview.js";
+import { truncateDiff, buildReviewPrompt, formatPrList, type PrContext } from "./prReview.js";
 
 test("truncateDiff leaves a short diff alone", () => {
   const d = "diff --git a/x b/x\n+one\n-two\n";
@@ -42,4 +42,14 @@ test("buildReviewPrompt notes a truncated diff and omits an empty body", () => {
   const p = buildReviewPrompt({ ...ctx, body: "", diffTruncated: true });
   assert.match(p, /diff dipotong karena kepanjangan/);
   assert.doesNotMatch(p, /Deskripsi PR:/);
+});
+
+test("formatPrList lists number, draft flag, title and branch — or says none", () => {
+  assert.equal(formatPrList([]), "Gak ada PR yang lagi kebuka.");
+  const out = formatPrList([
+    { number: 5, title: "Add search", headRefName: "feat/search", isDraft: false, url: "https://gh/o/r/pull/5" },
+    { number: 6, title: "WIP redesign", headRefName: "feat/redesign", isDraft: true, url: "https://gh/o/r/pull/6" },
+  ]);
+  assert.match(out, /#5 — Add search\n {2}feat\/search · https/);
+  assert.match(out, /#6 \(draft\) — WIP redesign/);
 });
