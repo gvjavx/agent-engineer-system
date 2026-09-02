@@ -13,7 +13,16 @@ import {
   type Project,
 } from "../db/index.js";
 import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
-import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, discardWorkBranch, workspacePath } from "../git/repo.js";
+import {
+  ensureWorkspace,
+  createWorkBranch,
+  ensureLocalFolder,
+  removeWorkspace,
+  discardWorkBranch,
+  workspacePath,
+  headSha,
+  summarizeChangesSince,
+} from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
 import { recordInteraction } from "../agent/chatKb.js";
@@ -1972,12 +1981,16 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
 
     let cwd: string;
     let mode: PipelineMode;
+    // Default-branch tip when the task started — the baseline for the
+    // "what changed" summary at the end. Git tasks only.
+    let baseSha: string | undefined;
     if (project.kind === "local") {
       cwd = await ensureLocalFolder(project);
       mode = { kind: "local", folderPath: cwd };
     } else {
       const workspace = await ensureWorkspace(project);
       cwd = workspace.dir;
+      baseSha = await headSha(cwd).catch(() => undefined);
       const workBranch = await createWorkBranch(cwd, taskId);
       mode = { kind: "git", defaultBranch: workspace.branch, workBranch, autoMerge: project.auto_merge };
     }
@@ -2076,11 +2089,12 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
         from,
         `${result.summary} Ini folder lokal (bukan git), jadi perubahan file yang sempat dibikin gak bisa otomatis aku balikin — cek manual ya kalau perlu.`
       );
+    } else if (result.ok) {
+      const changes =
+        mode.kind === "git" && baseSha ? await summarizeChangesSince(cwd, baseSha).catch(() => undefined) : undefined;
+      await sendWhatsApp(from, `Udah selesai. ${result.summary}${changes ? `\n\n${changes}` : ""}`);
     } else {
-      await sendWhatsApp(
-        from,
-        result.ok ? `Udah selesai. ${result.summary}` : `Gagal nih. ${result.summary}`
-      );
+      await sendWhatsApp(from, `Gagal nih. ${result.summary}`);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

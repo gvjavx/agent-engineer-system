@@ -140,6 +140,46 @@ export async function createWorkBranch(dir: string, taskId: string): Promise<str
   return branch;
 }
 
+export async function headSha(dir: string): Promise<string> {
+  return (await simpleGit(dir).revparse(["HEAD"])).trim();
+}
+
+// Turns `git diff --numstat <a> <b>` output into a short WhatsApp-friendly
+// change summary. Split out from the git call so the formatting is unit
+// tested without a repo. Returns undefined when nothing changed.
+export function formatNumstat(raw: string, maxFiles = 8): string | undefined {
+  const rows = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [a, d, ...rest] = line.split("\t");
+      return { path: rest.join("\t"), added: a === "-" ? 0 : Number(a) || 0, removed: d === "-" ? 0 : Number(d) || 0 };
+    })
+    .filter((r) => r.path);
+  if (rows.length === 0) return undefined;
+
+  const added = rows.reduce((s, r) => s + r.added, 0);
+  const removed = rows.reduce((s, r) => s + r.removed, 0);
+  const shown = [...rows]
+    .sort((x, y) => y.added + y.removed - (x.added + x.removed))
+    .slice(0, maxFiles)
+    .map((r) => `• ${r.path} (+${r.added} −${r.removed})`);
+  const more = rows.length > shown.length ? `\n…+${rows.length - shown.length} file lain` : "";
+  return `${rows.length} file berubah, +${added} −${removed}\n${shown.join("\n")}${more}`;
+}
+
+// What this task changed, measured from the default-branch tip when it
+// started (sinceSha) to wherever HEAD is now — works whether the work branch
+// got merged into the default branch or left standing. Best-effort: any git
+// failure just means no summary gets appended.
+export async function summarizeChangesSince(dir: string, sinceSha: string): Promise<string | undefined> {
+  const raw = await simpleGit(dir)
+    .raw(["diff", "--numstat", sinceSha, "HEAD"])
+    .catch(() => "");
+  return formatNumstat(raw);
+}
+
 // Called when a task ends cancelled (stop command or checkpoint "batal") —
 // safe because nothing is ever merged/pushed into defaultBranch until the
 // pipeline's last phase (see systemPrompt.ts's commitRule), so a cancelled
