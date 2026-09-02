@@ -201,6 +201,13 @@ export const config = {
     enabled: (process.env.COMMIT_CHECKS_ENABLED ?? "true").toLowerCase() !== "false",
   },
 
+  // Off by default: one model pass over the staged diff before the agent's
+  // first `git commit` in a task, surfacing only commit-blocking problems.
+  // Costs one provider call per task when on. See agent/selfReview.ts.
+  selfReview: {
+    enabled: (process.env.SELF_REVIEW_ENABLED ?? "false").toLowerCase() === "true",
+  },
+
   // After a git task pushes, poll the GitHub Actions runs for the pushed
   // commit; a failure is sent to WhatsApp with the log and an offer to fix
   // it. On by default; a repo with no Actions just stays quiet. See

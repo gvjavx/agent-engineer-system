@@ -10,6 +10,7 @@ import {
 } from "./tools.js";
 import { scanStagedFiles, formatSecretHits } from "./secretScan.js";
 import { runProjectChecks, type CommitCheckSpec } from "./projectChecks.js";
+import { reviewStagedDiff } from "./selfReview.js";
 import { markRateLimited } from "./providerCooldown.js";
 import { resolveFigmaTools, type FigmaToolsResult } from "./mcp/figmaTools.js";
 import type { ChatMessage, Provider, ToolSchema } from "./types.js";
@@ -157,6 +158,8 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
   try {
     let providerIndex = 0;
     let rateLimitRetries = 0;
+    // config.selfReview: at most one advisory review round per task.
+    let selfReviewDone = false;
 
     for (let turn = 0; turn < maxTurns; turn++) {
       if (abortController.signal.aborted) {
@@ -294,6 +297,26 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
                 content:
                   `Error: commit dibatalin. ${checked.report}\n\n` +
                   "Benerin dulu yang bikin gagal, terus commit lagi — jangan cari cara buat ngeskip cek ini.",
+              });
+              continue;
+            }
+          }
+
+          // Advisory, opt-in, once per task: a model look at the staged diff
+          // for commit-blocking problems. Set the flag before the call so a
+          // throw or a "commit anyway" both move past it.
+          if (config.selfReview.enabled && !readOnly && isCommit && !selfReviewDone) {
+            selfReviewDone = true;
+            const blockers = await reviewStagedDiff(cwd, command, provider, abortController.signal);
+            if (blockers.length > 0) {
+              auditLog.add(taskId, "note", `Self-review nahan commit: ${blockers.length} isu`);
+              messages.push({
+                role: "tool",
+                toolCallId: call.id,
+                toolName: call.name,
+                content:
+                  `Error: commit ditahan sama self-review. Benerin dulu:\n${blockers.map((b) => `- ${b}`).join("\n")}\n\n` +
+                  "Kalau menurut kamu ini bukan masalah beneran, commit lagi aja — cek ini cuma jalan sekali.",
               });
               continue;
             }
