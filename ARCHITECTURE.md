@@ -230,6 +230,10 @@ Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task g
 
 `startScheduleRunner` (`handler.ts`, dipanggil dari `index.ts`) — `setInterval` 60 detik, loop background **kedua** setelah `idleNotifier`. Tiap tick: `scheduledTasksRepo.due(now)` → buat tiap yang jatuh tempo, **majuin `next_run_at` dulu** (biar run lambat nggak dobel-trigger di tick berikutnya) baru `fireScheduledTask`: `classifyDepartments` fresh (deps/kode bisa geser antar-fire) → `executeTask` langsung, tanpa konfirmasi (user udah opt-in pas bikin jadwal). Project udah nggak ada → jadwalnya dihapus + user dikabarin. `hapus project` juga ngebersihin `scheduled_tasks` project itu.
 
+## Ringkasan harian (`startDailyDigest`)
+
+Loop background **ketiga**, cuma nyala kalau `DAILY_DIGEST_ENABLED=true`. `setInterval` 5 menit; tiap tick cek jam WIB — kalau `=== DAILY_DIGEST_HOUR` dan `kv['digest:lastYmd']` bukan hari ini, **set kv-nya dulu** baru `runDailyDigest`: `tasksRepo.recentlyFinished(24)` + `scheduledTasksRepo.upcomingWithin(now+24h)` + `coolingDownNow()` + `providerUsageRepo.forDate(kemarin)` → `buildDigestText` (murni, `agent/digest.ts`, tested) → `sendWhatsApp(config.ownerNumber, ...)`. Set-kv-sebelum-kirim = pola yang sama kayak schedule runner majuin `next_run_at` dulu, jadi kirim yang gagal nggak retrigger sejam itu.
+
 ## `status` — dasbor ringkas
 
 `handleStatusCommand` selain nunjukin task yang lagi jalan + posisi antrean, sekarang selalu nutup dengan `dashboardBlock`: rollup task 7 hari (`tasksRepo.stats` — selesai/gagal/batal + rata-rata durasi dari `finished_at - created_at`), baris chat-autonomy 30 hari yang sama kayak di `lihat memori` (`chatKbStatsLine`, cuma kalau `CHAT_KB_ENABLED`), daftar provider yang lagi di cooldown 429 (`coolingDownNow`, cuma kalau ada), dan **panggilan AI hari ini per key/model** (`providerUsageRepo.today()` — di-bump di `runAgentLoop` tiap `provider.chat` sukses, keyed `provider.id` = `name@model#keyhash`, WIB, tabel `provider_usage`). Buat proyek aktif juga nampilin gate test/lint-nya (`activeProjectChecksLine`).

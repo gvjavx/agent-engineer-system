@@ -1,6 +1,11 @@
 import express from "express";
 import { config } from "./config.js";
-import { handleInboundMessage, resumeInterruptedTasks, startScheduleRunner } from "./router/handler.js";
+import {
+  handleInboundMessage,
+  resumeInterruptedTasks,
+  startScheduleRunner,
+  startDailyDigest,
+} from "./router/handler.js";
 import { exchangeCodeForTokens } from "./agent/mcp/figmaAuth.js";
 import { consumePendingState } from "./agent/mcp/figmaOAuthState.js";
 import { sendWhatsApp } from "./whatsappClient.js";
@@ -92,6 +97,7 @@ app.listen(config.port, () => {
   console.log(`bash sandbox: ${sandboxSummary()}`);
   startIdleSessionScanner();
   startScheduleRunner();
+  if (config.dailyDigest.enabled) startDailyDigest();
   // Re-enqueue tasks left mid-flight by the previous process. Runs here,
   // synchronously, before the event loop can dispatch an inbound webhook, so
   // resumed tasks are queued ahead of anything that arrives after boot.

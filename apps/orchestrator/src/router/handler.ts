@@ -8,6 +8,8 @@ import {
   scheduledTasksRepo,
   auditLog,
   providerUsageRepo,
+  kvRepo,
+  wibYmd,
   memoryRepo,
   chatHistoryRepo,
   sessionRepo,
@@ -34,6 +36,7 @@ import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
 import { detectProjectChecks } from "../agent/projectChecks.js";
 import { watchCiForSha } from "../agent/ciWatch.js";
 import { scanDiffSmells } from "../agent/diffSmells.js";
+import { buildDigestText } from "../agent/digest.js";
 import { gatherPrContext, reviewPr, postPrComment, listOpenPrs, formatPrList, mergePr } from "../agent/prReview.js";
 import { gatherIssueContext, buildIssueInstruction } from "../agent/issue.js";
 import { parseSchedule, computeNextRun, formatWibInstant, type ScheduleSpec } from "../agent/schedule.js";
@@ -1585,6 +1588,47 @@ export function startScheduleRunner(): void {
     }
   };
   setInterval(() => void tick().catch((err) => console.error("Schedule tick failed:", err)), SCHEDULE_TICK_MS);
+}
+
+// Unsolicited once-a-day summary to the owner. Opt-in (config.dailyDigest).
+// A 5-minute tick fires it the first time it sees the target WIB hour on a
+// new day; the kv guard is set before the send so a failed send doesn't
+// re-trigger for the rest of the hour.
+const DIGEST_TICK_MS = 5 * 60_000;
+
+async function runDailyDigest(): Promise<void> {
+  const finished = tasksRepo.recentlyFinished(24).map((t) => ({
+    project: t.project_alias,
+    status: t.status,
+    instruction: t.instruction,
+    reason: t.result_summary,
+  }));
+  const dueSchedules = scheduledTasksRepo
+    .upcomingWithin(new Date(Date.now() + 24 * 3600_000).toISOString())
+    .map((s) => ({ project: s.project_alias, schedule: s.schedule, instruction: s.instruction }));
+
+  const text = buildDigestText({
+    dateLabel: wibYmd(),
+    finished,
+    dueSchedules,
+    cooling: coolingDownNow().map((c) => c.id),
+    usage: providerUsageRepo.forDate(wibYmd(Date.now() - 24 * 3600_000)),
+  });
+  await sendWhatsApp(config.ownerNumber, text).catch(() => {});
+}
+
+export function startDailyDigest(): void {
+  const tick = async (): Promise<void> => {
+    const hourWib = Number(
+      new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: "Asia/Jakarta" }).format(new Date())
+    );
+    if (hourWib !== config.dailyDigest.hour) return;
+    const today = wibYmd();
+    if (kvRepo.get("digest:lastYmd") === today) return;
+    kvRepo.set("digest:lastYmd", today);
+    await runDailyDigest();
+  };
+  setInterval(() => void tick().catch((err) => console.error("Daily digest tick failed:", err)), DIGEST_TICK_MS);
 }
 
 async function handleStopCommand(from: string): Promise<void> {

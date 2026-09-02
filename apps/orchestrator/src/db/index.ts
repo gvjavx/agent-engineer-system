@@ -346,6 +346,16 @@ export const tasksRepo = {
   markResumed(id: string): void {
     db.prepare("UPDATE tasks SET status = 'queued', resume_count = resume_count + 1, finished_at = NULL WHERE id = ?").run(id);
   },
+  // Every task that finished in the last `hours` hours, across all projects,
+  // newest first — for the daily digest.
+  recentlyFinished(hours = 24): Task[] {
+    return db
+      .prepare(
+        `SELECT * FROM tasks WHERE finished_at IS NOT NULL AND finished_at >= datetime('now', ?)
+         ORDER BY finished_at DESC`
+      )
+      .all(`-${Math.max(1, Math.floor(hours))} hours`) as Task[];
+  },
   // Rollup over the last `days` days for the "status" dashboard.
   stats(days = 7): {
     total: number;
@@ -427,6 +437,13 @@ export const scheduledTasksRepo = {
       .prepare("SELECT * FROM scheduled_tasks WHERE next_run_at <= ? ORDER BY next_run_at ASC")
       .all(nowIso) as ScheduledTask[];
   },
+  // Everything scheduled to run at or before untilIso (includes anything
+  // overdue) — for the "bakal jalan hari ini" section of the daily digest.
+  upcomingWithin(untilIso: string): ScheduledTask[] {
+    return db
+      .prepare("SELECT * FROM scheduled_tasks WHERE next_run_at <= ? ORDER BY next_run_at ASC")
+      .all(untilIso) as ScheduledTask[];
+  },
   markRan(id: string, nextRunIso: string): void {
     db.prepare("UPDATE scheduled_tasks SET last_run_at = datetime('now'), next_run_at = ? WHERE id = ?").run(
       nextRunIso,
@@ -443,7 +460,7 @@ export const scheduledTasksRepo = {
 
 // WIB (UTC+7, no DST) calendar date as YYYY-MM-DD. Kept inline rather than
 // importing agent/schedule.ts's helpers to avoid a db <- agent import edge.
-function wibYmd(at = Date.now()): string {
+export function wibYmd(at = Date.now()): string {
   return new Date(at + 7 * 3600_000).toISOString().slice(0, 10);
 }
 
@@ -454,10 +471,13 @@ export const providerUsageRepo = {
        ON CONFLICT(ymd, provider_id) DO UPDATE SET calls = calls + 1`
     ).run(wibYmd(), providerId);
   },
-  today(): { providerId: string; calls: number }[] {
+  forDate(ymd: string): { providerId: string; calls: number }[] {
     return db
       .prepare("SELECT provider_id AS providerId, calls FROM provider_usage WHERE ymd = ? ORDER BY calls DESC")
-      .all(wibYmd()) as { providerId: string; calls: number }[];
+      .all(ymd) as { providerId: string; calls: number }[];
+  },
+  today(): { providerId: string; calls: number }[] {
+    return this.forDate(wibYmd());
   },
 };
 

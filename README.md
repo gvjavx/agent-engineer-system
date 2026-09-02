@@ -283,6 +283,10 @@ Bentuk "kapan" yang didukung: `tiap hari [jam H]`, `tiap <senin..minggu> [jam H]
 
 Pas waktunya tiba, agent nge-classify departemen ulang (biar ikut kondisi kode terkini) terus langsung jalan — tanpa nunggu konfirmasi, karena kamu udah nyetujui waktu bikin jadwalnya. `daftar jadwal` buat lihat semua (bernomor), `hapus jadwal <nomor>` buat batalin. Hapus project juga otomatis ngehapus jadwalnya.
 
+## Ringkasan harian
+
+Mati secara default (`DAILY_DIGEST_ENABLED`). Kalau nyala, sekali sehari jam `DAILY_DIGEST_HOUR` (WIB, default 7) kamu (nomor `OWNER_WHATSAPP_NUMBER`) dikirimin ringkasan tanpa diminta: task 24 jam terakhir di semua project (yang gagal disebut satu-satu beserta alasannya), jadwal yang bakal jalan hari ini, dan hitungan panggilan AI kemarin per key/model. Loop 5 menitan yang nembak pas ketemu jam target di hari baru; kalau gagal kirim, gak diulang-ulang sejam itu.
+
 ## Ngobrol santai + memori
 
 Pesan yang bukan command dan bukan instruksi kerjaan (pertanyaan, komentar, basa-basi) gak lagi otomatis dipaksa jadi task koding — agent ngenalin dulu ini ngobrol biasa atau bukan, terus jawab kayak asisten AI beneran, bukan nyoba nebak-nebak departemen mana yang ngerjain. Balasannya pakai konteks obrolan terakhir (beberapa pesan terakhir, bukan seluruh riwayat) plus hal-hal yang udah dipelajari soal kamu dari obrolan sebelumnya — dan itu kesimpen permanen lintas sesi, bukan cuma selama chat masih kebuka.
