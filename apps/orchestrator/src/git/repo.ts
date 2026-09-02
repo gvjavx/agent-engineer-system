@@ -127,7 +127,16 @@ export function removeWorkspace(alias: string): void {
 
 export async function createWorkBranch(dir: string, taskId: string): Promise<string> {
   const branch = `agent/${taskId.slice(0, 8)}`;
-  await simpleGit(dir).checkoutLocalBranch(branch);
+  const git = simpleGit(dir);
+  // A restart-resumed task keeps its id, so a stale work branch from the
+  // killed run can already exist here. ensureWorkspace just checked out the
+  // default branch, so this delete is safe; ignore "branch not found".
+  try {
+    await git.raw(["branch", "-D", branch]);
+  } catch {
+    // didn't exist — fresh task
+  }
+  await git.checkoutLocalBranch(branch);
   return branch;
 }
 

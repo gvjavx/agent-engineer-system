@@ -1,12 +1,11 @@
 import express from "express";
 import { config } from "./config.js";
-import { handleInboundMessage } from "./router/handler.js";
+import { handleInboundMessage, resumeInterruptedTasks } from "./router/handler.js";
 import { exchangeCodeForTokens } from "./agent/mcp/figmaAuth.js";
 import { consumePendingState } from "./agent/mcp/figmaOAuthState.js";
 import { sendWhatsApp } from "./whatsappClient.js";
 import { startIdleSessionScanner } from "./session/idleNotifier.js";
 import { isDuplicateInboundMessage } from "./inboundDedup.js";
-import { tasksRepo } from "./db/index.js";
 import { warmLocalEmbedder } from "./agent/localEmbedder.js";
 import { warmLocalLlm } from "./agent/localLlm.js";
 import { sandboxSummary } from "./agent/sandbox.js";
@@ -85,22 +84,14 @@ app.post("/internal/figma-oauth-callback", express.json(), (req, res) => {
 
 app.get("/healthz", (_req, res) => res.sendStatus(200));
 
-// Before accepting any request — anything still 'queued'/'running' at this
-// point belongs to a process that no longer exists (see
-// tasksRepo.recoverOrphaned's comment). No WhatsApp notification: these are
-// stale bookkeeping fixes, not something worth surfacing for tasks that may
-// be long past relevant to the user.
-const recovered = tasksRepo.recoverOrphaned();
-if (recovered.length > 0) {
-  console.warn(
-    `Recovered ${recovered.length} task(s) stuck from a previous run: ${recovered.map((t) => t.id).join(", ")}`
-  );
-}
-
 app.listen(config.port, () => {
   console.log(`orchestrator listening on port ${config.port}`);
   console.log(`bash sandbox: ${sandboxSummary()}`);
   startIdleSessionScanner();
+  // Re-enqueue tasks left mid-flight by the previous process. Runs here,
+  // synchronously, before the event loop can dispatch an inbound webhook, so
+  // resumed tasks are queued ahead of anything that arrives after boot.
+  resumeInterruptedTasks();
   // Load the local models in the background so the first request isn't the
   // one that pays the load cost.
   if (config.chatKb.semanticFallback || config.rag.enabled) warmLocalEmbedder();

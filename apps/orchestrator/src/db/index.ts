@@ -30,7 +30,16 @@ db.exec(`
     status TEXT NOT NULL DEFAULT 'queued', -- queued | running | done | failed | cancelled
     result_summary TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    finished_at TEXT
+    finished_at TEXT,
+    -- Everything needed to re-run this task from scratch after a server
+    -- restart (queue/taskQueue.ts is in-memory and dies with the process).
+    -- phases_json is the JSON PhaseSpec[] the pipeline was given; checkpoints
+    -- whether per-phase review was on; resume_count how many times a restart
+    -- has already re-run it, so a task that keeps dying gets abandoned
+    -- instead of looping forever.
+    phases_json TEXT,
+    checkpoints INTEGER NOT NULL DEFAULT 0,
+    resume_count INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS audit_log (
@@ -131,6 +140,9 @@ for (const migration of [
   "ALTER TABLE conversation_state ADD COLUMN current_session_id TEXT",
   "ALTER TABLE conversation_state ADD COLUMN last_message_at TEXT",
   "ALTER TABLE conversation_state ADD COLUMN session_ended_notified INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE tasks ADD COLUMN phases_json TEXT",
+  "ALTER TABLE tasks ADD COLUMN checkpoints INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE tasks ADD COLUMN resume_count INTEGER NOT NULL DEFAULT 0",
 ]) {
   try {
     db.exec(migration);
@@ -196,13 +208,23 @@ export interface Task {
   result_summary: string | null;
   created_at: string;
   finished_at: string | null;
+  phases_json: string | null;
+  checkpoints: number;
+  resume_count: number;
 }
 
 export const tasksRepo = {
-  create(id: string, projectAlias: string, fromNumber: string, instruction: string): void {
+  create(
+    id: string,
+    projectAlias: string,
+    fromNumber: string,
+    instruction: string,
+    phasesJson: string | null = null,
+    checkpoints = false
+  ): void {
     db.prepare(
-      "INSERT INTO tasks (id, project_alias, from_number, instruction) VALUES (?, ?, ?, ?)"
-    ).run(id, projectAlias, fromNumber, instruction);
+      "INSERT INTO tasks (id, project_alias, from_number, instruction, phases_json, checkpoints) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(id, projectAlias, fromNumber, instruction, phasesJson, checkpoints ? 1 : 0);
   },
   setStatus(id: string, status: Task["status"], resultSummary?: string): void {
     db.prepare(
@@ -228,20 +250,28 @@ export const tasksRepo = {
       )
       .all(fromNumber, limit) as Task[];
   },
-  // The in-memory task queue (queue/taskQueue.ts) that would normally
-  // transition these to done/failed/cancelled dies with the process — a
-  // restart mid-task otherwise leaves the row stuck at 'queued'/'running'
-  // forever, which makes "status" report a task as still running when
-  // nothing is actually executing it anymore. Call once at startup, before
-  // anything new gets enqueued: anything already in that state at that point
-  // is definitionally orphaned. Returns the recovered rows for logging.
-  recoverOrphaned(): Task[] {
-    const orphaned = db.prepare("SELECT * FROM tasks WHERE status IN ('queued','running')").all() as Task[];
-    db.prepare(
-      `UPDATE tasks SET status = 'failed', result_summary = 'Terputus karena server restart sebelum selesai.', finished_at = datetime('now')
-       WHERE status IN ('queued','running')`
-    ).run();
-    return orphaned;
+  // Tasks still queued/running for a project, oldest first — the running one
+  // (if any) is first. Used to tell a user how many tasks are ahead of theirs.
+  pendingForProject(projectAlias: string): Task[] {
+    return db
+      .prepare(
+        "SELECT * FROM tasks WHERE project_alias = ? AND status IN ('queued','running') ORDER BY created_at ASC"
+      )
+      .all(projectAlias) as Task[];
+  },
+  // Every task left mid-flight when the process last stopped. The in-memory
+  // queue (queue/taskQueue.ts) that drives status transitions dies with the
+  // process, so at startup these are exactly the tasks a resume needs to pick
+  // back up (or abandon). Read-only — the caller decides each one's fate.
+  interrupted(): Task[] {
+    return db
+      .prepare("SELECT * FROM tasks WHERE status IN ('queued','running') ORDER BY created_at ASC")
+      .all() as Task[];
+  },
+  // Bump the restart counter and put the row back to 'queued' so it's ready
+  // to be re-enqueued; the run body flips it to 'running' again itself.
+  markResumed(id: string): void {
+    db.prepare("UPDATE tasks SET status = 'queued', resume_count = resume_count + 1, finished_at = NULL WHERE id = ?").run(id);
   },
 };
 

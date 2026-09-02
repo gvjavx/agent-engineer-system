@@ -45,7 +45,7 @@ import { waitForBashApproval, resolveBashApproval, hasPendingBashApproval } from
 import { resolveWithin } from "../agent/tools.js";
 import { resolveDocumentMimeType, MAX_DOCUMENT_BYTES } from "../agent/documentGuard.js";
 import { config } from "../config.js";
-import { enqueueProjectTask, cancelActiveTask, getActiveTaskId } from "../queue/taskQueue.js";
+import { enqueueProjectTask, cancelActiveTask, getActiveTaskId, planResume } from "../queue/taskQueue.js";
 import {
   parseAddProject,
   isBareAddProjectCommand,
@@ -968,10 +968,22 @@ async function handleStatusCommand(from: string): Promise<void> {
   } else {
     const task = tasksRepo.get(activeTaskId);
     const phaseNote = auditLog.latestNote(activeTaskId);
+
+    const pending = tasksRepo.pendingForProject(state.active_project_alias);
+    const queued = pending.filter((t) => t.id !== activeTaskId);
+    const myPosition = queued.findIndex((t) => t.from_number === from);
+    const queueLine =
+      queued.length === 0
+        ? ""
+        : myPosition >= 0
+          ? `\n\nAntrian: ${queued.length} task nunggu, punya kamu di urutan ke-${myPosition + 1}.`
+          : `\n\nAntrian: ${queued.length} task nunggu di belakangnya.`;
+
     await sendWhatsApp(
       from,
       `Masih ngerjain task di "${state.active_project_alias}" nih:\n"${task?.instruction ?? ""}"` +
-        (phaseNote ? `\n\nTerakhir: ${phaseNote}` : ""),
+        (phaseNote ? `\n\nTerakhir: ${phaseNote}` : "") +
+        queueLine,
       [{ id: "stop", title: "Stop" }]
     );
   }
@@ -1878,150 +1890,264 @@ async function executeTask(
   phases: PhaseSpec[],
   checkpoints: boolean
 ): Promise<void> {
-  const state = conversationRepo.get(from);
   const taskId = crypto.randomUUID();
-  tasksRepo.create(taskId, project.alias, from, instruction);
+  tasksRepo.create(taskId, project.alias, from, instruction, JSON.stringify(phases), checkpoints);
 
-  await sendWhatsApp(from, `Oke, aku terima ya. Kalau ada task lain di depannya, ini bakal antre dulu.`);
+  // create() already inserted this row as 'queued', so it's counted here too.
+  const ahead = Math.max(0, tasksRepo.pendingForProject(project.alias).length - 1);
+  await sendWhatsApp(
+    from,
+    ahead > 0
+      ? `Oke, aku terima. Ada ${ahead} task lain di depannya buat "${project.alias}", jadi ini antre dulu ya.`
+      : `Oke, aku terima ya, langsung dikerjain.`
+  );
 
-  enqueueProjectTask(project.alias, taskId, async (abortController) => {
-    tasksRepo.setStatus(taskId, "running");
-    await sendWhatsApp(from, `Oke, mulai aku kerjain: "${instruction}"`);
+  enqueueProjectTask(project.alias, taskId, (abortController) =>
+    runTaskPipeline({
+      from,
+      projectAlias: project.alias,
+      taskId,
+      instruction,
+      phases,
+      checkpoints,
+      resumed: false,
+      abortController,
+    })
+  );
+}
 
-    try {
-      // Awaited by every caller in loop.ts/pipeline.ts — used to be
-      // fire-and-forget, which meant two progress messages raised close
-      // together (e.g. a phase's "beres" notice immediately followed by the
-      // next phase's "start" notice) had no guaranteed delivery order and
-      // could arrive on WhatsApp reversed.
-      const onProgress = async (msg: string): Promise<void> => {
-        await sendWhatsApp(from, msg).catch(() => {});
-      };
-      const onCheckpoint = async (msg: string, department: string, offerDesignSourceChoice: boolean): Promise<void> => {
-        const options = offerDesignSourceChoice
-          ? DESAIN_SOURCE_CHECKPOINT_OPTIONS
-          : department === "manajemen"
-            ? MANAJEMEN_CHECKPOINT_OPTIONS
-            : YES_NO_OPTIONS;
-        await sendWhatsApp(from, msg, options).catch(() => {});
-      };
+interface RunTaskPipelineOpts {
+  from: string;
+  projectAlias: string;
+  taskId: string;
+  instruction: string;
+  phases: PhaseSpec[];
+  checkpoints: boolean;
+  // true when a server restart is re-running this task (queue/taskQueue.ts is
+  // in-memory) — the pipeline starts over from the first phase, which is safe
+  // because nothing is merged/pushed until the last phase, so a killed task's
+  // git work branch is disposable. Only changes the opening WhatsApp line.
+  resumed: boolean;
+  abortController: AbortController;
+}
 
-      let cwd: string;
-      let mode: PipelineMode;
-      if (project.kind === "local") {
-        cwd = await ensureLocalFolder(project);
-        mode = { kind: "local", folderPath: cwd };
-      } else {
-        const workspace = await ensureWorkspace(project);
-        cwd = workspace.dir;
-        const workBranch = await createWorkBranch(cwd, taskId);
-        mode = { kind: "git", defaultBranch: workspace.branch, workBranch, autoMerge: project.auto_merge };
-      }
+// The actual run: shared by a fresh executeTask and by resumeInterruptedTasks
+// at startup, so both paths build the pipeline identically.
+async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
+  const { from, projectAlias, taskId, instruction, phases, checkpoints, resumed, abortController } = opts;
 
-      // Incremental refresh before the pipeline runs — skips fast when the
-      // default branch hasn't moved since the last index. Never blocks the
-      // task: a failure just means this run works without retrieval.
-      await indexProject({
-        projectAlias: project.alias,
-        cwd,
-        mode: project.kind === "local" ? "local" : "git",
-        signal: abortController.signal,
-        log: (m) => auditLog.add(taskId, "note", m),
-      }).catch((err) =>
-        auditLog.add(taskId, "error", `Index kode gagal: ${err instanceof Error ? err.message : String(err)}`)
-      );
+  const project = projectsRepo.get(projectAlias);
+  if (!project) {
+    tasksRepo.setStatus(taskId, "failed", `Project "${projectAlias}" udah gak terdaftar.`);
+    await sendWhatsApp(from, `Task "${instruction}" gak jadi jalan — project "${projectAlias}" udah gak ada.`).catch(() => {});
+    return;
+  }
+  const state = conversationRepo.get(from);
 
-      const sendDocument = async (relPath: string, caption: string | undefined): Promise<string> => {
-        let full: string;
-        try {
-          full = resolveWithin(cwd, relPath);
-        } catch (err) {
-          return `Error: ${err instanceof Error ? err.message : String(err)}`;
-        }
-        const mimeType = resolveDocumentMimeType(full);
-        if (!mimeType) {
-          return `Error: tipe file "${relPath}" gak didukung buat dikirim sebagai dokumen.`;
-        }
-        const stat = await fs.promises.stat(full).catch(() => undefined);
-        if (!stat) {
-          return `Error: file "${relPath}" gak ketemu.`;
-        }
-        if (stat.size > MAX_DOCUMENT_BYTES) {
-          return `Error: file "${relPath}" kegedean buat dikirim (maks ${MAX_DOCUMENT_BYTES / 1024 / 1024}MB).`;
-        }
-        try {
-          const contentBase64 = (await fs.promises.readFile(full)).toString("base64");
-          await sendWhatsAppDocument(from, path.basename(full), mimeType, contentBase64, caption);
-          return `Dokumen "${relPath}" berhasil dikirim ke user.`;
-        } catch (err) {
-          return `Error: gagal kirim dokumen — ${err instanceof Error ? err.message : String(err)}`;
-        }
-      };
+  tasksRepo.setStatus(taskId, "running");
+  await sendWhatsApp(
+    from,
+    resumed
+      ? `Server sempat restart. Task "${instruction}" aku lanjutin dari awal ya.`
+      : `Oke, mulai aku kerjain: "${instruction}"`
+  );
 
-      const onDangerousBash = async (command: string, reason: string): Promise<boolean> => {
-        await sendWhatsApp(
-          from,
-          `Mau aku jalanin command ini?\n\`${command}\`\n\nAku tanya dulu soalnya: ${reason}. Balas ya/tidak.`,
-          YES_NO_OPTIONS
-        );
-        return waitForBashApproval(taskId, abortController.signal);
-      };
+  try {
+    // Awaited by every caller in loop.ts/pipeline.ts — used to be
+    // fire-and-forget, which meant two progress messages raised close
+    // together (e.g. a phase's "beres" notice immediately followed by the
+    // next phase's "start" notice) had no guaranteed delivery order and
+    // could arrive on WhatsApp reversed.
+    const onProgress = async (msg: string): Promise<void> => {
+      await sendWhatsApp(from, msg).catch(() => {});
+    };
+    const onCheckpoint = async (msg: string, department: string, offerDesignSourceChoice: boolean): Promise<void> => {
+      const options = offerDesignSourceChoice
+        ? DESAIN_SOURCE_CHECKPOINT_OPTIONS
+        : department === "manajemen"
+          ? MANAJEMEN_CHECKPOINT_OPTIONS
+          : YES_NO_OPTIONS;
+      await sendWhatsApp(from, msg, options).catch(() => {});
+    };
 
-      const result = await runPipeline({
-        taskId,
-        cwd,
-        projectAlias: project.alias,
-        instruction,
-        phases,
-        abortController,
-        onProgress,
-        checkpoints,
-        onCheckpoint,
-        sendDocument,
-        onDangerousBash,
-        departmentModelLookup: (department) =>
-          // "semua" means classification didn't split into departments, but
-          // the work is still almost always coding — falls back to the dev
-          // default (not a "semua"-specific one) rather than the flat
-          // provider order, same reasoning the split departments already get.
-          department === "semua"
-            ? (state?.preferred_provider ?? config.departmentDefaultProviders.dev)
-            : (conversationRepo.getDepartmentModel(from, department) ??
-                state?.preferred_provider ??
-                config.departmentDefaultProviders[department as DepartmentKey]),
-        mode,
-      });
-
-      tasksRepo.setStatus(taskId, result.ok ? "done" : result.cancelled ? "cancelled" : "failed", result.summary);
-
-      if (result.cancelled && mode.kind === "git") {
-        // Safe to always discard: nothing gets merged/pushed into
-        // defaultBranch until the pipeline's last phase, so the work branch
-        // is disposable no matter how far the task got.
-        try {
-          await discardWorkBranch(cwd, mode.defaultBranch, mode.workBranch);
-          await sendWhatsApp(from, `${result.summary} Perubahan yang sempat dibikin udah aku balikin, workspace bersih lagi.`);
-        } catch (err) {
-          await sendWhatsApp(
-            from,
-            `${result.summary} Tapi gagal balikin perubahannya: ${err instanceof Error ? err.message : String(err)}. Mungkin perlu dicek manual di workspace-nya.`
-          );
-        }
-      } else if (result.cancelled && mode.kind === "local") {
-        await sendWhatsApp(
-          from,
-          `${result.summary} Ini folder lokal (bukan git), jadi perubahan file yang sempat dibikin gak bisa otomatis aku balikin — cek manual ya kalau perlu.`
-        );
-      } else {
-        await sendWhatsApp(
-          from,
-          result.ok ? `Udah selesai. ${result.summary}` : `Gagal nih. ${result.summary}`
-        );
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      tasksRepo.setStatus(taskId, "failed", message);
-      await sendWhatsApp(from, `Gagal nih, ada error: ${message}`);
+    let cwd: string;
+    let mode: PipelineMode;
+    if (project.kind === "local") {
+      cwd = await ensureLocalFolder(project);
+      mode = { kind: "local", folderPath: cwd };
+    } else {
+      const workspace = await ensureWorkspace(project);
+      cwd = workspace.dir;
+      const workBranch = await createWorkBranch(cwd, taskId);
+      mode = { kind: "git", defaultBranch: workspace.branch, workBranch, autoMerge: project.auto_merge };
     }
-  });
+
+    // Incremental refresh before the pipeline runs — skips fast when the
+    // default branch hasn't moved since the last index. Never blocks the
+    // task: a failure just means this run works without retrieval.
+    await indexProject({
+      projectAlias: project.alias,
+      cwd,
+      mode: project.kind === "local" ? "local" : "git",
+      signal: abortController.signal,
+      log: (m) => auditLog.add(taskId, "note", m),
+    }).catch((err) =>
+      auditLog.add(taskId, "error", `Index kode gagal: ${err instanceof Error ? err.message : String(err)}`)
+    );
+
+    const sendDocument = async (relPath: string, caption: string | undefined): Promise<string> => {
+      let full: string;
+      try {
+        full = resolveWithin(cwd, relPath);
+      } catch (err) {
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      const mimeType = resolveDocumentMimeType(full);
+      if (!mimeType) {
+        return `Error: tipe file "${relPath}" gak didukung buat dikirim sebagai dokumen.`;
+      }
+      const stat = await fs.promises.stat(full).catch(() => undefined);
+      if (!stat) {
+        return `Error: file "${relPath}" gak ketemu.`;
+      }
+      if (stat.size > MAX_DOCUMENT_BYTES) {
+        return `Error: file "${relPath}" kegedean buat dikirim (maks ${MAX_DOCUMENT_BYTES / 1024 / 1024}MB).`;
+      }
+      try {
+        const contentBase64 = (await fs.promises.readFile(full)).toString("base64");
+        await sendWhatsAppDocument(from, path.basename(full), mimeType, contentBase64, caption);
+        return `Dokumen "${relPath}" berhasil dikirim ke user.`;
+      } catch (err) {
+        return `Error: gagal kirim dokumen — ${err instanceof Error ? err.message : String(err)}`;
+      }
+    };
+
+    const onDangerousBash = async (command: string, reason: string): Promise<boolean> => {
+      await sendWhatsApp(
+        from,
+        `Mau aku jalanin command ini?\n\`${command}\`\n\nAku tanya dulu soalnya: ${reason}. Balas ya/tidak.`,
+        YES_NO_OPTIONS
+      );
+      return waitForBashApproval(taskId, abortController.signal);
+    };
+
+    const result = await runPipeline({
+      taskId,
+      cwd,
+      projectAlias: project.alias,
+      instruction,
+      phases,
+      abortController,
+      onProgress,
+      checkpoints,
+      onCheckpoint,
+      sendDocument,
+      onDangerousBash,
+      departmentModelLookup: (department) =>
+        // "semua" means classification didn't split into departments, but
+        // the work is still almost always coding — falls back to the dev
+        // default (not a "semua"-specific one) rather than the flat
+        // provider order, same reasoning the split departments already get.
+        department === "semua"
+          ? (state?.preferred_provider ?? config.departmentDefaultProviders.dev)
+          : (conversationRepo.getDepartmentModel(from, department) ??
+              state?.preferred_provider ??
+              config.departmentDefaultProviders[department as DepartmentKey]),
+      mode,
+    });
+
+    tasksRepo.setStatus(taskId, result.ok ? "done" : result.cancelled ? "cancelled" : "failed", result.summary);
+
+    if (result.cancelled && mode.kind === "git") {
+      // Safe to always discard: nothing gets merged/pushed into
+      // defaultBranch until the pipeline's last phase, so the work branch
+      // is disposable no matter how far the task got.
+      try {
+        await discardWorkBranch(cwd, mode.defaultBranch, mode.workBranch);
+        await sendWhatsApp(from, `${result.summary} Perubahan yang sempat dibikin udah aku balikin, workspace bersih lagi.`);
+      } catch (err) {
+        await sendWhatsApp(
+          from,
+          `${result.summary} Tapi gagal balikin perubahannya: ${err instanceof Error ? err.message : String(err)}. Mungkin perlu dicek manual di workspace-nya.`
+        );
+      }
+    } else if (result.cancelled && mode.kind === "local") {
+      await sendWhatsApp(
+        from,
+        `${result.summary} Ini folder lokal (bukan git), jadi perubahan file yang sempat dibikin gak bisa otomatis aku balikin — cek manual ya kalau perlu.`
+      );
+    } else {
+      await sendWhatsApp(
+        from,
+        result.ok ? `Udah selesai. ${result.summary}` : `Gagal nih. ${result.summary}`
+      );
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    tasksRepo.setStatus(taskId, "failed", message);
+    await sendWhatsApp(from, `Gagal nih, ada error: ${message}`);
+  }
+}
+
+// Re-enqueue every task that was still queued/running when the process last
+// stopped. Called once at startup, before any inbound message can enqueue a
+// new one, so resumed tasks keep their place in line. A task that has already
+// been resumed MAX_RESUME_ATTEMPTS times, or whose project/plan can't be
+// reconstructed, is failed with an explanation instead.
+export function resumeInterruptedTasks(): void {
+  const { resume, abandon } = planResume(tasksRepo.interrupted());
+
+  for (const task of abandon) {
+    const reason = task.phases_json
+      ? "Terputus berkali-kali gara-gara server restart — aku stop di sini. Kirim ulang instruksinya kalau masih mau."
+      : "Terputus gara-gara server restart sebelum selesai.";
+    tasksRepo.setStatus(task.id, "failed", reason);
+    void sendWhatsApp(task.from_number, `Task "${task.instruction}": ${reason}`).catch(() => {});
+  }
+
+  for (const task of resume) {
+    const project = projectsRepo.get(task.project_alias);
+    let phases: PhaseSpec[] | undefined;
+    try {
+      phases = JSON.parse(task.phases_json as string) as PhaseSpec[];
+    } catch {
+      phases = undefined;
+    }
+    if (!project || !phases || phases.length === 0) {
+      tasksRepo.setStatus(task.id, "failed", "Terputus gara-gara server restart, dan datanya gak bisa dipulihin.");
+      void sendWhatsApp(task.from_number, `Task "${task.instruction}" gak bisa aku lanjutin setelah restart.`).catch(() => {});
+      continue;
+    }
+    // A git task re-clones/pulls a fresh workspace and drops its stale work
+    // branch, so restarting it is clean. A local-folder task has no work
+    // branch — its partial edits are still sitting in the user's folder, and
+    // re-running from phase one on top of those could double-apply. Don't;
+    // just tell them.
+    if (project.kind === "local") {
+      tasksRepo.setStatus(task.id, "failed", "Kepotong server restart. Ini folder lokal, jadi nggak aku jalanin ulang otomatis — cek perubahan yang sempat kebikin, kirim ulang kalau mau lanjut.");
+      void sendWhatsApp(
+        task.from_number,
+        `Task "${task.instruction}" kepotong pas server restart. Folder lokal nggak aku ulang otomatis — cek dulu perubahan yang sempat kebikin, terus kirim ulang instruksinya kalau masih mau.`
+      ).catch(() => {});
+      continue;
+    }
+    tasksRepo.markResumed(task.id);
+    const resumePhases = phases;
+    enqueueProjectTask(task.project_alias, task.id, (abortController) =>
+      runTaskPipeline({
+        from: task.from_number,
+        projectAlias: task.project_alias,
+        taskId: task.id,
+        instruction: task.instruction,
+        phases: resumePhases,
+        checkpoints: task.checkpoints === 1,
+        resumed: true,
+        abortController,
+      })
+    );
+  }
+
+  if (resume.length + abandon.length > 0) {
+    console.warn(`Startup: resuming ${resume.length} interrupted task(s), abandoning ${abandon.length}.`);
+  }
 }
