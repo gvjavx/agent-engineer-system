@@ -237,7 +237,7 @@ test("semanticLookup: cosine against stored vectors, threshold-gated, returns th
   assert.ok(miss.queryVector instanceof Float32Array);
 });
 
-test("kbStatsRepo aggregates by source, folds nearMiss into model, computes without-AI %", () => {
+test("kbStatsRepo aggregates by source, folds nearMiss into model, computes own %", () => {
   // a unique day far in the past so the window catches only this test's rows
   const day = `19${Math.floor(Math.random() * 89) + 10}-06-15`;
   for (let i = 0; i < 3; i++) kbStatsRepo.bump("model", day);
@@ -246,11 +246,12 @@ test("kbStatsRepo aggregates by source, folds nearMiss into model, computes with
   kbStatsRepo.bump("kb", day);
   kbStatsRepo.bump("kb", day);
   kbStatsRepo.bump("arithmetic", day);
+  kbStatsRepo.bump("local", day);
 
   const s = kbStatsRepo.summary(3, new Date(`${day}T12:00:00+07:00`));
   assert.deepEqual(
-    { model: s.model, nearMiss: s.nearMiss, kb: s.kb, arithmetic: s.arithmetic, total: s.total, pct: s.withoutAiPct },
-    { model: 5, nearMiss: 2, kb: 2, arithmetic: 1, total: 8, pct: 38 } // (2+1)/8 = 37.5 -> 38
+    { model: s.model, nearMiss: s.nearMiss, kb: s.kb, arithmetic: s.arithmetic, local: s.local, total: s.total, pct: s.ownPct },
+    { model: 5, nearMiss: 2, kb: 2, arithmetic: 1, local: 1, total: 9, pct: 44 } // (2+1+1)/9 = 44.4 -> 44
   );
 });
 

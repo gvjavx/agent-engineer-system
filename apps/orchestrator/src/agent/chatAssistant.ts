@@ -2,6 +2,8 @@ import type { ChatMessage, Provider } from "./types.js";
 import { STYLE_RULES, currentDateLine } from "./dynamicReplies.js";
 import { tryEvaluateArithmetic } from "./calc.js";
 import { lookupCachedAnswer, type ChatKbOpts } from "./chatKb.js";
+import { config } from "../config.js";
+import { generateLocalReply } from "./localLlm.js";
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -33,7 +35,7 @@ export interface ChatReplyResult {
   // "model": "arithmetic" = agent/calc.ts, "kb" = a stored answer to a
   // near-identical earlier question. The chat handler uses this to skip
   // re-recording a KB hit.
-  source?: "model" | "arithmetic" | "kb";
+  source?: "model" | "arithmetic" | "kb" | "local";
   // On a "model" reply preceded by a KB lookup miss: the question's vector the
   // lookup already computed. The handler passes it to recordInteraction so
   // the same text isn't embedded twice.
@@ -50,6 +52,10 @@ export interface GenerateChatReplyOpts {
   // A re-answer after the user flagged the previous (cached) answer wrong.
   // Added to the prompt as a correction note; also skips the cache lookup.
   extraContext?: string;
+  // Local-model test seams. localEnabled overrides the config flag; localGen
+  // overrides the real agent/localLlm generator.
+  localEnabled?: boolean;
+  localGen?: (system: string, message: string) => Promise<string | undefined>;
 }
 
 // Real multi-turn messages (system + history + the new user turn) rather
@@ -89,6 +95,15 @@ After your reply, add one final line with exactly this format:
 FACT: <one short new fact worth remembering long-term about this user, in Indonesian>
 Write it in second person ("kamu lagi ngerjain...", "kamu suka...") so it reads naturally if it ever gets quoted back to them in a later reply — not a third-person case note ("user sedang...", "user cenderung..."). Only record a concrete, durable fact about them that would still be true and useful weeks from now — an ongoing project, the stack/tools/language they work in, their role or domain, a firm preference or constraint they stated outright. Do NOT record: guesses about what they're thinking or feeling, their attitude toward you or how much they trust you ("kamu pengen mastiin aku bisa diandalkan", "kamu lagi nguji kemampuan aku"), or any commentary on how this conversation is going ("kamu nanya hitungan berkali-kali") — those aren't facts about them and read strangely quoted back later. Small talk, a one-off test question, or general trivia has nothing to record. Don't repeat anything already listed above. If there's nothing new worth remembering from this message, write exactly:
 FACT: tidak ada`;
+}
+
+// Short, no fact-extraction instruction, no history — a small local model
+// does better with a tight prompt, and its replies aren't mined for facts.
+function buildLocalSystemPrompt(message: string): string {
+  const connectivity = CONNECTIVITY_RE.test(message)
+    ? " Kamu nggak punya akses internet di sini, jadi jangan ngaku bisa cek info terkini."
+    : "";
+  return `Kamu Mas ADE, asisten yang bantu orang lewat chat WhatsApp. ${STYLE_RULES} ${currentDateLine(message)}${connectivity} Jawab langsung pertanyaan user, singkat, dalam Bahasa Indonesia. Kalau nggak yakin jawabannya, bilang nggak tau — jangan ngarang.`;
 }
 
 function buildChatMessages(
@@ -147,6 +162,14 @@ export async function generateChatReply(
     if (kb.hit) return { reply: kb.hit, source: "kb" };
     questionVector = kb.queryVector;
     nearMiss = kb.nearMiss ?? false;
+  }
+
+  // Try a local model before the vendor. A miss/timeout/empty answer just
+  // falls through to provider.chat below.
+  if ((opts.localEnabled ?? config.localLlm.enabled) && !opts.extraContext) {
+    const gen = opts.localGen ?? generateLocalReply;
+    const local = await gen(buildLocalSystemPrompt(message), message);
+    if (local) return { reply: parseChatReply(local).reply || local, source: "local" };
   }
 
   try {

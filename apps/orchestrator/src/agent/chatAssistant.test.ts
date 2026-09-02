@@ -146,6 +146,30 @@ test("generateChatReply falls through to the model when the KB has no match", as
   assert.equal(result?.source, "model");
 });
 
+test("generateChatReply uses the local model before the provider, and falls back when it declines", async () => {
+  let providerCalls = 0;
+  const provider = fakeProvider(async () => {
+    providerCalls++;
+    return { type: "text", text: "dari gemini\nFACT: tidak ada" };
+  });
+
+  // local model answers -> provider not called
+  const hit = await generateChatReply("apa itu gravitasi", [], [], provider, new AbortController().signal, {
+    localEnabled: true,
+    localGen: async () => "Gaya tarik antar benda bermassa.",
+  });
+  assert.deepEqual(hit, { reply: "Gaya tarik antar benda bermassa.", source: "local" });
+  assert.equal(providerCalls, 0);
+
+  // local model declines (undefined) -> provider answers
+  const miss = await generateChatReply("apa itu gravitasi", [], [], provider, new AbortController().signal, {
+    localEnabled: true,
+    localGen: async () => undefined,
+  });
+  assert.equal(miss?.source, "model");
+  assert.equal(providerCalls, 1);
+});
+
 test("generateChatReply returns undefined on a tool_calls response", async () => {
   const provider = fakeProvider(async () => ({ type: "tool_calls", calls: [] }));
   const result = await generateChatReply("x", [], [], provider, new AbortController().signal);

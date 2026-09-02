@@ -251,16 +251,17 @@ const wibDay = (d: Date): string =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(d); // YYYY-MM-DD
 
 export interface ChatStatsSummary {
-  model: number; // includes nearMiss
-  nearMiss: number; // went to the model, but a stored question was just below threshold
+  model: number; // Gemini/vendor, includes nearMiss
+  nearMiss: number; // went to the vendor, but a stored question was just below threshold
   kb: number;
   arithmetic: number;
+  local: number; // answered by the local model
   total: number;
-  withoutAiPct: number;
+  ownPct: number; // share NOT sent to a vendor: (kb + arithmetic + local) / total
 }
 
 export const kbStatsRepo = {
-  // source: 'kb' | 'arithmetic' | 'model' | 'model_nearmiss'
+  // source: 'kb' | 'arithmetic' | 'local' | 'model' | 'model_nearmiss'
   bump(source: string, day: string = wibDay(new Date())): void {
     db.prepare(
       `INSERT INTO chat_stats (day, source, count) VALUES (?, ?, 1)
@@ -280,14 +281,16 @@ export const kbStatsRepo = {
     const model = (by.model ?? 0) + nearMiss;
     const kb = by.kb ?? 0;
     const arithmetic = by.arithmetic ?? 0;
-    const total = model + kb + arithmetic;
+    const local = by.local ?? 0;
+    const total = model + kb + arithmetic + local;
     return {
       model,
       nearMiss,
       kb,
       arithmetic,
+      local,
       total,
-      withoutAiPct: total ? Math.round(((kb + arithmetic) / total) * 100) : 0,
+      ownPct: total ? Math.round(((kb + arithmetic + local) / total) * 100) : 0,
     };
   },
 };

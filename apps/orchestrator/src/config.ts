@@ -218,6 +218,15 @@ export const config = {
     maxAgeDays: Math.max(0, Math.floor(Number(process.env.CHAT_KB_MAX_AGE_DAYS ?? 90))),
   },
 
+  // A small local instruct model (agent/localLlm.ts) that answers non-coding
+  // chat before Gemini is tried, so a genuinely new question doesn't
+  // necessarily go to a vendor. CPU-only; a failure/timeout falls back to the
+  // configured provider. Off unless CHAT_LOCAL_LLM=true and
+  // @huggingface/transformers is installed. Coding tasks are unaffected.
+  localLlm: {
+    enabled: (process.env.CHAT_LOCAL_LLM ?? "false").toLowerCase() === "true",
+  },
+
   // Optional — only set once someone actually registers a Figma OAuth app
   // and runs "hubungkan figma". Left undefined otherwise so the rest of the
   // system works fine without it.

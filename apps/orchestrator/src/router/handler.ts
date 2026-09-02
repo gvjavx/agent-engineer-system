@@ -1031,11 +1031,11 @@ function chatKbStatsLine(): string {
   const lastWeek = kbStatsRepo.summary(7, new Date(now.getTime() - 7 * 86_400_000));
   const trend =
     thisWeek.total >= 3 && lastWeek.total >= 3
-      ? ` (minggu ini ${thisWeek.withoutAiPct}%, minggu lalu ${lastWeek.withoutAiPct}%)`
+      ? ` (minggu ini ${thisWeek.ownPct}%, minggu lalu ${lastWeek.ownPct}%)`
       : "";
   const nearMiss =
     s.nearMiss > 0
-      ? ` Dari yang ke AI, ${s.nearMiss} nyaris cocok sama jawaban tersimpan — turunin CHAT_KB_MATCH_THRESHOLD/CHAT_KB_LOCAL_THRESHOLD bisa nambah.`
+      ? ` Dari yang ke Gemini, ${s.nearMiss} nyaris cocok sama jawaban tersimpan — turunin CHAT_KB_MATCH_THRESHOLD/CHAT_KB_LOCAL_THRESHOLD bisa nambah.`
       : "";
   const hints = kbHintsRepo.top(3, 4);
   const hintLine = hints.length
@@ -1043,7 +1043,8 @@ function chatKbStatsLine(): string {
         .map((h) => `"${h.a}"↔"${h.b}" (${h.count}x)`)
         .join(", ")}. Kalau emang sinonim, tambahin ke SYNONYM di db/chatKb.ts.`
     : "";
-  return `\n\n30 hari: ${s.total} pertanyaan chat, ${s.kb + s.arithmetic} dijawab tanpa AI (${s.withoutAiPct}%)${trend} — ${s.kb} dari memori, ${s.arithmetic} hitungan.${nearMiss}${hintLine}`;
+  const localPart = s.local > 0 ? `, ${s.local} model lokal` : "";
+  return `\n\n30 hari: ${s.total} pertanyaan chat, ${s.kb + s.arithmetic + s.local} tanpa Gemini (${s.ownPct}%)${trend} — ${s.kb} dari memori, ${s.arithmetic} hitungan${localPart}.${nearMiss}${hintLine}`;
 }
 
 async function handleClearMemoryCommand(from: string): Promise<void> {
@@ -1197,9 +1198,10 @@ async function handleChatMessage(
     // other reply clears that.
     if (result.source === "kb") noteKbHit(from, message);
     else clearKbHit(from);
-    // A "kb" reply is already in the store — re-recording would just pile up
-    // duplicates. Only the model/arithmetic paths produce something new.
-    if (result.source !== "kb") {
+    // "kb" is already in the store; "local" answers aren't cached (the local
+    // model is free to re-run and improves as it's tuned, and its output
+    // shouldn't seed the distillation dataset). Only model/arithmetic record.
+    if (result.source !== "kb" && result.source !== "local") {
       void recordInteraction({
         fromNumber: from,
         kind: result.source === "arithmetic" ? "chat_arithmetic" : "chat_model",

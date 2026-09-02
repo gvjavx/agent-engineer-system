@@ -8,6 +8,7 @@ import { startIdleSessionScanner } from "./session/idleNotifier.js";
 import { isDuplicateInboundMessage } from "./inboundDedup.js";
 import { tasksRepo } from "./db/index.js";
 import { warmLocalEmbedder } from "./agent/localEmbedder.js";
+import { warmLocalLlm } from "./agent/localLlm.js";
 
 const app = express();
 
@@ -98,7 +99,8 @@ if (recovered.length > 0) {
 app.listen(config.port, () => {
   console.log(`orchestrator listening on port ${config.port}`);
   startIdleSessionScanner();
-  // Load the local embedding model in the background so the first semantic
-  // lookup / code index isn't the one that pays the load cost.
+  // Load the local models in the background so the first request isn't the
+  // one that pays the load cost.
   if (config.chatKb.semanticFallback || config.rag.enabled) warmLocalEmbedder();
+  if (config.localLlm.enabled) warmLocalLlm();
 });
