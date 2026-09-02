@@ -91,11 +91,27 @@ export async function recordInteraction(
 }
 
 export interface CacheLookupResult {
-  // The stored answer to reuse, if a match was found.
+  // The stored answer to reuse, if a match was found. Carries a short age
+  // note when the stored row is more than a couple of weeks old.
   hit?: string;
   // Only set on the semantic path: the question's vector, so the handler can
   // hand it to recordInteraction instead of embedding twice.
   queryVector?: Float32Array;
+}
+
+// SQLite datetime('now') -> ms since epoch (it's UTC, no zone suffix).
+function parseSqliteTs(ts: string): number {
+  return Date.parse(ts.replace(" ", "T") + "Z");
+}
+
+// A parenthetical appended to an older cached answer so the user knows it
+// might have moved on. Nothing for anything recorded in the last ~2 weeks.
+function ageNote(createdAt: string): string {
+  const days = (Date.now() - parseSqliteTs(createdAt)) / 86_400_000;
+  if (!Number.isFinite(days) || days < 14) return "";
+  const when =
+    days < 45 ? "beberapa minggu lalu" : days < 75 ? "sekitar sebulan lalu" : `sekitar ${Math.round(days / 30)} bulan lalu`;
+  return `\n\n(ini jawaban tersimpan dari ${when}, bisa aja udah berubah)`;
 }
 
 // If this question is a repeat of one already answered for this sender,
@@ -114,15 +130,15 @@ export async function lookupCachedAnswer(
   const candidates = chatKbRepo.candidatesForLocalMatch(params.fromNumber, config.chatKb.maxAgeDays);
 
   const exact = candidates.find((c) => c.normQuestion === norm);
-  if (exact) return { hit: exact.answer };
+  if (exact) return { hit: exact.answer + ageNote(exact.createdAt) };
 
   const qTokens = tokenSet(norm);
-  let best = { score: 0, answer: "" };
+  let best = { score: 0, answer: "", createdAt: "" };
   for (const c of candidates) {
     const score = jaccard(qTokens, tokenSet(c.normQuestion));
-    if (score > best.score) best = { score, answer: c.answer };
+    if (score > best.score) best = { score, answer: c.answer, createdAt: c.createdAt };
   }
-  if (best.score >= config.chatKb.localMatchThreshold) return { hit: best.answer };
+  if (best.score >= config.chatKb.localMatchThreshold) return { hit: best.answer + ageNote(best.createdAt) };
 
   if (config.chatKb.semanticFallback) {
     return semanticLookup(params.fromNumber, params.question.trim(), opts);
@@ -158,16 +174,16 @@ export async function semanticLookup(
   if (!queryVec) return {};
 
   const rows = chatKbRepo.embeddedForNumber(fromNumber, config.chatKb.maxAgeDays);
-  let best = { score: -1, answer: "" };
+  let best = { score: -1, answer: "", createdAt: "" };
   for (const row of rows) {
     const score = cosineSimilarity(queryVec, row.embedding);
-    if (score > best.score) best = { score, answer: row.answer };
+    if (score > best.score) best = { score, answer: row.answer, createdAt: row.createdAt };
   }
 
   void backfillNullEmbeddings(fromNumber, opts);
 
   return best.score >= config.chatKb.matchThreshold
-    ? { hit: best.answer, queryVector: queryVec }
+    ? { hit: best.answer + ageNote(best.createdAt), queryVector: queryVec }
     : { queryVector: queryVec };
 }
 
@@ -192,4 +208,40 @@ export async function backfillNullEmbeddings(fromNumber: string, opts: ChatKbOpt
   } finally {
     backfillInFlight.delete(fromNumber);
   }
+}
+
+// --- "that cached answer is wrong / out of date" correction -----------
+
+// Which cache-served question a sender might be about to correct. In-memory
+// and short-lived: a correction lands in the very next message or not at all.
+const lastKbHit = new Map<string, { question: string; at: number }>();
+const CORRECTION_WINDOW_MS = 6 * 60 * 1000;
+
+// Start-anchored so a normal follow-up question doesn't trip it, but a
+// trailing clause ("salah dong, yang bener X") is fine.
+const CORRECTION_RE =
+  /^\s*(salah|itu salah|bukan[,. ]*(itu|tuh)?[,.]|keliru|kurang tepat|(nggak|gak|ga) (tepat|bener|benar|update|akurat)|(itu )?(udah|udh) (lama|basi|kadaluwarsa|kadaluarsa|outdated)|yang (baru|terbaru|update)|update dong|outdated|info(nya)? (lama|basi))\b/i;
+
+export function noteKbHit(fromNumber: string, question: string): void {
+  lastKbHit.set(fromNumber, { question, at: Date.now() });
+}
+
+export function clearKbHit(fromNumber: string): void {
+  lastKbHit.delete(fromNumber);
+}
+
+// If `message` is the sender flagging the just-served cached answer as bad,
+// delete that stored answer and return the original question to re-answer
+// fresh. Returns undefined otherwise.
+export function consumeKbCorrection(fromNumber: string, message: string): string | undefined {
+  const pending = lastKbHit.get(fromNumber);
+  if (!pending) return undefined;
+  if (Date.now() - pending.at > CORRECTION_WINDOW_MS) {
+    lastKbHit.delete(fromNumber);
+    return undefined;
+  }
+  if (!CORRECTION_RE.test(message)) return undefined;
+  lastKbHit.delete(fromNumber);
+  chatKbRepo.deleteByNorm(fromNumber, normalizeQuestion(pending.question));
+  return pending.question;
 }

@@ -118,12 +118,14 @@ export interface InteractionRow {
   question: string;
   answer: string;
   kind: string;
+  createdAt: string;
   embedding: Float32Array;
 }
 
 export interface LocalCandidate {
   answer: string;
   normQuestion: string;
+  createdAt: string;
 }
 
 function toBuffer(v: Float32Array): Buffer {
@@ -177,6 +179,14 @@ export const chatKbRepo = {
     db.prepare("DELETE FROM interaction_kb WHERE from_number = ?").run(fromNumber);
   },
 
+  // Drop the matchable row(s) for one question — used when the user says a
+  // served-from-cache answer is wrong or out of date.
+  deleteByNorm(fromNumber: string, norm: string): void {
+    db.prepare(
+      "DELETE FROM interaction_kb WHERE from_number = ? AND norm_question = ? AND kind = 'chat_model'"
+    ).run(fromNumber, norm);
+  },
+
   // The local repeat match works off these — no embedding involved. Newest
   // first so an exact match picks the most recent answer. maxAgeDays > 0
   // drops rows older than the TTL so a stale answer expires instead of being
@@ -185,7 +195,7 @@ export const chatKbRepo = {
     const age = ageClause(maxAgeDays);
     return db
       .prepare(
-        "SELECT answer, norm_question AS normQuestion FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND norm_question IS NOT NULL AND norm_question != ''" +
+        "SELECT answer, norm_question AS normQuestion, created_at AS createdAt FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND norm_question IS NOT NULL AND norm_question != ''" +
           age.sql +
           " ORDER BY id DESC"
       )
@@ -197,7 +207,7 @@ export const chatKbRepo = {
     const age = ageClause(maxAgeDays);
     const rows = db
       .prepare(
-        "SELECT id, question, answer, kind, embedding FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND embedding IS NOT NULL" +
+        "SELECT id, question, answer, kind, created_at AS createdAt, embedding FROM interaction_kb WHERE from_number = ? AND kind = 'chat_model' AND embedding IS NOT NULL" +
           age.sql
       )
       .all(fromNumber, ...age.params) as {
@@ -205,6 +215,7 @@ export const chatKbRepo = {
       question: string;
       answer: string;
       kind: string;
+      createdAt: string;
       embedding: Buffer;
     }[];
     return rows.map((r) => ({ ...r, embedding: toFloat32Array(r.embedding) }));

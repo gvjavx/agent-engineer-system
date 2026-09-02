@@ -17,6 +17,7 @@ import { ensureWorkspace, createWorkBranch, ensureLocalFolder, removeWorkspace, 
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { recordInteraction } from "../agent/chatKb.js";
 import { chatKbRepo, kbStatsRepo } from "../db/chatKb.js";
+import { noteKbHit, clearKbHit, consumeKbCorrection } from "../agent/chatKb.js";
 import { buildProviders, splitProviderSpec, primaryModelForProvider } from "../agent/runner.js";
 import { checkProviderStatus, describeProviderStatus } from "../agent/providerStatus.js";
 import { classifyDepartments } from "../agent/classifier.js";
@@ -412,6 +413,12 @@ export async function handleInboundMessage(
 
   const pendingReply = await handlePendingConfirmation(from, trimmed);
   if (pendingReply) return;
+
+  // "that cached answer was wrong / out of date" — only fires right after a
+  // reply that was served from the chat KB, and only for a message that's a
+  // plain correction. Checked here so a bare "salah" isn't first misread by
+  // the intent classifier as a task.
+  if (!image && (await tryHandleKbCorrection(from, trimmed))) return;
 
   // Checked after the three pending-state handlers above (not before) — an
   // image arriving while the user has an unresolved confirmation must not
@@ -1156,6 +1163,10 @@ async function handleChatMessage(from: string, message: string, provider: Provid
     chatHistoryRepo.append(from, "assistant", reply);
     if (result.newFact) memoryRepo.add(from, result.newFact);
     if (config.chatKb.enabled) kbStatsRepo.bump(result.source ?? "model");
+    // Remember a KB-served answer so the next message can correct it; any
+    // other reply clears that.
+    if (result.source === "kb") noteKbHit(from, message);
+    else clearKbHit(from);
     // A "kb" reply is already in the store — re-recording would just pile up
     // duplicates. Only the model/arithmetic paths produce something new.
     if (result.source !== "kb") {
@@ -1168,6 +1179,24 @@ async function handleChatMessage(from: string, message: string, provider: Provid
       });
     }
   }
+}
+
+// Fires only when the previous reply to this sender came from the chat KB
+// and this message is a bare correction ("salah", "yang terbaru dong", ...).
+// Drops the stale stored answer and re-asks the model for the same question.
+async function tryHandleKbCorrection(from: string, trimmed: string): Promise<boolean> {
+  const original = consumeKbCorrection(from, trimmed);
+  if (!original) return false;
+
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
+  if (providers.length === 0) {
+    await sendWhatsApp(from, "Oke, jawaban tadi aku hapus dari ingatan. Lagi gak ada AI aktif buat jawab ulang — coba tanya lagi bentar ya.");
+    return true;
+  }
+  await sendWhatsApp(from, "Oke, jawaban tadi aku hapus. Aku tanyain ulang ya.");
+  await handleChatMessage(from, original, providers[0]);
+  return true;
 }
 
 // Shared by the three pending-handlers below. Fail-closed is structural, not

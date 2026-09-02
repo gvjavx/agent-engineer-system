@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { recordInteraction, lookupCachedAnswer, semanticLookup, isVolatile } from "./chatKb.js";
+import {
+  recordInteraction,
+  lookupCachedAnswer,
+  semanticLookup,
+  isVolatile,
+  noteKbHit,
+  clearKbHit,
+  consumeKbCorrection,
+} from "./chatKb.js";
 import { chatKbRepo, normalizeQuestion, kbStatsRepo } from "../db/chatKb.js";
 import { db } from "../db/index.js";
 
@@ -105,6 +113,47 @@ test("a cached answer past the TTL is ignored", async () => {
 
   // default config TTL is 90 days -> this 200-day-old row shouldn't match
   assert.equal((await lookup(from, "apa itu blockchain")).hit, undefined);
+});
+
+test("an older-but-in-TTL cached answer gets an age note; a fresh one doesn't", async () => {
+  const from = uid("agenote");
+  const id = chatKbRepo.insert(from, "chat_model", "apa itu graphql", "Bahasa query buat API.");
+  db.prepare("UPDATE interaction_kb SET created_at = datetime('now', '-40 days') WHERE id = ?").run(id);
+  const aged = (await lookup(from, "apa itu graphql")).hit;
+  assert.match(aged ?? "", /Bahasa query buat API\./);
+  assert.match(aged ?? "", /jawaban tersimpan dari/);
+
+  await seed(from, "apa itu rest api", "Gaya arsitektur buat API.");
+  assert.equal((await lookup(from, "apa itu rest api")).hit, "Gaya arsitektur buat API."); // no note, fresh
+});
+
+test("consumeKbCorrection: only fires after a noted KB hit, only for a correction phrase, once", () => {
+  const from = uid("correct");
+
+  // no prior KB hit -> nothing to correct
+  assert.equal(consumeKbCorrection(from, "salah"), undefined);
+
+  noteKbHit(from, "siapa penemu telepon");
+  assert.equal(consumeKbCorrection(from, "menarik juga"), undefined); // not a correction
+  assert.equal(consumeKbCorrection(from, "salah dong, itu udah lama"), "siapa penemu telepon");
+  assert.equal(consumeKbCorrection(from, "salah"), undefined); // already consumed
+
+  noteKbHit(from, "q2");
+  assert.equal(consumeKbCorrection(from, "yang terbaru dong"), "q2");
+
+  noteKbHit(from, "q3");
+  clearKbHit(from);
+  assert.equal(consumeKbCorrection(from, "salah"), undefined); // cleared by a non-KB reply
+});
+
+test("consumeKbCorrection drops the stale row so the question stops matching", async () => {
+  const from = uid("correct-del");
+  await seed(from, "siapa penemu bohlam", "Thomas Edison.");
+  assert.equal((await lookup(from, "siapa penemu bohlam")).hit, "Thomas Edison.");
+
+  noteKbHit(from, "siapa penemu bohlam");
+  assert.equal(consumeKbCorrection(from, "itu udah lama"), "siapa penemu bohlam");
+  assert.equal((await lookup(from, "siapa penemu bohlam")).hit, undefined); // row deleted
 });
 
 test("an arithmetic row is never a local-match candidate", async () => {
