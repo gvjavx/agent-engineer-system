@@ -144,6 +144,15 @@ export async function headSha(dir: string): Promise<string> {
   return (await simpleGit(dir).revparse(["HEAD"])).trim();
 }
 
+// The real tip of a branch on origin after the agent pushed — the local
+// checkout can be on the work branch or stale, so this fetches first. Used to
+// know which commit to watch CI for (agent/ciWatch.ts).
+export async function latestRemoteSha(dir: string, branch: string): Promise<string> {
+  const git = simpleGit(dir);
+  await git.fetch("origin", branch);
+  return (await git.revparse([`origin/${branch}`])).trim();
+}
+
 // Turns `git diff --numstat <a> <b>` output into a short WhatsApp-friendly
 // change summary. Split out from the git call so the formatting is unit
 // tested without a repo. Returns undefined when nothing changed.

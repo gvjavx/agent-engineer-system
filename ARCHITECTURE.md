@@ -84,6 +84,7 @@ Disimpen sebagai JSON di kolom `conversation_state.pending_action` (per nomor Wh
 | `confirm_delete_project` | Konfirmasi ya/tidak sebelum unregister project (nggak nyentuh disk). |
 | `confirm_pipeline` | Konfirmasi rencana task (daftar fase departemen) sebelum dieksekusi. |
 | `confirm_clear_memory` | Konfirmasi ya/tidak sebelum menghapus semua memori soal user itu. |
+| `confirm_ci_fix` | Konfirmasi ya/tidak buat nge-garap kegagalan CI yang baru kedeteksi (bawa log kegagalannya). |
 
 Dua state lain — persetujuan bash berbahaya dan checkpoint antar-fase pipeline — **bukan** bagian union ini; keduanya in-memory, per-`taskId`, hidup selama proses orchestrator jalan dan task itu masih aktif (`agent/bashApproval.ts`, `agent/checkpoint.ts`, keduanya pola registry `Map<taskId, resolver>` yang sama).
 
@@ -196,6 +197,18 @@ Opsional, mati default (`CHAT_KB_ENABLED`). Konsepnya: pertanyaan non-koding **b
 ## `review PR <nomor>`
 
 `parseReviewPr` (deterministik — ada argumen nomornya) → `handleReviewPrCommand`. Bukan lewat pipeline: cuma baca + satu panggilan model. `ensureWorkspace` project aktif (harus `kind='git'`) → `agent/prReview.ts` `gatherPrContext` nembak `gh pr view --json ...` + `gh pr diff` di workspace itu (`gh` baca `GITHUB_TOKEN` dari env, repo diinfer dari origin), diff dipotong di batas baris kalau > 24k char → `buildReviewPrompt` → `providers[0].chat` (tanpa tool) → review dibalikin ke WhatsApp. Review-nya distash di `pending_action: confirm_post_pr_review`; balas "ya" → `gh pr comment <n> --body <review>`. Nggak pernah auto-post — selalu nunggu konfirmasi.
+
+## Pantau CI setelah push (`watchCiAndReport`)
+
+Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task git yang `result.ok`, dipanggil fire-and-forget (`void watchCiAndReport(...)`) — sengaja **nggak** di-await biar antrian task project itu (`taskQueue.ts`) nggak ketahan selama beberapa menit poll.
+
+`latestRemoteSha` (`git/repo.ts`) — `git fetch origin <branch>` + `rev-parse origin/<branch>` — buat tau commit mana yang mau diawasin (checkout lokal bisa ketinggalan / masih di work branch). Lalu `watchCiForSha` (`agent/ciWatch.ts`) nge-loop `gh run list --json databaseId,headSha,status,conclusion,url,workflowName` tiap 20 detik. `classifyRuns` (murni, fully tested) misahin run yang `headSha`-nya cocok: ada yang belum `completed` → `pending` (lanjut poll); semua kelar & ada `conclusion` di {`failure`,`timed_out`,`startup_failure`,`action_required`} → `failure`; selain itu `success`. `cancelled` **bukan** kegagalan (orang yang batalin manual). Nol run cocok selama > 120 detik → `none` (branch ini nggak ada CI-nya). Lewat `CI_WATCH_TIMEOUT_MINUTES` → `timeout`.
+
+- `success` → satu baris "CI ... lulus".
+- `failure` → `gh run view <id> --log-failed` buat run pertama yang gagal, log dipotong ke ~4k char (tail). Kalau `conversation_state.pending_action` lagi keisi (user di tengah wizard lain), cuma dikirim teksnya — nggak nyetel pending baru biar nggak nimpa. Kalau kosong, disimpen `pending_action: confirm_ci_fix` + tombol Ya/Tidak.
+- `none`/`timeout`/`error` → diem.
+
+`confirm_ci_fix` di-`handlePendingConfirmation`: "ya" → log kegagalan jadi instruksi task biasa, `classifyDepartments` fresh, `executeTask` (tanpa konfirmasi rencana — user udah nyetujui pas tap "Ya"). Task fix-nya masuk antrian project itu kayak task lain.
 
 ## Task terjadwal (`jadwalkan tiap <kapan>: <instruksi>`)
 

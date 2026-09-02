@@ -23,11 +23,13 @@ import {
   discardWorkBranch,
   workspacePath,
   headSha,
+  latestRemoteSha,
   summarizeChangesSince,
 } from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
 import { detectProjectChecks } from "../agent/projectChecks.js";
+import { watchCiForSha } from "../agent/ciWatch.js";
 import { gatherPrContext, reviewPr, postPrComment } from "../agent/prReview.js";
 import { parseSchedule, computeNextRun, formatWibInstant, type ScheduleSpec } from "../agent/schedule.js";
 import { recordInteraction } from "../agent/chatKb.js";
@@ -245,6 +247,16 @@ interface PendingPostPrReview {
   review: string;
 }
 
+// Set after a git task's CI run came back red — see watchCiAndReport. On "ya"
+// the failing log becomes a fresh task instruction routed through the normal
+// classify/pipeline flow.
+interface PendingCiFix {
+  type: "confirm_ci_fix";
+  alias: string;
+  branch: string;
+  failureLog: string;
+}
+
 type PendingActionData =
   | PendingAddFolder
   | PendingDeleteProject
@@ -255,7 +267,8 @@ type PendingActionData =
   | PendingClarifyInstruction
   | PendingFigmaSetup
   | PendingImageFollowup
-  | PendingPostPrReview;
+  | PendingPostPrReview
+  | PendingCiFix;
 
 const YES_NO_OPTIONS: QuickReplyOption[] = [
   { id: "ya", title: "Ya, lanjut" },
@@ -2072,6 +2085,35 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
     return true;
   }
 
+  if (pending.type === "confirm_ci_fix") {
+    const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
+    conversationRepo.setPendingAction(from, null);
+    if (intent === "yes") {
+      const project = projectsRepo.get(pending.alias);
+      if (!project) {
+        await sendWhatsApp(from, `Project "${pending.alias}" udah gak ada, gak jadi benerin CI-nya.`);
+        return true;
+      }
+      const providers = buildProviders(resolveManajemenProvider(from, state));
+      if (providers.length === 0) {
+        await sendWhatsApp(from, "Belum ada AI provider yang aktif, jadi belum bisa benerin.");
+        return true;
+      }
+      const instruction =
+        `CI GitHub Actions di branch "${pending.branch}" gagal setelah perubahan terakhir. Ini potongan log-nya:\n\n` +
+        `${pending.failureLog}\n\n` +
+        `Cari akar penyebabnya, benerin di kode, terus commit + push ke "${pending.branch}". ` +
+        `Kalau ternyata masalahnya di file workflow-nya sendiri, betulin itu.`;
+      const phases = await classifyDepartments(instruction, providers[0], new AbortController().signal);
+      await executeTask(from, project, instruction, phases, false);
+    } else if (intent === "no") {
+      await sendWhatsApp(from, "Oke, gak jadi.");
+    } else {
+      await sendWhatsApp(from, "Gak jelas jawabannya, jadi gak aku garap. Bilang lagi kalau mau CI-nya dibenerin.");
+    }
+    return true;
+  }
+
   if (pending.type === "confirm_clear_memory") {
     const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
     conversationRepo.setPendingAction(from, null);
@@ -2308,6 +2350,48 @@ async function executeTask(
   );
 }
 
+// Fire-and-forget after a successful git task: watch the pushed commit's CI,
+// then send a one-line "CI lulus" or stash a fix offer with the failing log.
+// Not awaited by runTaskPipeline — it can poll for many minutes and must not
+// hold the project's task queue.
+async function watchCiAndReport(from: string, alias: string, cwd: string, branch: string): Promise<void> {
+  try {
+    const sha = await latestRemoteSha(cwd, branch).catch(() => undefined);
+    if (!sha) return;
+
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), config.ciWatch.timeoutMinutes * 60_000 + 60_000);
+    let res;
+    try {
+      res = await watchCiForSha({ cwd, sha, signal: ac.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (res.state === "success") {
+      await sendWhatsApp(from, `CI di "${alias}" (${branch}) lulus.`);
+      return;
+    }
+    if (res.state !== "failure") return; // none/timeout/error — nothing worth a ping
+
+    const links = (res.failing ?? []).map((f) => `${f.workflowName}: ${f.url}`).join("\n");
+    const body =
+      `CI di "${alias}" (${branch}) gagal setelah perubahan terakhir.\n${links}\n\nPotongan log:\n${res.failureLog ?? "(gak ada)"}`;
+
+    // Don't clobber a wizard/confirmation the user started while CI was
+    // running — just report it, no tappable offer, if something's pending.
+    if (conversationRepo.get(from)?.pending_action) {
+      await sendWhatsApp(from, `${body}\n\n(Ada hal lain yang lagi nunggu jawaban kamu, jadi ini aku kabarin aja dulu.)`);
+      return;
+    }
+    const pending: PendingCiFix = { type: "confirm_ci_fix", alias, branch, failureLog: res.failureLog ?? "" };
+    conversationRepo.setPendingAction(from, JSON.stringify(pending));
+    await sendWhatsApp(from, `${body}\n\nMau aku benerin?`, YES_NO_OPTIONS);
+  } catch (err) {
+    console.error(`[ci-watch] "${alias}":`, err);
+  }
+}
+
 interface RunTaskPipelineOpts {
   from: string;
   projectAlias: string;
@@ -2488,6 +2572,9 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
       const changes =
         mode.kind === "git" && baseSha ? await summarizeChangesSince(cwd, baseSha).catch(() => undefined) : undefined;
       await sendWhatsApp(from, `Udah selesai. ${result.summary}${changes ? `\n\n${changes}` : ""}`);
+      if (mode.kind === "git" && config.ciWatch.enabled) {
+        void watchCiAndReport(from, project.alias, cwd, mode.defaultBranch);
+      }
     } else {
       await sendWhatsApp(from, `Gagal nih. ${result.summary}`);
     }

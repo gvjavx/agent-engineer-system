@@ -162,6 +162,16 @@ Command-nya kedeteksi otomatis dari `package.json` pas project didaftarin — `n
 
 Check-nya jalan di sandbox yang sama dengan tool `bash` (env scrub + `bubblewrap` di Linux). Timeout 10 menit per command.
 
+## Pantau CI setelah push
+
+Nyala secara default (`CI_WATCH_ENABLED`). Begitu task git selesai dan push, agent nge-poll GitHub Actions buat commit itu (lewat `gh`, sama kayak `review PR`). Hasilnya:
+
+- **Lulus** → satu baris "CI di ... lulus".
+- **Gagal** → potongan log kegagalan + tombol Ya/Tidak. Tap "Ya" bikin task baru dari log itu — agent nyari penyebabnya, benerin, commit + push lagi (kalau masalahnya di file workflow-nya, itu juga dibetulin).
+- Repo tanpa Actions, atau yang run-nya gak kelar dalam `CI_WATCH_TIMEOUT_MINUTES` (default 20), diem aja.
+
+Poll-nya jalan di background, gak nahan antrian task project itu. Kalau pas log kegagalan dateng kamu lagi di tengah wizard lain, agent cuma ngabarin tanpa tombol biar gak numpuk.
+
 ## Konteks kode otomatis (RAG) — opsional
 
 Mati secara default. Kalau `RAG_ENABLED=true` di `.env`, tiap project yang didaftarkan file-nya di-chunk dan di-embed sekali, lalu sebelum tiap task/fase agent dikasih potongan kode yang paling mirip dengan instruksi — jadi dia tidak habis giliran tool cuma buat `grep`/`find` nyari file yang benar. Embedding-nya pakai model lokal (CPU, tanpa API key, tanpa rate limit) lewat `@huggingface/transformers`; kalau paket itu tidak terpasang, RAG cuma jadi no-op, tidak pernah menggagalkan task.

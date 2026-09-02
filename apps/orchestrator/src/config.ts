@@ -188,6 +188,15 @@ export const config = {
     enabled: (process.env.COMMIT_CHECKS_ENABLED ?? "true").toLowerCase() !== "false",
   },
 
+  // After a git task pushes, poll the GitHub Actions runs for the pushed
+  // commit; a failure is sent to WhatsApp with the log and an offer to fix
+  // it. On by default; a repo with no Actions just stays quiet. See
+  // agent/ciWatch.ts.
+  ciWatch: {
+    enabled: (process.env.CI_WATCH_ENABLED ?? "true").toLowerCase() !== "false",
+    timeoutMinutes: Math.max(1, Number(process.env.CI_WATCH_TIMEOUT_MINUTES ?? 20)),
+  },
+
   // Free AI providers, tried in this order with automatic fallback. Only
   // providers actually listed in AI_PROVIDER_ORDER get validated/built.
   providerOrder,
