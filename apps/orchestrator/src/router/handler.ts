@@ -32,6 +32,7 @@ import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
 import { detectProjectChecks } from "../agent/projectChecks.js";
 import { watchCiForSha } from "../agent/ciWatch.js";
+import { scanDiffSmells } from "../agent/diffSmells.js";
 import { gatherPrContext, reviewPr, postPrComment, listOpenPrs, formatPrList, mergePr } from "../agent/prReview.js";
 import { gatherIssueContext, buildIssueInstruction } from "../agent/issue.js";
 import { parseSchedule, computeNextRun, formatWibInstant, type ScheduleSpec } from "../agent/schedule.js";
@@ -2903,10 +2904,17 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
         mode.kind === "git" && baseSha ? await summarizeChangesSince(cwd, baseSha).catch(() => undefined) : undefined;
       await sendWhatsApp(from, `Udah selesai. ${result.summary}${changes ? `\n\n${changes}` : ""}`);
       if (mode.kind === "git") {
-        // Record the pushed range so "batalin yang barusan" can revert exactly
-        // this task, and kick off the CI watch on the same commit.
+        // Record the pushed range so "batalin yang barusan"/"diff terakhir" can
+        // use it, warn on anything obviously left in the diff, and kick off the
+        // CI watch on the same commit.
         const resultSha = await latestRemoteSha(cwd, mode.defaultBranch).catch(() => undefined);
-        if (baseSha && resultSha && baseSha !== resultSha) tasksRepo.setShas(taskId, baseSha, resultSha);
+        if (baseSha && resultSha && baseSha !== resultSha) {
+          tasksRepo.setShas(taskId, baseSha, resultSha);
+          const smells = scanDiffSmells(await diffBetween(cwd, baseSha, resultSha));
+          if (smells.length) {
+            await sendWhatsApp(from, `Cek lagi — kayaknya ada yang kesangkut di diff: ${smells.join(", ")}.`);
+          }
+        }
         if (config.ciWatch.enabled) void watchCiAndReport(from, project.alias, cwd, mode.defaultBranch);
       }
     } else {

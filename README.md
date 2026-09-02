@@ -174,6 +174,8 @@ Command-nya kedeteksi otomatis dari `package.json` pas project didaftarin — `n
 
 Check-nya jalan di sandbox yang sama dengan tool `bash` (env scrub + `bubblewrap` di Linux). Timeout 10 menit per command.
 
+Selain itu, tiap task git yang selesai diff-nya discan cepat (deterministik, tanpa panggilan AI) buat hal yang biasanya kesangkut nggak sengaja — `debugger`, test yang di-`.only(`, `console.debug`. Kalau ketemu, dikasih tau di pesan "udah selesai". Ini cuma peringatan, nggak nge-blok apa-apa.
+
 ## Pantau CI setelah push
 
 Nyala secara default (`CI_WATCH_ENABLED`). Begitu task git selesai dan push, agent nge-poll GitHub Actions buat commit itu (lewat `gh`, sama kayak `review PR`). Hasilnya:
