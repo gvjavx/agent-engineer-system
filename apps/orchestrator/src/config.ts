@@ -131,6 +131,11 @@ export const config = {
   // chat session is considered over — see session/idleNotifier.ts.
   sessionIdleMinutes: Number(process.env.SESSION_IDLE_MINUTES ?? 30),
 
+  // Most task pipelines running at once across all projects (queue/taskQueue.ts).
+  // Same-project tasks are already serial; this bounds the cross-project
+  // parallelism so a burst doesn't run every free-tier provider dry at once.
+  maxConcurrentTasks: Math.max(1, Number(process.env.MAX_CONCURRENT_TASKS ?? 3)),
+
   githubToken: required("GITHUB_TOKEN"),
 
   internalSharedSecret: required("INTERNAL_SHARED_SECRET"),

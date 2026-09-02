@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { enqueueProjectTask, cancelActiveTask, getActiveTaskId, planResume, MAX_RESUME_ATTEMPTS } from "./taskQueue.js";
 import { tasksRepo, scheduledTasksRepo, type Task } from "../db/index.js";
+import { config } from "../config.js";
 
 const settle = () => new Promise((r) => setTimeout(r, 10));
 
@@ -56,6 +57,26 @@ test("enqueueProjectTask runs different projects concurrently", async () => {
   });
   await new Promise((r) => setTimeout(r, 80));
   assert.deepEqual(order, ["y", "x"], "y finishes first because it isn't behind x");
+});
+
+test("enqueueProjectTask caps how many tasks run at once across projects", async () => {
+  const original = config.maxConcurrentTasks;
+  config.maxConcurrentTasks = 1;
+  try {
+    const events: string[] = [];
+    enqueueProjectTask("cap-a", "ca", async () => {
+      events.push("a:start");
+      await new Promise((r) => setTimeout(r, 30));
+      events.push("a:end");
+    });
+    enqueueProjectTask("cap-b", "cb", async () => {
+      events.push("b:start");
+    });
+    await new Promise((r) => setTimeout(r, 90));
+    assert.deepEqual(events, ["a:start", "a:end", "b:start"], "b (other project) waits for the one free slot");
+  } finally {
+    config.maxConcurrentTasks = original;
+  }
 });
 
 test("getActiveTaskId / cancelActiveTask track the running task and abort it", async () => {
