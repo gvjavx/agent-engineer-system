@@ -66,7 +66,8 @@ export async function embedLocal(texts: string[]): Promise<Float32Array[]> {
 // Kick off the model load ahead of the first real lookup (called from startup
 // when the flag is on). Best-effort — a failure here is not fatal.
 export function warmLocalEmbedder(): void {
-  void getPipe().catch((err) => {
-    console.error("[chat-kb] local embedder warm-up failed:", err instanceof Error ? err.message : err);
-  });
+  const t0 = Date.now();
+  void getPipe()
+    .then(() => console.log(`[local-embed] ${MODEL_ID} ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`))
+    .catch((err) => console.error("[local-embed] load failed:", err instanceof Error ? err.message : err));
 }

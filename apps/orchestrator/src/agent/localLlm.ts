@@ -104,7 +104,8 @@ export async function generateLocalReply(system: string, userMessage: string): P
 }
 
 export function warmLocalLlm(): void {
-  void getPipe().catch((err) => {
-    console.error("[local-llm] warm-up failed:", err instanceof Error ? err.message : err);
-  });
+  const t0 = Date.now();
+  void getPipe()
+    .then(() => console.log(`[local-llm] ${MODEL_ID} (${DTYPE}) ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`))
+    .catch((err) => console.error("[local-llm] load failed, chat will use the vendor:", err instanceof Error ? err.message : err));
 }
