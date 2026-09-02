@@ -6,6 +6,7 @@ import { DEPARTMENT_LABELS, type DepartmentKey } from "./departments.js";
 import { waitForCheckpoint } from "./checkpoint.js";
 import { hasDesignSource } from "./designSource.js";
 import { retrieveCodeContext } from "./rag/index.js";
+import type { CommitCheckSpec } from "./projectChecks.js";
 import type { Provider } from "./types.js";
 
 export interface PhaseSpec {
@@ -47,6 +48,10 @@ export interface RunPipelineParams {
   sendDocument?: (relPath: string, caption: string | undefined) => Promise<string>;
   // Backs the WhatsApp confirmation gate for risky bash commands — see loop.ts.
   onDangerousBash?: (command: string, reason: string) => Promise<boolean>;
+  // The active project's test/lint gate — only the last phase commits, but
+  // it's threaded to every phase's loop so a phase that commits on its own
+  // (e.g. the single "semua" shortcut) is gated too.
+  commitChecks?: CommitCheckSpec;
   // Swappable for tests — default to the real config-backed implementations.
   buildProvidersFn?: (preferredProvider?: string) => Provider[];
   runTaskFn?: (params: RunTaskParams) => Promise<RunTaskResult>;
@@ -115,6 +120,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
     onCheckpoint = onProgress,
     sendDocument,
     onDangerousBash,
+    commitChecks,
     buildProvidersFn = realBuildProviders,
     runTaskFn = realRunTask,
     runAgentLoopFn = realRunAgentLoop,
@@ -154,6 +160,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           sendDocument,
           onDangerousBash,
           extraSystemNotes,
+          commitChecks,
         })
       : runTaskFn({
           kind: "local",
@@ -168,6 +175,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           sendDocument,
           onDangerousBash,
           extraSystemNotes,
+          commitChecks,
         });
   }
 
@@ -218,6 +226,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
         sendDocument,
         onDangerousBash,
         extraSystemNotes: phaseCodeNotes,
+        commitChecks,
       });
 
     let result = await runPhase();
@@ -344,6 +353,7 @@ export async function runPipeline(params: RunPipelineParams): Promise<RunTaskRes
           sendDocument,
           onDangerousBash,
           extraSystemNotes: phaseCodeNotes,
+          commitChecks,
         });
 
         if (!revised.ok) {

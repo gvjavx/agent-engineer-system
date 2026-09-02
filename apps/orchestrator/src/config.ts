@@ -180,6 +180,14 @@ export const config = {
     enabled: (process.env.SECRET_SCAN_ENABLED ?? "true").toLowerCase() !== "false",
   },
 
+  // Runs each project's configured test/lint command right before the agent
+  // commits — a non-zero exit blocks the commit and the output goes back to
+  // the model. On by default; only acts when a command is actually configured
+  // or auto-detected from package.json. See agent/projectChecks.ts.
+  commitChecks: {
+    enabled: (process.env.COMMIT_CHECKS_ENABLED ?? "true").toLowerCase() !== "false",
+  },
+
   // Free AI providers, tried in this order with automatic fallback. Only
   // providers actually listed in AI_PROVIDER_ORDER get validated/built.
   providerOrder,

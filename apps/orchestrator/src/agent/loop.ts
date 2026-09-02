@@ -2,6 +2,7 @@ import { auditLog } from "../db/index.js";
 import { config } from "../config.js";
 import { TOOL_SCHEMAS, executeTool, briefToolDescription, detectMilestone, isDangerousBashCommand } from "./tools.js";
 import { scanStagedFiles, formatSecretHits } from "./secretScan.js";
+import { runProjectChecks, type CommitCheckSpec } from "./projectChecks.js";
 import { markRateLimited } from "./providerCooldown.js";
 import { resolveFigmaTools, type FigmaToolsResult } from "./mcp/figmaTools.js";
 import type { ChatMessage, Provider, ToolSchema } from "./types.js";
@@ -42,6 +43,10 @@ export interface RunAgentLoopParams {
   // DI seam for tests — real callers never pass this, production always waits
   // the full RATE_LIMIT_RETRY_DELAY_MS between same-provider retries on a 429.
   rateLimitRetryDelayMs?: number;
+  // The project's test/lint commands, run right before a `git commit` — a
+  // failure blocks the commit (same hard-gate shape as the secret scan).
+  // Undefined/empty means no gate. See agent/projectChecks.ts.
+  commitChecks?: CommitCheckSpec;
 }
 
 export interface RunAgentLoopResult {
@@ -101,6 +106,7 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
     sendDocument = async () => "Fitur kirim dokumen belum tersedia di sini.",
     onDangerousBash = async () => false,
     rateLimitRetryDelayMs = RATE_LIMIT_RETRY_DELAY_MS,
+    commitChecks,
   } = params;
 
   if (providers.length === 0) {
@@ -213,12 +219,13 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
 
         if (call.name === "bash") {
           const command = String(call.input.command ?? "");
+          const isCommit = /\bgit\s+commit\b/.test(command);
 
           // Hard stop before the agent commits a leaked credential — no
           // WhatsApp override, unlike the risky-command gate below. The model
           // has to actually remove the secret (or explain it's a false
           // positive in its summary) instead of retrying the commit as-is.
-          if (config.secretScan.enabled && /\bgit\s+commit\b/.test(command)) {
+          if (config.secretScan.enabled && isCommit) {
             const hits = scanStagedFiles(cwd, command);
             if (hits.length > 0) {
               auditLog.add(taskId, "note", `Commit diblok — kredensial kedetect: ${hits.map((h) => `${h.file}:${h.line}`).join(", ")}`);
@@ -229,6 +236,26 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
                 content:
                   `Error: commit dibatalin. Ada yang kelihatan seperti kredensial di file yang mau di-commit:\n${formatSecretHits(hits)}\n\n` +
                   "Keluarin nilainya dari file (pakai env var atau placeholder). Kalau ini beneran bukan secret, jangan commit apa adanya — jelasin di ringkasan akhir aja.",
+              });
+              continue;
+            }
+          }
+
+          // Same hard-gate shape: the project's test/lint command has to pass
+          // before a commit lands, so a red suite never reaches the default
+          // branch on the autonomy-full path. Runs on every commit attempt in
+          // a phase, like the secret scan above.
+          if (config.commitChecks.enabled && isCommit && commitChecks) {
+            const checked = await runProjectChecks(cwd, commitChecks, abortController.signal);
+            if (checked && !checked.ok) {
+              auditLog.add(taskId, "note", "Commit diblok — cek test/lint project gagal");
+              messages.push({
+                role: "tool",
+                toolCallId: call.id,
+                toolName: call.name,
+                content:
+                  `Error: commit dibatalin. ${checked.report}\n\n` +
+                  "Benerin dulu yang bikin gagal, terus commit lagi — jangan cari cara buat ngeskip cek ini.",
               });
               continue;
             }

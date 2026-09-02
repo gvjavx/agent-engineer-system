@@ -283,6 +283,28 @@ export function parseReviewPr(text: string): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
+// "atur cek test npm test" / "atur cek lint off" — sets or clears the command
+// run before the agent commits in the active project. Deterministic (carries
+// an argument) so it never reaches the classifier.
+const SET_CHECK_RE = /^atur\s+cek\s+(test|lint)\s+(.+?)\s*$/i;
+const SET_CHECK_OFF_PHRASES = new Set(["off", "mati", "matikan", "nonaktif", "none", "-", "hapus", "kosong"]);
+
+export interface SetCheckCommand {
+  kind: "test" | "lint";
+  // null = turn the check off; otherwise the shell command to run.
+  command: string | null;
+}
+
+export function parseSetCheck(text: string): SetCheckCommand | undefined {
+  const m = text.trim().match(SET_CHECK_RE);
+  if (!m) return undefined;
+  const rest = m[2].trim();
+  return {
+    kind: m[1].toLowerCase() as "test" | "lint",
+    command: SET_CHECK_OFF_PHRASES.has(rest.toLowerCase()) ? null : rest,
+  };
+}
+
 // "jadwalkan tiap senin jam 9: update dependencies" — the schedule phrase and
 // the instruction, split on the first colon. The schedule half is validated
 // separately by agent/schedule.ts's parseSchedule.

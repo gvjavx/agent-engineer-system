@@ -154,6 +154,14 @@ Default: agent commit langsung ke branch utama repo (`auto_merge = 'direct'`) �
 
 Setiap task — di semua mode (git, folder lokal, tiap fase pipeline) — otomatis dapat instruksi "lazy senior developer" di system prompt-nya (diadaptasi dari [ponytail](https://github.com/dietrichgebert/ponytail)): sebelum nulis kode, agent wajib naik satu-satu "tangga" ini dan berhenti di anak tangga pertama yang cocok — apa ini emang perlu ada (YAGNI) → udah ada di codebase → stdlib bisa → fitur native platform → dependency yang udah terpasang → bisa satu baris → baru terakhir, tulis kode seminimal mungkin yang benar. Ini gak mengorbankan kebenaran — validasi input, penanganan error, dan requirement eksplisit tetap wajib; "minimal" artinya solusi terkecil yang *benar*, bukan asal potong. Diff lebih kecil = lebih sedikit token dibaca/ditulis/direview, dan lebih sedikit kode yang harus dirawat ke depannya. Lihat `apps/orchestrator/src/agent/systemPrompt.ts` (`SHARED_MINIMAL_CODE_RULES`) kalau mau ubah teksnya.
 
+## Gate test/lint sebelum commit
+
+Nyala secara default (`COMMIT_CHECKS_ENABLED`). Sebelum agent `git commit`, command test/lint project itu dijalanin dulu — kalau exit-nya bukan 0, commit-nya dibatalin dan output-nya dibalikin ke agent buat dibenerin. Sama kerasnya dengan secret scan: gak ada override lewat WhatsApp, agent harus beresin dulu.
+
+Command-nya kedeteksi otomatis dari `package.json` pas project didaftarin — `npm test` / `npm run lint` (atau `pnpm`/`yarn` kalau ada lockfile-nya). Project non-npm atau yang mau di-override: `atur cek test <cmd>` / `atur cek lint <cmd>` di WhatsApp (operasinya di project aktif), atau `atur cek test off` buat matiin salah satunya. `status` nampilin cek yang aktif buat project itu.
+
+Check-nya jalan di sandbox yang sama dengan tool `bash` (env scrub + `bubblewrap` di Linux). Timeout 10 menit per command.
+
 ## Konteks kode otomatis (RAG) — opsional
 
 Mati secara default. Kalau `RAG_ENABLED=true` di `.env`, tiap project yang didaftarkan file-nya di-chunk dan di-embed sekali, lalu sebelum tiap task/fase agent dikasih potongan kode yang paling mirip dengan instruksi — jadi dia tidak habis giliran tool cuma buat `grep`/`find` nyari file yang benar. Embedding-nya pakai model lokal (CPU, tanpa API key, tanpa rate limit) lewat `@huggingface/transformers`; kalau paket itu tidak terpasang, RAG cuma jadi no-op, tidak pernah menggagalkan task.

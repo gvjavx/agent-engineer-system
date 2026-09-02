@@ -27,6 +27,7 @@ import {
 } from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
+import { detectProjectChecks } from "../agent/projectChecks.js";
 import { gatherPrContext, reviewPr, postPrComment } from "../agent/prReview.js";
 import { parseSchedule, computeNextRun, formatWibInstant, type ScheduleSpec } from "../agent/schedule.js";
 import { recordInteraction } from "../agent/chatKb.js";
@@ -79,6 +80,7 @@ import {
   isStatusCommand,
   isStopCommand,
   parseReviewPr,
+  parseSetCheck,
   parseScheduleCommand,
   isListSchedulesCommand,
   parseDeleteSchedule,
@@ -162,6 +164,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *status* — cek task yang lagi jalan, plus ringkasan 7 hari
 - *stop* — batalin task yang lagi jalan di project aktif
 - *review PR <nomor>* — aku baca diff PR di project aktif, kasih review, terus tanya dulu sebelum posting sebagai komentar di PR-nya
+- *atur cek test <cmd>* / *atur cek lint <cmd>* — command yang aku jalanin sebelum commit di project aktif; kalau gagal, commit-nya dibatalin. "atur cek test off" buat matiin. Biasanya udah kedeteksi sendiri dari package.json pas project didaftarin
 - *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
 - Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
 - Kirim gambar (screenshot, mockup, dsb) bareng caption instruksinya (mis. "perbaiki tampilan sesuai screenshot ini") — aku bakal liat gambarnya dulu baru mulai kerjain. Kirim tanpa caption juga boleh, nanti aku ceritain apa yang aku liat terus tanya mau diapain.
@@ -675,6 +678,12 @@ export async function handleInboundMessage(
     return;
   }
 
+  const setCheck = parseSetCheck(trimmed);
+  if (setCheck) {
+    await handleSetCheckCommand(from, setCheck.kind, setCheck.command);
+    return;
+  }
+
   const scheduleCommand = parseScheduleCommand(trimmed);
   if (scheduleCommand) {
     await handleAddScheduleCommand(from, scheduleCommand.scheduleText, scheduleCommand.instruction);
@@ -773,6 +782,16 @@ async function indexNewProjectInBackground(from: string, alias: string, mode: "g
     const project = projectsRepo.get(alias);
     if (!project) return;
     const cwd = mode === "git" ? workspacePath(alias) : project.repo_url;
+
+    // Piggybacks on the same post-registration hook: guess the test/lint gate
+    // from package.json now so it shows up in "status" straight away, instead
+    // of waiting for the first task to self-heal it.
+    try {
+      const detected = detectProjectChecks(cwd);
+      projectsRepo.setChecks(alias, detected.testCmd, detected.lintCmd);
+    } catch (err) {
+      console.error(`[commit-checks] gagal deteksi cek buat "${alias}":`, err);
+    }
 
     if (config.secretScan.enabled) {
       try {
@@ -1048,7 +1067,9 @@ async function handleStatusCommand(from: string): Promise<void> {
       from,
       (recent
         ? `Gak ada task yang lagi jalan di "${state.active_project_alias}". Task terakhir statusnya: ${recent.status}.`
-        : `Gak ada task yang lagi jalan di "${state.active_project_alias}".`) + dashboardBlock()
+        : `Gak ada task yang lagi jalan di "${state.active_project_alias}".`) +
+        dashboardBlock() +
+        activeProjectChecksLine(state.active_project_alias)
     );
   } else {
     const task = tasksRepo.get(activeTaskId);
@@ -1069,7 +1090,8 @@ async function handleStatusCommand(from: string): Promise<void> {
       `Masih ngerjain task di "${state.active_project_alias}" nih:\n"${task?.instruction ?? ""}"` +
         (phaseNote ? `\n\nTerakhir: ${phaseNote}` : "") +
         queueLine +
-        dashboardBlock(),
+        dashboardBlock() +
+        activeProjectChecksLine(state.active_project_alias),
       [{ id: "stop", title: "Stop" }]
     );
   }
@@ -1133,6 +1155,41 @@ async function handleReviewPrCommand(from: string, prNumber: number): Promise<vo
     `Review PR #${prNumber} — ${ctx.title}\n(${ctx.changedFiles} file, +${ctx.additions} −${ctx.deletions})\n\n${review}\n\nBalas "ya" kalau mau aku post ini sebagai komentar di PR-nya.`,
     YES_NO_OPTIONS
   );
+}
+
+// "atur cek test/lint <cmd|off>" — the command the pre-commit gate runs for
+// the active project (agent/projectChecks.ts). Only coerces the slot being
+// set; the other stays as-is (NULL still means "auto-detect on next task").
+async function handleSetCheckCommand(from: string, kind: "test" | "lint", command: string | null): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu.');
+    return;
+  }
+  const project = projectsRepo.get(state.active_project_alias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${state.active_project_alias}" udah gak ada.`);
+    return;
+  }
+  const testCmd = kind === "test" ? command ?? "" : project.test_cmd;
+  const lintCmd = kind === "lint" ? command ?? "" : project.lint_cmd;
+  projectsRepo.setChecks(project.alias, testCmd, lintCmd);
+  await sendWhatsApp(
+    from,
+    command
+      ? `Oke, sebelum commit di "${project.alias}" aku jalanin \`${command}\` dulu buat cek ${kind}. Kalau gagal, commit-nya dibatalin.`
+      : `Oke, cek ${kind} buat "${project.alias}" aku matiin.`
+  );
+}
+
+// Appended to "status" — shows the active project's pre-commit gate if it has one.
+function activeProjectChecksLine(alias: string | null | undefined): string {
+  if (!alias) return "";
+  const p = projectsRepo.get(alias);
+  const parts: string[] = [];
+  if (p?.test_cmd) parts.push(`test \`${p.test_cmd}\``);
+  if (p?.lint_cmd) parts.push(`lint \`${p.lint_cmd}\``);
+  return parts.length ? `\n\nCek sebelum commit: ${parts.join(", ")}.` : "";
 }
 
 const SCHEDULE_FORMAT_HELP =
@@ -1627,6 +1684,7 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     parseUseModel(trimmed) !== undefined ||
     parseListModelsForProvider(trimmed) !== undefined ||
     parseReviewPr(trimmed) !== undefined ||
+    parseSetCheck(trimmed) !== undefined ||
     parseScheduleCommand(trimmed) !== undefined ||
     isListSchedulesCommand(trimmed) ||
     parseDeleteSchedule(trimmed) !== undefined
@@ -2320,6 +2378,17 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
       mode = { kind: "git", defaultBranch: workspace.branch, workBranch, autoMerge: project.auto_merge };
     }
 
+    // First task for this project: guess the test/lint gate from package.json
+    // and store it, so a normal npm project is gated with no manual setup. A
+    // determined-but-empty ("") value means "no check" and won't re-detect.
+    if (project.test_cmd === null && project.lint_cmd === null) {
+      const detected = detectProjectChecks(cwd);
+      projectsRepo.setChecks(project.alias, detected.testCmd, detected.lintCmd);
+      project.test_cmd = detected.testCmd;
+      project.lint_cmd = detected.lintCmd;
+    }
+    const commitChecks = { testCmd: project.test_cmd, lintCmd: project.lint_cmd };
+
     // Incremental refresh before the pipeline runs — skips fast when the
     // default branch hasn't moved since the last index. Never blocks the
     // task: a failure just means this run works without retrieval.
@@ -2381,6 +2450,7 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
       onCheckpoint,
       sendDocument,
       onDangerousBash,
+      commitChecks,
       departmentModelLookup: (department) =>
         // "semua" means classification didn't split into departments, but
         // the work is still almost always coding — falls back to the dev

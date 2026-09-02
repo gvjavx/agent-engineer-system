@@ -4,6 +4,7 @@ import { runAgentLoop } from "./loop.js";
 import { GeminiProvider } from "./providers/gemini.js";
 import { OpenAiCompatibleProvider } from "./providers/openAiCompatible.js";
 import { deprioritizeCooledDown } from "./providerCooldown.js";
+import type { CommitCheckSpec } from "./projectChecks.js";
 import type { Provider } from "./types.js";
 
 export type RunTaskParams = {
@@ -25,6 +26,8 @@ export type RunTaskParams = {
   // Extra system messages (currently the RAG code-context block) — passed
   // straight through to the agent loop. See agent/rag.
   extraSystemNotes?: string[];
+  // The project's test/lint gate — passed straight through to the agent loop.
+  commitChecks?: CommitCheckSpec;
 } & (
   | { kind: "git"; defaultBranch: string; workBranch: string; autoMerge: "direct" | "pr" }
   | { kind: "local"; folderPath: string }
@@ -134,6 +137,7 @@ export async function runTask(params: RunTaskParams): Promise<RunTaskResult> {
     sendDocument,
     onDangerousBash,
     extraSystemNotes,
+    commitChecks,
   } = params;
 
   const systemPrompt =
@@ -157,5 +161,6 @@ export async function runTask(params: RunTaskParams): Promise<RunTaskResult> {
     sendDocument,
     onDangerousBash,
     extraSystemNotes,
+    commitChecks,
   });
 }

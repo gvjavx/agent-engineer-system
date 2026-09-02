@@ -17,6 +17,7 @@ import {
   isStatusCommand,
   isStopCommand,
   parseReviewPr,
+  parseSetCheck,
   parseScheduleCommand,
   isListSchedulesCommand,
   parseDeleteSchedule,
@@ -93,6 +94,22 @@ test("parseReviewPr returns undefined without a number or the right shape", () =
   assert.equal(parseReviewPr("review kode di halaman login"), undefined);
   assert.equal(parseReviewPr("kenapa PR #12 gagal"), undefined);
   assert.equal(parseReviewPr("review PR #0"), undefined);
+});
+
+test("parseSetCheck reads the kind and the command, trimming whitespace", () => {
+  assert.deepEqual(parseSetCheck("atur cek test npm test"), { kind: "test", command: "npm test" });
+  assert.deepEqual(parseSetCheck("  Atur Cek Lint  npm run lint  "), { kind: "lint", command: "npm run lint" });
+});
+
+test("parseSetCheck treats off-words as clearing the check", () => {
+  assert.deepEqual(parseSetCheck("atur cek test off"), { kind: "test", command: null });
+  assert.deepEqual(parseSetCheck("atur cek lint matikan"), { kind: "lint", command: null });
+});
+
+test("parseSetCheck ignores anything that isn't the exact command shape", () => {
+  assert.equal(parseSetCheck("atur cek build npm run build"), undefined);
+  assert.equal(parseSetCheck("atur cek test"), undefined);
+  assert.equal(parseSetCheck("cek test dong"), undefined);
 });
 
 test("parseScheduleCommand splits the schedule phrase from the instruction on the first colon", () => {

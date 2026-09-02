@@ -19,6 +19,10 @@ db.exec(`
     default_branch TEXT NOT NULL DEFAULT 'main',
     auto_merge TEXT NOT NULL DEFAULT 'direct', -- 'direct' | 'pr'
     kind TEXT NOT NULL DEFAULT 'git', -- 'git' | 'local'
+    -- Shell commands run right before the agent commits (agent/projectChecks.ts).
+    -- NULL = not yet auto-detected from package.json; '' = no check.
+    test_cmd TEXT,
+    lint_cmd TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -161,6 +165,8 @@ for (const migration of [
   "ALTER TABLE tasks ADD COLUMN phases_json TEXT",
   "ALTER TABLE tasks ADD COLUMN checkpoints INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE tasks ADD COLUMN resume_count INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE projects ADD COLUMN test_cmd TEXT",
+  "ALTER TABLE projects ADD COLUMN lint_cmd TEXT",
 ]) {
   try {
     db.exec(migration);
@@ -175,6 +181,8 @@ export interface Project {
   default_branch: string;
   auto_merge: "direct" | "pr";
   kind: "git" | "local";
+  test_cmd: string | null;
+  lint_cmd: string | null;
   created_at: string;
 }
 
@@ -199,6 +207,11 @@ export const projectsRepo = {
   // real default is e.g. "master" would otherwise fail every checkout forever.
   setDefaultBranch(alias: string, branch: string): void {
     db.prepare("UPDATE projects SET default_branch = ? WHERE alias = ?").run(branch, alias);
+  },
+  // Both slots written together — a NULL means "not determined yet" and the
+  // next task auto-detects, so callers pass "" (not NULL) for "no check".
+  setChecks(alias: string, testCmd: string | null, lintCmd: string | null): void {
+    db.prepare("UPDATE projects SET test_cmd = ?, lint_cmd = ? WHERE alias = ?").run(testCmd, lintCmd, alias);
   },
   createLocal(alias: string, localPath: string): Project {
     db.prepare(
