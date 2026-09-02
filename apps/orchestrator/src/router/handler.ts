@@ -31,6 +31,7 @@ import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
 import { detectProjectChecks } from "../agent/projectChecks.js";
 import { watchCiForSha } from "../agent/ciWatch.js";
 import { gatherPrContext, reviewPr, postPrComment } from "../agent/prReview.js";
+import { gatherIssueContext, buildIssueInstruction } from "../agent/issue.js";
 import { parseSchedule, computeNextRun, formatWibInstant, type ScheduleSpec } from "../agent/schedule.js";
 import { recordInteraction } from "../agent/chatKb.js";
 import { chatKbRepo, kbStatsRepo, kbHintsRepo } from "../db/chatKb.js";
@@ -82,6 +83,7 @@ import {
   isStatusCommand,
   isStopCommand,
   parseReviewPr,
+  parseWorkIssue,
   parseSetCheck,
   parseScheduleCommand,
   isListSchedulesCommand,
@@ -166,6 +168,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *status* — cek task yang lagi jalan, plus ringkasan 7 hari
 - *stop* — batalin task yang lagi jalan di project aktif
 - *review PR <nomor>* — aku baca diff PR di project aktif, kasih review, terus tanya dulu sebelum posting sebagai komentar di PR-nya
+- *kerjain issue <nomor>* — aku baca issue GitHub-nya di project aktif (judul, deskripsi, komentar), susun rencana, dan garap setelah kamu konfirmasi. Commit/PR-nya otomatis nge-link "Closes #<nomor>"
 - *atur cek test <cmd>* / *atur cek lint <cmd>* — command yang aku jalanin sebelum commit di project aktif; kalau gagal, commit-nya dibatalin. "atur cek test off" buat matiin. Biasanya udah kedeteksi sendiri dari package.json pas project didaftarin
 - *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
 - Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
@@ -697,6 +700,12 @@ export async function handleInboundMessage(
     return;
   }
 
+  const issueNumber = parseWorkIssue(trimmed);
+  if (issueNumber !== undefined) {
+    await handleWorkIssueCommand(from, issueNumber);
+    return;
+  }
+
   const scheduleCommand = parseScheduleCommand(trimmed);
   if (scheduleCommand) {
     await handleAddScheduleCommand(from, scheduleCommand.scheduleText, scheduleCommand.instruction);
@@ -1168,6 +1177,56 @@ async function handleReviewPrCommand(from: string, prNumber: number): Promise<vo
     `Review PR #${prNumber} — ${ctx.title}\n(${ctx.changedFiles} file, +${ctx.additions} −${ctx.deletions})\n\n${review}\n\nBalas "ya" kalau mau aku post ini sebagai komentar di PR-nya.`,
     YES_NO_OPTIONS
   );
+}
+
+// "kerjain issue <n>" — read the GitHub issue and feed it into the normal
+// classify → confirm → pipeline flow as a task instruction. Not its own
+// execution path: buildIssueInstruction just produces the text a free-text
+// task would have, plus the "Closes #n" hint.
+async function handleWorkIssueCommand(from: string, issueNumber: number): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu, baru aku bisa garap issue-nya.');
+    return;
+  }
+  const project = projectsRepo.get(state.active_project_alias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${state.active_project_alias}" udah gak ada. Pilih project lain dulu.`);
+    return;
+  }
+  if (project.kind !== "git") {
+    await sendWhatsApp(from, `"${project.alias}" itu folder lokal, gak ada issue GitHub-nya.`);
+    return;
+  }
+  if (getActiveTaskId(project.alias)) {
+    await sendWhatsApp(from, `Masih ada task yang lagi jalan di "${project.alias}". Tunggu kelar dulu (atau "stop").`);
+    return;
+  }
+
+  await sendWhatsApp(from, `Oke, aku ambil issue #${issueNumber} dari "${project.alias}" dulu...`);
+
+  let cwd: string;
+  try {
+    cwd = (await ensureWorkspace(project)).dir;
+  } catch (err) {
+    await sendWhatsApp(from, `Gagal nyiapin workspace-nya: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  const ctx = await gatherIssueContext(cwd, issueNumber);
+  if ("error" in ctx) {
+    await sendWhatsApp(from, `Gagal ambil issue #${issueNumber}: ${ctx.error}`);
+    return;
+  }
+  if (ctx.state.toUpperCase() === "CLOSED") {
+    await sendWhatsApp(
+      from,
+      `Issue #${issueNumber} ("${ctx.title}") statusnya CLOSED. Buka lagi di GitHub dulu kalau emang mau dikerjain.`
+    );
+    return;
+  }
+
+  await classifyAndPresentPlan(from, project, buildIssueInstruction(ctx), false);
 }
 
 // "atur cek test/lint <cmd|off>" — the command the pre-commit gate runs for
@@ -1697,6 +1756,7 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     parseUseModel(trimmed) !== undefined ||
     parseListModelsForProvider(trimmed) !== undefined ||
     parseReviewPr(trimmed) !== undefined ||
+    parseWorkIssue(trimmed) !== undefined ||
     parseSetCheck(trimmed) !== undefined ||
     parseScheduleCommand(trimmed) !== undefined ||
     isListSchedulesCommand(trimmed) ||

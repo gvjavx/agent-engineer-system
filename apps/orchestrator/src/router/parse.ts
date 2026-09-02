@@ -283,6 +283,20 @@ export function parseReviewPr(text: string): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
+// "kerjain issue #12", "garap isu 12", "kerjain #12", "tolong selesaikan
+// issue 40 dong". Needs the word issue/isu or a "#" before the number so a
+// plain "kerjain 12" (ambiguous) doesn't match. Deterministic — has the
+// number as its argument, so it never depends on the classifier.
+const WORK_ISSUE_RE =
+  /^(?:tolong\s+|coba\s+|bisa\s+|minta\s+)?(?:kerjain|kerjakan|garap|garapin|selesaikan|beresin|fix)\s+(?:issue|isu|#)\s*#?\s*(\d{1,7})\b/i;
+
+export function parseWorkIssue(text: string): number | undefined {
+  const match = text.trim().match(WORK_ISSUE_RE);
+  if (!match) return undefined;
+  const n = Number(match[1]);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 // "atur cek test npm test" / "atur cek lint off" — sets or clears the command
 // run before the agent commits in the active project. Deterministic (carries
 // an argument) so it never reaches the classifier.

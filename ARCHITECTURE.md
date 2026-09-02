@@ -210,6 +210,10 @@ Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task g
 
 `confirm_ci_fix` di-`handlePendingConfirmation`: "ya" → log kegagalan jadi instruksi task biasa, `classifyDepartments` fresh, `executeTask` (tanpa konfirmasi rencana — user udah nyetujui pas tap "Ya"). Task fix-nya masuk antrian project itu kayak task lain.
 
+## `kerjain issue <nomor>`
+
+`parseWorkIssue` (deterministik — bawa nomor issue-nya) → `handleWorkIssueCommand`. `ensureWorkspace` project aktif (harus `kind='git'`, dan nggak ada task lagi jalan di situ) → `agent/issue.ts` `gatherIssueContext` nembak `gh issue view <n> --json number,title,body,state,labels,url,comments` (body dipotong ~6k char, sampai 6 komentar terakhir masing-masing ~800 char). Issue `CLOSED` → ditolak dengan penjelasan (buka lagi di GitHub dulu). Selain itu `buildIssueInstruction` (murni, tested) nyusun konteksnya jadi teks instruksi task biasa + baris `Closes #<n>`, terus `classifyAndPresentPlan(..., allowClarify=false)` — dari sini persis kayak instruksi free-text: klasifikasi departemen → konfirmasi rencana → pipeline. Bukan jalur eksekusi sendiri, cuma bikinin teks yang instruksi manual bakal bikin sendiri.
+
 ## Task terjadwal (`jadwalkan tiap <kapan>: <instruksi>`)
 
 `parseScheduleCommand` (`router/parse.ts`) misahin frasa jadwal dari instruksi di titik dua pertama; `parseSchedule` (`agent/schedule.ts`, murni + fully tested) nge-parse frasanya jadi `ScheduleSpec` — `daily` / `weekly` (dow 0=Minggu) / `monthly` (day di-clamp ke panjang bulan) / `everyHours` (n ∈ {1,2,3,4,6,8,12}). Jam default 08:00, ngerti `pagi/siang/sore/malam`. Semua wall-clock di WIB via offset tetap +7 (Indonesia nggak ada DST, jadi nggak perlu `Intl` round-trip). Baris disimpen di `scheduled_tasks` dengan `next_run_at` hasil `computeNextRun`.

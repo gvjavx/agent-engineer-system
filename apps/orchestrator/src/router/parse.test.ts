@@ -17,6 +17,7 @@ import {
   isStatusCommand,
   isStopCommand,
   parseReviewPr,
+  parseWorkIssue,
   parseSetCheck,
   parseScheduleCommand,
   isListSchedulesCommand,
@@ -94,6 +95,21 @@ test("parseReviewPr returns undefined without a number or the right shape", () =
   assert.equal(parseReviewPr("review kode di halaman login"), undefined);
   assert.equal(parseReviewPr("kenapa PR #12 gagal"), undefined);
   assert.equal(parseReviewPr("review PR #0"), undefined);
+});
+
+test("parseWorkIssue pulls the issue number from the common phrasings", () => {
+  assert.equal(parseWorkIssue("kerjain issue #42"), 42);
+  assert.equal(parseWorkIssue("garap isu 7"), 7);
+  assert.equal(parseWorkIssue("kerjain #13"), 13);
+  assert.equal(parseWorkIssue("tolong selesaikan issue 340 dong"), 340);
+  assert.equal(parseWorkIssue("  Beresin Issue #1  "), 1);
+});
+
+test("parseWorkIssue returns undefined without the issue keyword or a number", () => {
+  assert.equal(parseWorkIssue("kerjain 12"), undefined); // too ambiguous without issue/#
+  assert.equal(parseWorkIssue("kerjain issue"), undefined);
+  assert.equal(parseWorkIssue("kenapa issue #12 belum kelar"), undefined);
+  assert.equal(parseWorkIssue("tambahin fitur issue tracker"), undefined);
 });
 
 test("parseSetCheck reads the kind and the command, trimming whitespace", () => {
