@@ -37,6 +37,7 @@ import {
   isRetryCommand,
   isSessionHistoryCommand,
   isUndoLastCommand,
+  isLastDiffCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -104,6 +105,13 @@ test("isUndoLastCommand matches the exact undo phrases only", () => {
   assert.ok(isUndoLastCommand("  Batalin Task Terakhir  "));
   assert.ok(!isUndoLastCommand("undo the login change"));
   assert.ok(!isUndoLastCommand("batalin project toko"));
+});
+
+test("isLastDiffCommand matches the exact diff phrases only", () => {
+  assert.ok(isLastDiffCommand("diff terakhir"));
+  assert.ok(isLastDiffCommand("  Kirim Diff  "));
+  assert.ok(!isLastDiffCommand("diff terakhir sama yang sebelumnya"));
+  assert.ok(!isLastDiffCommand("kirim file config.ts"));
 });
 
 test("parseWorkIssue pulls the issue number from the common phrasings", () => {

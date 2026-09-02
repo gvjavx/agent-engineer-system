@@ -143,6 +143,7 @@ stop / batalkan                       → hentikan task yang sedang berjalan
 review PR <nomor>                     → baca diff PR di project aktif, kasih review, konfirmasi dulu sebelum posting komentar ke PR
 kerjain issue <nomor>                → baca issue GitHub di project aktif, susun rencana, garap setelah konfirmasi (PR nge-link "Closes #<nomor>")
 batalin yang barusan                 → revert commit dari task terakhir di project aktif (konfirmasi dulu, history gak dihapus)
+diff terakhir                        → kirim patch lengkap task terakhir sebagai lampiran file
 atur cek test <cmd> / atur cek lint <cmd> → command yang dijalanin sebelum commit; gagal = commit dibatalin ("atur cek test off" buat matiin)
 jadwalkan tiap <kapan>: <instruksi>   → task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies"
 daftar jadwal / hapus jadwal <nomor>  → lihat & batalkan task terjadwal

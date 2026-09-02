@@ -201,6 +201,14 @@ export async function discardWorkBranch(dir: string, defaultBranch: string, work
   await git.raw(["branch", "-D", workBranch]);
 }
 
+// Raw `git diff a b` output — for "diff terakhir" (sending a finished task's
+// full patch as an attachment). Best-effort; "" on any failure.
+export async function diffBetween(dir: string, a: string, b: string): Promise<string> {
+  return simpleGit(dir)
+    .raw(["diff", a, b])
+    .catch(() => "");
+}
+
 // Undo a finished task: revert every commit in fromSha..toSha (the task's own
 // commits) as one new commit on `branch`, then push. Pulls first so it stacks
 // on whatever else landed since. A revert conflict, or a merge commit in the

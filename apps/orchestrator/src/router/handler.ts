@@ -25,6 +25,7 @@ import {
   headSha,
   latestRemoteSha,
   revertRange,
+  diffBetween,
   summarizeChangesSince,
 } from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
@@ -103,6 +104,7 @@ import {
   isClearMemoryCommand,
   isSessionHistoryCommand,
   isUndoLastCommand,
+  isLastDiffCommand,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -172,6 +174,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *review PR <nomor>* — aku baca diff PR di project aktif, kasih review, terus tanya dulu sebelum posting sebagai komentar di PR-nya
 - *kerjain issue <nomor>* — aku baca issue GitHub-nya di project aktif (judul, deskripsi, komentar), susun rencana, dan garap setelah kamu konfirmasi. Commit/PR-nya otomatis nge-link "Closes #<nomor>"
 - *batalin yang barusan* — revert commit dari task terakhir di project aktif (konfirmasi dulu). History-nya gak dihapus, cuma ditambah commit revert terus di-push
+- *diff terakhir* — kirim patch lengkap dari task terakhir sebagai lampiran file
 - *atur cek test <cmd>* / *atur cek lint <cmd>* — command yang aku jalanin sebelum commit di project aktif; kalau gagal, commit-nya dibatalin. "atur cek test off" buat matiin. Biasanya udah kedeteksi sendiri dari package.json pas project didaftarin
 - *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
 - Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
@@ -764,6 +767,11 @@ export async function handleInboundMessage(
     return;
   }
 
+  if (isLastDiffCommand(trimmed)) {
+    await handleLastDiffCommand(from);
+    return;
+  }
+
   if (isRetryCommand(trimmed)) {
     await handleRetryCommand(from);
     return;
@@ -1250,6 +1258,59 @@ async function handleWorkIssueCommand(from: string, issueNumber: number): Promis
   await classifyAndPresentPlan(from, project, buildIssueInstruction(ctx), false);
 }
 
+// "diff terakhir" — send the last pushed git task's full patch as a .txt
+// attachment (.diff/.patch aren't in the document allowlist). Read-only.
+const MAX_DIFF_ATTACH_BYTES = 4 * 1024 * 1024;
+
+async function handleLastDiffCommand(from: string): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu.');
+    return;
+  }
+  const project = projectsRepo.get(state.active_project_alias);
+  if (!project || project.kind !== "git") {
+    await sendWhatsApp(from, `"${state.active_project_alias}" bukan project git, gak ada diff yang bisa aku kirim.`);
+    return;
+  }
+  const task = tasksRepo.lastPushedGitTask(project.alias);
+  if (!task || !task.base_sha || !task.result_sha) {
+    await sendWhatsApp(from, `Belum ada task yang commit + push di "${project.alias}".`);
+    return;
+  }
+  if (getActiveTaskId(project.alias)) {
+    await sendWhatsApp(from, `Masih ada task jalan di "${project.alias}". Tunggu kelar dulu.`);
+    return;
+  }
+
+  let cwd: string;
+  try {
+    cwd = (await ensureWorkspace(project)).dir;
+  } catch (err) {
+    await sendWhatsApp(from, `Gagal nyiapin workspace: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  let diff = await diffBetween(cwd, task.base_sha, task.result_sha);
+  if (!diff.trim()) {
+    await sendWhatsApp(from, "Diff-nya kosong — mungkin task itu udah kebalik atau gak nyentuh file apa-apa.");
+    return;
+  }
+  let note = "";
+  if (Buffer.byteLength(diff) > MAX_DIFF_ATTACH_BYTES) {
+    diff = diff.slice(0, MAX_DIFF_ATTACH_BYTES);
+    note = " (dipotong, kegedean)";
+  }
+  const short = (s: string) => s.slice(0, 8);
+  await sendWhatsAppDocument(
+    from,
+    `${project.alias}-${short(task.id)}.diff.txt`,
+    "text/plain",
+    Buffer.from(diff).toString("base64"),
+    `Diff task terakhir: "${task.instruction}"\n${short(task.base_sha)}..${short(task.result_sha)}${note}`
+  );
+}
+
 // "batalin yang barusan" — revert the last finished git task's commits as one
 // new commit, after a confirmation (it pushes). Deterministic git op, not a
 // pipeline: same shape as postPrComment.
@@ -1272,7 +1333,7 @@ async function handleUndoLastCommand(from: string): Promise<void> {
     await sendWhatsApp(from, `Masih ada task jalan di "${project.alias}". Tunggu kelar dulu (atau "stop"), baru bisa di-undo.`);
     return;
   }
-  const task = tasksRepo.lastRevertableForProject(project.alias);
+  const task = tasksRepo.lastPushedGitTask(project.alias);
   if (!task || !task.base_sha || !task.result_sha) {
     await sendWhatsApp(from, `Gak ada task yang bisa aku undo di "${project.alias}" — belum ada yang commit + push.`);
     return;
@@ -1813,6 +1874,7 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     isClearMemoryCommand(trimmed) ||
     isSessionHistoryCommand(trimmed) ||
     isUndoLastCommand(trimmed) ||
+    isLastDiffCommand(trimmed) ||
     parseAddProject(trimmed) !== undefined ||
     isBareAddProjectCommand(trimmed) ||
     parseAddFolder(trimmed) !== undefined ||

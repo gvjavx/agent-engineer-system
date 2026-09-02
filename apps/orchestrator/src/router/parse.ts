@@ -272,6 +272,20 @@ export function isUndoLastCommand(text: string): boolean {
   return UNDO_LAST_PHRASES.has(text.trim().toLowerCase());
 }
 
+// "diff terakhir" — send the last finished task's full patch as an attachment.
+const LAST_DIFF_PHRASES = new Set([
+  "diff terakhir",
+  "diff terakhir dong",
+  "lihat diff terakhir",
+  "kirim diff",
+  "kirim diff terakhir",
+  "kasih diff terakhir",
+]);
+
+export function isLastDiffCommand(text: string): boolean {
+  return LAST_DIFF_PHRASES.has(text.trim().toLowerCase());
+}
+
 export function isListProjectsCommand(text: string): boolean {
   return LIST_PROJECTS_PHRASES.has(text.trim().toLowerCase());
 }

@@ -271,8 +271,9 @@ export const tasksRepo = {
     db.prepare("UPDATE tasks SET base_sha = ?, result_sha = ? WHERE id = ?").run(baseSha, resultSha, id);
   },
   // Most recent finished git task for a project that actually landed commits
-  // (result_sha moved past base_sha) — the candidate for an undo.
-  lastRevertableForProject(projectAlias: string): Task | undefined {
+  // (result_sha moved past base_sha) — used by "batalin yang barusan" and
+  // "diff terakhir".
+  lastPushedGitTask(projectAlias: string): Task | undefined {
     return db
       .prepare(
         `SELECT * FROM tasks WHERE project_alias = ? AND status = 'done'
