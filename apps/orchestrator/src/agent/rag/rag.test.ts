@@ -9,7 +9,7 @@ import {
   retrieveCodeContext,
   type EmbeddingProvider,
 } from "./index.js";
-import type { RagStore, StoredChunk, RetrievalRow, IndexMeta } from "../../db/rag.js";
+import type { RagStore, StoredChunk, RetrievalRow, CrossRepoRow, IndexMeta } from "../../db/rag.js";
 
 // Deterministic stand-in for the real embedder: each dimension counts one
 // keyword, so a query and a chunk that share keywords score high.
@@ -63,6 +63,25 @@ function memoryStore(): RagStore {
         if (!k.startsWith(`${alias}\0`)) continue;
         for (const c of cs) {
           rows.push({
+            filePath: c.filePath,
+            startLine: c.startLine,
+            endLine: c.endLine,
+            content: c.content,
+            embedding: c.embedding,
+          });
+        }
+      }
+      return rows;
+    },
+    crossRepoChunks(excludeAlias, embedModel) {
+      const rows: CrossRepoRow[] = [];
+      for (const [k, cs] of chunks) {
+        const a = k.split("\0")[0];
+        if (a === excludeAlias) continue;
+        if (meta.get(a)?.embedModel !== embedModel) continue;
+        for (const c of cs) {
+          rows.push({
+            projectAlias: a,
             filePath: c.filePath,
             startLine: c.startLine,
             endLine: c.endLine,
@@ -142,6 +161,66 @@ test("retrieveCodeContext ranks by similarity and returns a header + path:line b
   // both hits present, best match first
   assert.ok(result.includes("src/user.ts"));
   assert.ok(result.indexOf("src/auth.ts") < result.indexOf("src/user.ts"));
+});
+
+test("retrieveCodeContext with crossRepo pulls a labelled minority of hits from other projects", async () => {
+  const store = memoryStore();
+  const embedder = fakeEmbedder();
+  const [ownVec, otherVec] = await embedder.embed(["auth login", "auth login user"]);
+
+  store.setMeta("mine", null, embedder.identity);
+  store.replaceFile("mine", "src/a.ts", "h1", [
+    { filePath: "src/a.ts", startLine: 1, endLine: 9, content: "// src/a.ts:1-9\nauth login", embedding: ownVec },
+  ]);
+  // A different registered project, indexed with the same embed model.
+  store.setMeta("otherproj", null, embedder.identity);
+  store.replaceFile("otherproj", "lib/auth.ts", "h2", [
+    { filePath: "lib/auth.ts", startLine: 1, endLine: 9, content: "// lib/auth.ts:1-9\nauth login user", embedding: otherVec },
+  ]);
+
+  const off = await retrieveCodeContext({
+    projectAlias: "mine",
+    query: "auth login",
+    signal: new AbortController().signal,
+    deps: { store, embedder },
+    crossRepo: false,
+  });
+  assert.ok(off && !off.includes("otherproj"), "cross-repo off: other projects never appear");
+
+  const on = await retrieveCodeContext({
+    projectAlias: "mine",
+    query: "auth login",
+    signal: new AbortController().signal,
+    deps: { store, embedder },
+    crossRepo: true,
+  });
+  assert.ok(on);
+  assert.match(on, /--- \[project otherproj\] lib\/auth\.ts:1-9 ---/);
+  assert.match(on, /DIFFERENT registered repository/);
+  assert.match(on, /--- src\/a\.ts:1-9 ---/); // own project still there, unlabelled
+});
+
+test("retrieveCodeContext crossRepo skips projects indexed with a different embed model", async () => {
+  const store = memoryStore();
+  const embedder = fakeEmbedder();
+  const [v] = await embedder.embed(["auth login user"]);
+  store.setMeta("mine", null, embedder.identity);
+  store.replaceFile("mine", "a.ts", "h", [
+    { filePath: "a.ts", startLine: 1, endLine: 5, content: "// a.ts:1-5\nauth login", embedding: v },
+  ]);
+  store.setMeta("stale", null, "old-embed-model@8");
+  store.replaceFile("stale", "b.ts", "h", [
+    { filePath: "b.ts", startLine: 1, endLine: 5, content: "// b.ts:1-5\nauth login user", embedding: v },
+  ]);
+
+  const result = await retrieveCodeContext({
+    projectAlias: "mine",
+    query: "auth login user",
+    signal: new AbortController().signal,
+    deps: { store, embedder },
+    crossRepo: true,
+  });
+  assert.ok(result && !result.includes("stale"), "a mismatched-model project is not eligible");
 });
 
 test("retrieveCodeContext swallows an embedder failure and returns undefined", async () => {

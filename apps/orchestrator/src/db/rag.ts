@@ -46,6 +46,13 @@ export interface RetrievalRow {
   embedding: Float32Array;
 }
 
+// Same as RetrievalRow but tagged with which project it came from — for the
+// cross-repo retrieval path, where the model must know a snippet isn't from
+// the repo it's working in.
+export interface CrossRepoRow extends RetrievalRow {
+  projectAlias: string;
+}
+
 export interface IndexMeta {
   headCommit: string | null;
   embedModel: string;
@@ -59,6 +66,10 @@ export interface RagStore {
   deleteFile(alias: string, filePath: string): void;
   deleteProject(alias: string): void;
   allForRetrieval(alias: string): RetrievalRow[];
+  // Every chunk from projects OTHER than `excludeAlias`, restricted to
+  // projects whose index was built with `embedModel` so the vectors are
+  // comparable. Only queried when RAG_CROSS_REPO is on.
+  crossRepoChunks(excludeAlias: string, embedModel: string): CrossRepoRow[];
   getMeta(alias: string): IndexMeta | undefined;
   setMeta(alias: string, headCommit: string | null, embedModel: string): void;
 }
@@ -128,6 +139,32 @@ export const ragRepo: RagStore = {
       embedding: Buffer;
     }[];
     return rows.map((r) => ({
+      filePath: r.file_path,
+      startLine: r.start_line,
+      endLine: r.end_line,
+      content: r.content,
+      embedding: toFloat32Array(r.embedding),
+    }));
+  },
+
+  crossRepoChunks(excludeAlias, embedModel) {
+    const rows = db
+      .prepare(
+        `SELECT c.project_alias, c.file_path, c.start_line, c.end_line, c.content, c.embedding
+         FROM code_chunks c
+         JOIN code_index_meta m ON m.project_alias = c.project_alias
+         WHERE c.project_alias != ? AND m.embed_model = ?`
+      )
+      .all(excludeAlias, embedModel) as {
+      project_alias: string;
+      file_path: string;
+      start_line: number;
+      end_line: number;
+      content: string;
+      embedding: Buffer;
+    }[];
+    return rows.map((r) => ({
+      projectAlias: r.project_alias,
       filePath: r.file_path,
       startLine: r.start_line,
       endLine: r.end_line,

@@ -156,9 +156,11 @@ Setiap task — di semua mode (git, folder lokal, tiap fase pipeline) — otomat
 
 ## Konteks kode otomatis (RAG) — opsional
 
-Mati secara default. Kalau `RAG_ENABLED=true` di `.env`, tiap project yang didaftarkan file-nya di-chunk dan di-embed sekali, lalu sebelum tiap task/fase agent dikasih potongan kode yang paling mirip dengan instruksi — jadi dia tidak habis giliran tool cuma buat `grep`/`find` nyari file yang benar. Butuh key Gemini (endpoint embedding di sini Gemini-only); dinyalakan tanpa key Gemini cuma jadi no-op, tidak pernah menggagalkan task.
+Mati secara default. Kalau `RAG_ENABLED=true` di `.env`, tiap project yang didaftarkan file-nya di-chunk dan di-embed sekali, lalu sebelum tiap task/fase agent dikasih potongan kode yang paling mirip dengan instruksi — jadi dia tidak habis giliran tool cuma buat `grep`/`find` nyari file yang benar. Embedding-nya pakai model lokal (CPU, tanpa API key, tanpa rate limit) lewat `@huggingface/transformers`; kalau paket itu tidak terpasang, RAG cuma jadi no-op, tidak pernah menggagalkan task.
 
-Index-nya inkremental (hanya file yang berubah yang di-embed ulang) dan menyegar sendiri: sekali pas project didaftarkan, lalu cek cepat tiap task (langsung skip kalau default branch belum bergerak). `hapus project` ikut menghapus index-nya. Knob-nya (`RAG_TOP_K`, `RAG_MAX_CONTEXT_CHARS`, `RAG_CHUNK_LINES`, dst) ada di `.env.example`; detail teknis di `ARCHITECTURE.md` ("Konteks kode (RAG)").
+Chunking-nya per-simbol: dipotong di batas fungsi/kelas (heuristik per bahasa), bukan window baris buta — jadi satu potongan itu unit yang utuh. Bahasa yang tidak keparse balik ke window ~60 baris.
+
+Index-nya inkremental (hanya file yang berubah yang di-embed ulang) dan menyegar sendiri: sekali pas project didaftarkan, lalu cek cepat tiap task (langsung skip kalau default branch belum bergerak). `hapus project` ikut menghapus index-nya. `RAG_CROSS_REPO=true` bikin retrieval juga narik beberapa potongan dari project lain yang keregister (ditandai `[project <nama>]`), buat pola lintas-repo. Knob-nya (`RAG_TOP_K`, `RAG_MAX_CONTEXT_CHARS`, `RAG_CHUNK_LINES`, dst) ada di `.env.example`; detail teknis di `ARCHITECTURE.md` ("Konteks kode (RAG)").
 
 ## Folder lokal (bukan repo git)
 

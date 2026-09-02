@@ -24,14 +24,21 @@ function taskRow(over: Partial<Task>): Task {
 
 test("enqueueProjectTask runs same-project tasks strictly in order", async () => {
   const order: string[] = [];
-  const gate = (ms: number, tag: string) => async () => {
-    await new Promise((r) => setTimeout(r, ms));
-    order.push(tag);
+  let aDone = false;
+  const gateA = async () => {
+    await new Promise((r) => setTimeout(r, 40));
+    aDone = true;
+    order.push("a");
   };
-  enqueueProjectTask("proj-serial", "a", gate(30, "a"));
-  enqueueProjectTask("proj-serial", "b", gate(1, "b"));
-  await settle();
-  await new Promise((r) => setTimeout(r, 60));
+  const gateB = async () => {
+    // Serialization is the claim under test, not timing: b must not have run
+    // until a finished, regardless of how long the scheduler took.
+    assert.equal(aDone, true, "b started before a finished");
+    order.push("b");
+  };
+  enqueueProjectTask("proj-serial", "a", gateA);
+  enqueueProjectTask("proj-serial", "b", gateB);
+  await new Promise((r) => setTimeout(r, 150));
   assert.deepEqual(order, ["a", "b"], "b must wait for a even though b is faster");
 });
 

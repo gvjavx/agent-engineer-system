@@ -220,6 +220,11 @@ export const config = {
     chunkLines: Math.max(10, Number(process.env.RAG_CHUNK_LINES ?? 60)),
     chunkOverlap: Math.max(0, Number(process.env.RAG_CHUNK_OVERLAP ?? 10)),
     maxFilesPerIndex: Math.max(1, Number(process.env.RAG_MAX_FILES_PER_INDEX ?? 600)),
+    // When on, retrieval also pulls a few of the best-matching chunks from
+    // OTHER registered projects (labelled as such), for cross-repo patterns.
+    // Capped well below topK so the active project stays dominant; only
+    // projects indexed with the current embed model are eligible.
+    crossRepo: (process.env.RAG_CROSS_REPO ?? "false").toLowerCase() === "true",
   },
 
   // Stage 0 of the chat knowledge base: record every free-form chat Q&A into
