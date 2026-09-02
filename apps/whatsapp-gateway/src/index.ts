@@ -12,6 +12,7 @@ import {
   type QuickReplyOption,
 } from "./whatsapp.js";
 import { isAllowedInboundImageMimeType, MAX_INBOUND_IMAGE_BYTES } from "./imageGuard.js";
+import { isAllowedInboundAudioMimeType, MAX_INBOUND_AUDIO_BYTES } from "./audioGuard.js";
 import { forwardToOrchestrator, forwardFigmaOAuthCallback } from "./orchestratorClient.js";
 
 const app = express();
@@ -104,8 +105,37 @@ app.post(
         }
       }
 
+      let audio: { mimeType: string; base64Data: string } | undefined;
+      if (message.audioId) {
+        try {
+          const downloaded = await downloadMedia(message.audioId);
+          if (!isAllowedInboundAudioMimeType(downloaded.mimeType)) {
+            await sendWhatsAppMessage(
+              message.from,
+              "Format audionya belum aku dukung. Coba kirim sebagai voice note biasa, atau ketik aja."
+            ).catch(() => {});
+            continue;
+          }
+          if (downloaded.buffer.length > MAX_INBOUND_AUDIO_BYTES) {
+            await sendWhatsAppMessage(
+              message.from,
+              `Voice note-nya kegedean (maks ${MAX_INBOUND_AUDIO_BYTES / 1024 / 1024}MB). Coba yang lebih pendek.`
+            ).catch(() => {});
+            continue;
+          }
+          audio = { mimeType: downloaded.mimeType, base64Data: downloaded.buffer.toString("base64") };
+        } catch (err) {
+          console.error("Failed to download inbound audio:", err);
+          await sendWhatsAppMessage(
+            message.from,
+            "Waduh, gagal ambil voice note-nya dari WhatsApp. Coba kirim ulang ya."
+          ).catch(() => {});
+          continue;
+        }
+      }
+
       try {
-        await forwardToOrchestrator(message, image);
+        await forwardToOrchestrator(message, image, audio);
       } catch (err) {
         console.error("Failed to forward inbound message to orchestrator:", err);
         await sendWhatsAppMessage(

@@ -75,6 +75,9 @@ export interface Provider {
   // across this codebase that construct a bare {name, chat} don't need to
   // grow one just to satisfy the compiler.
   describeImage?(base64Data: string, mimeType: string, prompt: string, signal: AbortSignal): Promise<string>;
+  // Optional, same reasoning as describeImage: only providers whose API takes
+  // audio input implement it. agent/audioTranscription.ts skips the rest.
+  transcribeAudio?(base64Data: string, mimeType: string, signal: AbortSignal): Promise<string>;
 }
 
 // Both the Gemini SDK's ApiError and the openai package's APIError expose a

@@ -40,6 +40,7 @@ import { classifyIntent } from "../agent/commandIntent.js";
 import { checkNeedsClarification } from "../agent/requestClarity.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
 import { describeImage, mergeImageDescription } from "../agent/imageDescription.js";
+import { transcribeVoiceNote } from "../agent/audioTranscription.js";
 import { generateChatReply, needsConversationContext } from "../agent/chatAssistant.js";
 import type { Provider } from "../agent/types.js";
 import { explainInSimpleTerms, introduceYourself, explainHelp } from "../agent/dynamicReplies.js";
@@ -428,11 +429,23 @@ function touchAndLogSession(from: string, loggedContent: string): void {
 export async function handleInboundMessage(
   from: string,
   text: string,
-  image?: { mimeType: string; base64Data: string }
+  image?: { mimeType: string; base64Data: string },
+  audio?: { mimeType: string; base64Data: string }
 ): Promise<void> {
-  const trimmed = text.trim();
+  let messageText = text;
 
-  touchAndLogSession(from, image ? trimmed || "[gambar]" : trimmed);
+  // A voice note becomes text before anything else looks at it, so it flows
+  // through pending-state handlers and command parsing exactly like typing.
+  if (audio) {
+    const transcript = await transcribeInboundVoiceNote(from, audio);
+    if (transcript === undefined) return; // the failure reply was already sent
+    messageText = transcript;
+    await sendWhatsApp(from, `Oke, aku denger: "${transcript}"`);
+  }
+
+  const trimmed = messageText.trim();
+
+  touchAndLogSession(from, audio ? `[voice] ${trimmed}` : image ? trimmed || "[gambar]" : trimmed);
 
   const bashApprovalReply = await handlePendingBashApproval(from, trimmed, image);
   if (bashApprovalReply) return;
@@ -1352,6 +1365,40 @@ async function handleSessionHistoryCommand(from: string): Promise<void> {
   }
   const transcript = session.messages.map((m) => `${m.role === "user" ? "Kamu" : "Aku"}: ${m.content}`).join("\n");
   await sendWhatsApp(from, `Ini yang kita bahas di sesi sebelumnya:\n\n${transcript}`);
+}
+
+// Returns the transcript, or undefined after having already told the user why
+// it couldn't. On success the caller swaps it in for the message text.
+async function transcribeInboundVoiceNote(
+  from: string,
+  audio: { mimeType: string; base64Data: string }
+): Promise<string | undefined> {
+  const state = conversationRepo.get(from);
+  const providers = buildProviders(resolveManajemenProvider(from, state));
+  if (providers.length === 0) {
+    await sendWhatsApp(from, "Belum ada AI provider yang aktif, jadi voice note-nya belum bisa aku dengerin. Ketik aja ya.");
+    return undefined;
+  }
+  if (!providers.some((p) => p.transcribeAudio)) {
+    await sendWhatsApp(
+      from,
+      'Model AI yang aktif buat chat ini gak bisa transcribe audio. Ganti ke model yang support (mis. "pakai model gemini"), atau ketik aja instruksinya.'
+    );
+    return undefined;
+  }
+
+  await sendWhatsApp(from, "Bentar, aku dengerin voice note-nya dulu...");
+  const transcript = await transcribeVoiceNote(
+    audio.base64Data,
+    audio.mimeType,
+    providers,
+    new AbortController().signal
+  );
+  if (!transcript) {
+    await sendWhatsApp(from, "Waduh, gagal nangkep isi voice note-nya. Coba kirim ulang, atau ketik aja ya.");
+    return undefined;
+  }
+  return transcript;
 }
 
 async function handleImageMessage(

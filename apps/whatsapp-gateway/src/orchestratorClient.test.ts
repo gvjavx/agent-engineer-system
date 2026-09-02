@@ -13,7 +13,7 @@ test("forwardToOrchestrator succeeds on the first try without retrying", async (
     return new Response(null, { status: 202 });
   }) as typeof fetch;
   try {
-    await forwardToOrchestrator(message, undefined, 0);
+    await forwardToOrchestrator(message, undefined, undefined, 0);
     assert.equal(calls, 1);
   } finally {
     globalThis.fetch = originalFetch;
@@ -29,7 +29,7 @@ test("forwardToOrchestrator retries once after a network error and succeeds", as
     return new Response(null, { status: 202 });
   }) as typeof fetch;
   try {
-    await forwardToOrchestrator(message, undefined, 0);
+    await forwardToOrchestrator(message, undefined, undefined, 0);
     assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
@@ -44,7 +44,7 @@ test("forwardToOrchestrator retries once after a non-ok response and succeeds", 
     return new Response(calls === 1 ? "server error" : null, { status: calls === 1 ? 500 : 202 });
   }) as typeof fetch;
   try {
-    await forwardToOrchestrator(message, undefined, 0);
+    await forwardToOrchestrator(message, undefined, undefined, 0);
     assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
@@ -59,7 +59,7 @@ test("forwardToOrchestrator throws after both attempts fail", async () => {
     throw new Error("ECONNREFUSED");
   }) as typeof fetch;
   try {
-    await assert.rejects(() => forwardToOrchestrator(message, undefined, 0));
+    await assert.rejects(() => forwardToOrchestrator(message, undefined, undefined, 0));
     assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;

@@ -141,4 +141,22 @@ export class GeminiProvider implements Provider {
     }
     return response.text ?? "";
   }
+
+  async transcribeAudio(base64Data: string, mimeType: string, signal: AbortSignal): Promise<string> {
+    const prompt =
+      "Transcribe this WhatsApp voice note verbatim. It is most likely Indonesian and may mix in English technical terms — keep those as spoken. Output only the transcription, no preamble, no translation, no timestamps.";
+    let response;
+    try {
+      response = await this.client.models.generateContent({
+        model: this.model,
+        // Same inline-media + text shape as the vision path; the Part type
+        // takes audio in inlineData just as well as an image.
+        contents: buildGeminiVisionContents(base64Data, mimeType, prompt),
+        config: { abortSignal: signal, httpOptions: { timeout: PROVIDER_REQUEST_TIMEOUT_MS } },
+      });
+    } catch (err) {
+      throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err, extractHttpStatus(err));
+    }
+    return response.text ?? "";
+  }
 }

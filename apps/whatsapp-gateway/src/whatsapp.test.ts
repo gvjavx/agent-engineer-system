@@ -154,6 +154,31 @@ test("extractInboundMessages ignores an image message missing the image object/i
   assert.deepEqual(extractInboundMessages(payload), []);
 });
 
+test("extractInboundMessages extracts a voice note as empty text plus the audio id", () => {
+  const payload = webhookPayload({
+    id: "wamid.8",
+    from: "628123",
+    timestamp: "8",
+    type: "audio",
+    audio: { id: "media-voice", mime_type: "audio/ogg; codecs=opus", voice: true },
+  });
+  assert.deepEqual(extractInboundMessages(payload), [
+    {
+      from: "628123",
+      text: "",
+      waMessageId: "wamid.8",
+      timestamp: "8",
+      audioId: "media-voice",
+      audioMimeType: "audio/ogg; codecs=opus",
+    },
+  ]);
+});
+
+test("extractInboundMessages ignores an audio message missing the audio object/id", () => {
+  const payload = webhookPayload({ id: "wamid.9", from: "628123", timestamp: "9", type: "audio" });
+  assert.deepEqual(extractInboundMessages(payload), []);
+});
+
 test("extractInboundMessages handles an empty/malformed payload without throwing", () => {
   assert.deepEqual(extractInboundMessages({}), []);
   assert.deepEqual(extractInboundMessages(null), []);

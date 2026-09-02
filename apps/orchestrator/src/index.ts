@@ -15,20 +15,21 @@ const app = express();
 // No blanket app.use(express.json()) — each route gets its own parser sized
 // for what it actually needs, same principle as whatsapp-gateway/src/index.ts.
 
-app.post("/inbound", express.json({ limit: "8mb" }), (req, res) => {
+app.post("/inbound", express.json({ limit: "25mb" }), (req, res) => {
   if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
     return res.sendStatus(401);
   }
-  const { from, text, image, waMessageId } = req.body as {
+  const { from, text, image, audio, waMessageId } = req.body as {
     from?: string;
     text?: string;
     image?: { mimeType?: string; base64Data?: string };
+    audio?: { mimeType?: string; base64Data?: string };
     waMessageId?: string;
   };
-  // text === "" is valid and expected for a captionless image — only reject
-  // when there's neither text nor an image at all.
-  if (!from || (!image && !text)) {
-    return res.status(400).json({ error: "Missing 'from', or missing both 'text' and 'image'" });
+  // text === "" is valid and expected for a captionless image/voice note —
+  // only reject when there's no text, image, and audio at all.
+  if (!from || (!image && !audio && !text)) {
+    return res.status(400).json({ error: "Missing 'from', or missing 'text', 'image' and 'audio'" });
   }
   // Belt-and-suspenders: whatsapp-gateway already filters by ALLOWED_SENDERS
   // before forwarding, but this endpoint shouldn't blindly trust every caller
@@ -51,7 +52,9 @@ app.post("/inbound", express.json({ limit: "8mb" }), (req, res) => {
 
   const validImage =
     image?.mimeType && image?.base64Data ? { mimeType: image.mimeType, base64Data: image.base64Data } : undefined;
-  handleInboundMessage(from, text ?? "", validImage).catch((err) => {
+  const validAudio =
+    audio?.mimeType && audio?.base64Data ? { mimeType: audio.mimeType, base64Data: audio.base64Data } : undefined;
+  handleInboundMessage(from, text ?? "", validImage, validAudio).catch((err) => {
     console.error(`Unhandled error handling message from ${from}:`, err);
   });
 });

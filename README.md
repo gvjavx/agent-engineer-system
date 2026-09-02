@@ -228,6 +228,12 @@ Batasan:
 - Maksimal 5MB per gambar (limit bawaan WhatsApp buat gambar masuk).
 - Butuh provider AI yang model-nya bisa vision — dari default `AI_PROVIDER_ORDER=gemini,openrouter,qwen`, cuma Gemini yang vision-capable; model coder default OpenRouter/Qwen gak bisa "lihat" gambar. Kalau semua provider yang aktif gak bisa, agent bilang jelas dan nyaranin ganti model, gak diam-diam nebak.
 
+## Voice note
+
+Kirim voice note WhatsApp — gateway ambil audionya, orchestrator transcribe lewat Gemini, terus perlakuin hasilnya persis kayak kamu ngetik: bisa instruksi task, jawaban konfirmasi ("ya"/"tidak"), command ("status", "pakai <project>"), atau ngobrol biasa. Sebelum lanjut, agent balas `Oke, aku denger: "<transkrip>"` biar kalau salah dengar kamu bisa langsung ralat.
+
+Butuh provider AI yang model-nya bisa audio (dari default cuma Gemini) — kalau yang aktif nggak bisa, agent bilang dan minta kamu ketik aja. Maks 16MB per voice note (limit WhatsApp).
+
 ## Task terjadwal
 
 `jadwalkan tiap <kapan>: <instruksi>` bikin task yang jalan sendiri berulang di project aktif. Contoh:

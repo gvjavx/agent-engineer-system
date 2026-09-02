@@ -27,9 +27,10 @@ const FORWARD_RETRY_DELAY_MS = 2_000;
 export async function forwardToOrchestrator(
   message: InboundMessage,
   image?: { mimeType: string; base64Data: string },
+  audio?: { mimeType: string; base64Data: string },
   retryDelayMs = FORWARD_RETRY_DELAY_MS
 ): Promise<void> {
-  const body = { ...message, image };
+  const body = { ...message, image, audio };
   try {
     const res = await postToOrchestrator("/inbound", body);
     if (!res.ok) throw new Error(`Orchestrator rejected inbound message (${res.status}): ${await res.text()}`);

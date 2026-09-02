@@ -26,6 +26,10 @@ export interface InboundMessage {
   // already uses for a tapped interactive button/list id.
   imageId?: string;
   imageMimeType?: string;
+  // Present only for a voice note / audio message. `text` is always "" —
+  // WhatsApp voice notes carry no caption.
+  audioId?: string;
+  audioMimeType?: string;
 }
 
 // Extracts messages from a Meta Cloud API webhook payload — plain text, taps
@@ -55,6 +59,7 @@ export function extractInboundMessages(payload: unknown): InboundMessage[] {
             list_reply?: { id: string; title: string };
           };
           image?: { id: string; mime_type: string; caption?: string };
+          audio?: { id: string; mime_type: string; voice?: boolean };
         };
         if (msg.type === "text" && msg.text?.body) {
           messages.push({ from: msg.from, text: msg.text.body, waMessageId: msg.id, timestamp: msg.timestamp });
@@ -71,6 +76,15 @@ export function extractInboundMessages(payload: unknown): InboundMessage[] {
             timestamp: msg.timestamp,
             imageId: msg.image.id,
             imageMimeType: msg.image.mime_type,
+          });
+        } else if (msg.type === "audio" && msg.audio?.id) {
+          messages.push({
+            from: msg.from,
+            text: "",
+            waMessageId: msg.id,
+            timestamp: msg.timestamp,
+            audioId: msg.audio.id,
+            audioMimeType: msg.audio.mime_type,
           });
         }
       }
