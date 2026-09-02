@@ -7,7 +7,10 @@ import { config } from "../config.js";
 // only load when CHAT_LOCAL_LLM is on. CPU-only, no API. A failure/timeout
 // here just means the reply falls through to the configured Gemini provider.
 
-const MODEL_ID = process.env.CHAT_LOCAL_LLM_MODEL ?? "onnx-community/Qwen2.5-0.5B-Instruct";
+// 1.5B is the realistic floor for factual chat — a 0.5B model here answered
+// "kapan hari kemerdekaan Indonesia?" with "24 Agustus 1945" (wrong) and
+// invented a name for the light bulb's inventor. Fluent, confident, wrong.
+const MODEL_ID = process.env.CHAT_LOCAL_LLM_MODEL ?? "onnx-community/Qwen2.5-1.5B-Instruct";
 const CACHE_DIR = path.join(path.dirname(config.dbPath), "hf-cache");
 
 const DTYPES = ["auto", "fp32", "fp16", "q8", "int8", "uint8", "q4", "bnb4", "q4f16"] as const;

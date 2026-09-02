@@ -149,7 +149,9 @@ Kalau `classifyMessageKind` bilang `chat` (bukan task), `handleChatMessage` (`ag
 
 ### Model lokal buat chat non-koding
 
-Opsional, mati default (`CHAT_LOCAL_LLM`). Model instruct kecil lokal (`agent/localLlm.ts` — default `Qwen2.5-0.5B-Instruct` q4, ~350MB, CPU, lewat `@huggingface/transformers`) jawab chat non-koding **sebelum** Gemini dicoba. Dipanggil di `generateChatReply` setelah aritmatika + cache KB, sebelum `provider.chat`. Gagal/timeout/jawaban kosong → jatuh ke Gemini seperti biasa. `source: "local"`. Prompt-nya sengaja pendek (`buildLocalSystemPrompt` — persona + style, tanpa histori, tanpa ekstraksi FACT). Jawaban lokal **nggak di-cache** (model gratis di-run ulang, membaik pas di-tune, dan output-nya jangan nyampur ke dataset distilasi). Pipeline koding nggak kesentuh. Model di-warm pas startup.
+Opsional, mati default (`CHAT_LOCAL_LLM`). Model instruct kecil lokal (`agent/localLlm.ts` — default `Qwen2.5-1.5B-Instruct` q4, CPU, lewat `@huggingface/transformers`) jawab chat non-koding **sebelum** Gemini dicoba. Dipanggil di `generateChatReply` setelah aritmatika + cache KB, sebelum `provider.chat`. Gagal/timeout/jawaban kosong/lolos `isUsableLocalReply` (buang echo prompt, echo pertanyaan, loop) → jatuh ke Gemini. `source: "local"`. Prompt-nya sengaja pendek (`buildLocalSystemPrompt` — persona + style, tanpa histori, tanpa ekstraksi FACT). Jawaban lokal **nggak di-cache** (model gratis di-run ulang, membaik pas di-tune, output-nya jangan nyampur ke dataset distilasi). Pipeline koding nggak kesentuh. Model di-warm pas startup (log "ready in Ns").
+
+**Kualitas**: diuji, model 0.5B fasih tapi **ngarang fakta dasar** ("kemerdekaan Indonesia → 24 Agustus 1945"). 1.5B lantai minimum; buat bener-bener bagus, fine-tune pakai output `npm run export:dataset`. `isUsableLocalReply` nangkep degenerasi, **bukan** halusinasi percaya-diri — itu butuh grounding (RAG/KB).
 
 ### Chat knowledge base
 
