@@ -270,6 +270,19 @@ export function isStopCommand(text: string): boolean {
   return STOP_PHRASES.has(text.trim().toLowerCase());
 }
 
+// "review PR #12", "tolong review pull request 12", "coba review pr 12 dong".
+// Deterministic (has an argument — the number) so it never depends on the
+// classifier; a plain "review kode ini" with no number falls through to the
+// task pipeline like any other free-text instruction.
+const REVIEW_PR_RE = /^(?:tolong\s+|coba\s+|bisa\s+|minta\s+)?review\s+(?:pull\s*request|pull|pr)\s*#?\s*(\d{1,7})\b/i;
+
+export function parseReviewPr(text: string): number | undefined {
+  const match = text.trim().match(REVIEW_PR_RE);
+  if (!match) return undefined;
+  const n = Number(match[1]);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 // Short enough to plausibly be a paraphrase of the command ("sambungin akun
 // figma saya dong"), too short to be a real task instruction that happens to
 // mention both words far apart ("bikin halaman yang bisa hubungkan desain

@@ -51,8 +51,9 @@ Ini fungsi paling sentral di seluruh sistem. Urutan pengecekan penting — makin
 4. Ada gambar?                             ──▶ handleImageMessage
 5. Cocok salah satu command deterministik  ──▶ handler masing-masing
    (intro/greeting/help/daftar project/daftar model/status/stop/
-   hubungkan figma/lihat memori/lupain semua/tambah-hapus project-folder,
-   termasuk versi "diketik tanpa argumen" yang start wizard/picker)
+   review PR <nomor>/hubungkan figma/lihat memori/lupain semua/
+   tambah-hapus project-folder, termasuk versi "diketik tanpa argumen"
+   yang start wizard/picker)
 6. Cocok sentinel tombol menu "bantuan"?   ──▶ wizard/picker terkait
 7. AI: paraphrase dari salah satu command  ──▶ tryHandleSemanticCommand
    di atas? (classifyCommandIntent)
@@ -183,6 +184,10 @@ Opsional, mati default (`CHAT_KB_ENABLED`). Konsepnya: pertanyaan non-koding **b
 - `npm run export:dataset --workspace apps/orchestrator` (`scripts/export-kb-dataset.ts`) nge-dump baris `chat_model` jadi JSONL `{"messages":[{user},{assistant}]}` — dataset siap fine-tune/distilasi buat langkah "model lokal generatif".
 - **Usul sinonim otomatis**: pas text near-miss di mana dua pertanyaan cuma beda 1-2 token per sisi, pasangan token itu di-count di `kb_synonym_hints` (`recordSynonymHint`). `lihat memori` nampilin yang count ≥ 3; `npm run kb:hints` daftar lengkap. Sinonim beneran naik ke atas seiring sampel; tinggal ditambah manual ke peta `SYNONYM`.
 - `lupain semua` ikut ngehapus `interaction_kb` (`chatKbRepo.clearForNumber`); `chat_stats` nggak (statistik agregat, bukan data pribadi).
+
+## `review PR <nomor>`
+
+`parseReviewPr` (deterministik — ada argumen nomornya) → `handleReviewPrCommand`. Bukan lewat pipeline: cuma baca + satu panggilan model. `ensureWorkspace` project aktif (harus `kind='git'`) → `agent/prReview.ts` `gatherPrContext` nembak `gh pr view --json ...` + `gh pr diff` di workspace itu (`gh` baca `GITHUB_TOKEN` dari env, repo diinfer dari origin), diff dipotong di batas baris kalau > 24k char → `buildReviewPrompt` → `providers[0].chat` (tanpa tool) → review dibalikin ke WhatsApp. Review-nya distash di `pending_action: confirm_post_pr_review`; balas "ya" → `gh pr comment <n> --body <review>`. Nggak pernah auto-post — selalu nunggu konfirmasi.
 
 ## `status` — dasbor ringkas
 

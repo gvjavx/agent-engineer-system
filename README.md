@@ -138,8 +138,9 @@ pakai <nama>                          → ganti project aktif
 daftar model                          → cek AI provider + model per departemen, masih bisa dipakai atau tidak
 pakai model <nama>                    → model AI default (dipakai departemen yang belum punya model sendiri)
 pakai model <departemen> <nama>       → model AI khusus satu departemen (manajemen/dev/desain/qa/infra/bisnis)
-status                                → lihat task yang sedang berjalan (termasuk fase yang lagi jalan)
+status                                → lihat task yang sedang berjalan + ringkasan 7 hari
 stop / batalkan                       → hentikan task yang sedang berjalan
+review PR <nomor>                     → baca diff PR di project aktif, kasih review, konfirmasi dulu sebelum posting komentar ke PR
 bantuan                               → tampilkan daftar perintah
 ```
 

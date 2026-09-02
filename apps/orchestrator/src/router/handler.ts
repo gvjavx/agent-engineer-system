@@ -25,6 +25,7 @@ import {
 } from "../git/repo.js";
 import { indexProject, deleteProjectIndex } from "../agent/rag/index.js";
 import { scanTrackedFiles, formatSecretHits } from "../agent/secretScan.js";
+import { gatherPrContext, reviewPr, postPrComment } from "../agent/prReview.js";
 import { recordInteraction } from "../agent/chatKb.js";
 import { chatKbRepo, kbStatsRepo, kbHintsRepo } from "../db/chatKb.js";
 import { noteKbHit, clearKbHit, consumeKbCorrection } from "../agent/chatKb.js";
@@ -73,6 +74,7 @@ import {
   isHelpCommand,
   isStatusCommand,
   isStopCommand,
+  parseReviewPr,
   isConfirmYes,
   isConfirmNo,
   isConfirmYesWithCheckpoints,
@@ -150,8 +152,9 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *daftar model <provider> <kata kunci>* — cari model spesifik di provider itu (mis. "daftar model gemini flash") — ditampilin semua beserta statusnya (bisa dipakai / kena limit / error)
 - *pakai model <nama>* atau *pakai model <provider>/<model>* — model AI default (dipakai departemen yang belum punya model sendiri)
 - *pakai model <departemen> <nama>* atau *pakai model <departemen> <provider>/<model>* — model AI khusus satu departemen (${DEPARTMENT_LIST_TEXT})
-- *status* — cek task yang lagi jalan
+- *status* — cek task yang lagi jalan, plus ringkasan 7 hari
 - *stop* — batalin task yang lagi jalan di project aktif
+- *review PR <nomor>* — aku baca diff PR di project aktif, kasih review, terus tanya dulu sebelum posting sebagai komentar di PR-nya
 - Ngobrol santai juga boleh, gak harus selalu perintah kerjaan — aku bakal inget hal-hal soal kamu dari obrolan kita buat kedepannya. Ketik *lihat memori* buat liat apa yang aku inget, atau *lupain semua* buat aku lupain lagi
 - Kirim gambar (screenshot, mockup, dsb) bareng caption instruksinya (mis. "perbaiki tampilan sesuai screenshot ini") — aku bakal liat gambarnya dulu baru mulai kerjain. Kirim tanpa caption juga boleh, nanti aku ceritain apa yang aku liat terus tanya mau diapain.
 - Atau langsung ketik aja apa yang mau dikerjain (mis. "tambahin endpoint health check"). Aku bakal tebak departemen mana yang perlu ngerjain, kasih tau rencananya, baru mulai setelah kamu konfirmasi — kalau rencananya lebih dari satu fase, kamu bisa pilih "review tiap fase" biar aku pause dulu abis tiap fase kelar, nunggu kamu approve atau minta revisi sebelum lanjut.`;
@@ -224,6 +227,13 @@ interface PendingImageFollowup {
   description: string;
 }
 
+interface PendingPostPrReview {
+  type: "confirm_post_pr_review";
+  alias: string;
+  prNumber: number;
+  review: string;
+}
+
 type PendingActionData =
   | PendingAddFolder
   | PendingDeleteProject
@@ -233,7 +243,8 @@ type PendingActionData =
   | PendingClearMemory
   | PendingClarifyInstruction
   | PendingFigmaSetup
-  | PendingImageFollowup;
+  | PendingImageFollowup
+  | PendingPostPrReview;
 
 const YES_NO_OPTIONS: QuickReplyOption[] = [
   { id: "ya", title: "Ya, lanjut" },
@@ -638,6 +649,12 @@ export async function handleInboundMessage(
     return;
   }
 
+  const reviewPrNumber = parseReviewPr(trimmed);
+  if (reviewPrNumber !== undefined) {
+    await handleReviewPrCommand(from, reviewPrNumber);
+    return;
+  }
+
   if (isConnectFigmaCommand(trimmed)) {
     await handleConnectFigmaCommand(from);
     return;
@@ -1021,6 +1038,66 @@ async function handleStatusCommand(from: string): Promise<void> {
   }
 }
 
+async function handleReviewPrCommand(from: string, prNumber: number): Promise<void> {
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu, baru aku bisa review PR-nya.');
+    return;
+  }
+  const project = projectsRepo.get(state.active_project_alias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${state.active_project_alias}" udah gak ada. Pilih project lain dulu.`);
+    return;
+  }
+  if (project.kind !== "git") {
+    await sendWhatsApp(from, `"${project.alias}" itu folder lokal, gak ada PR-nya. Review PR cuma buat project git.`);
+    return;
+  }
+  // ensureWorkspace below does a checkout+pull; don't run that under a task
+  // that's actively writing to the same clone.
+  if (getActiveTaskId(project.alias)) {
+    await sendWhatsApp(from, `Masih ada task yang lagi jalan di "${project.alias}". Tunggu kelar dulu (atau "stop"), baru aku review PR-nya.`);
+    return;
+  }
+
+  await sendWhatsApp(from, `Oke, aku ambil PR #${prNumber} dari "${project.alias}" dulu...`);
+
+  let cwd: string;
+  try {
+    cwd = (await ensureWorkspace(project)).dir;
+  } catch (err) {
+    await sendWhatsApp(from, `Gagal nyiapin workspace-nya: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  const ctx = await gatherPrContext(cwd, prNumber);
+  if ("error" in ctx) {
+    await sendWhatsApp(from, `Gagal ambil PR #${prNumber}: ${ctx.error}`);
+    return;
+  }
+
+  const providers = buildProviders(resolveManajemenProvider(from, state));
+  if (providers.length === 0) {
+    await sendWhatsApp(from, "Belum ada AI provider yang keatur, jadi belum bisa review.");
+    return;
+  }
+
+  const review = await reviewPr(ctx, providers[0], new AbortController().signal);
+  if (!review) {
+    await sendWhatsApp(from, `Aku gagal nyusun review buat PR #${prNumber}, coba lagi bentar.`);
+    return;
+  }
+
+  const pending: PendingPostPrReview = { type: "confirm_post_pr_review", alias: project.alias, prNumber, review };
+  conversationRepo.setPendingAction(from, JSON.stringify(pending));
+
+  await sendWhatsApp(
+    from,
+    `Review PR #${prNumber} — ${ctx.title}\n(${ctx.changedFiles} file, +${ctx.additions} −${ctx.deletions})\n\n${review}\n\nBalas "ya" kalau mau aku post ini sebagai komentar di PR-nya.`,
+    YES_NO_OPTIONS
+  );
+}
+
 async function handleStopCommand(from: string): Promise<void> {
   const state = conversationRepo.get(from);
   if (!state?.active_project_alias) {
@@ -1354,7 +1431,8 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     isBareDeleteProjectCommand(trimmed) ||
     parseUseProject(trimmed) !== undefined ||
     parseUseModel(trimmed) !== undefined ||
-    parseListModelsForProvider(trimmed) !== undefined
+    parseListModelsForProvider(trimmed) !== undefined ||
+    parseReviewPr(trimmed) !== undefined
   );
 }
 
@@ -1708,6 +1786,31 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
       await sendWhatsApp(from, "Oke, gak jadi ya.");
     } else {
       await sendWhatsApp(from, 'Gak jelas jawabannya, jadi aku batalin dulu. Ulangi "hapus project" lagi kalau masih mau.');
+    }
+    return true;
+  }
+
+  if (pending.type === "confirm_post_pr_review") {
+    const intent = await interpretConfirmationReply(resolveManajemenProvider(from, state), trimmed);
+    conversationRepo.setPendingAction(from, null);
+    if (intent === "yes") {
+      const project = projectsRepo.get(pending.alias);
+      if (!project || project.kind !== "git") {
+        await sendWhatsApp(from, `Project "${pending.alias}" udah gak bisa dipakai, review-nya gak jadi aku post.`);
+        return true;
+      }
+      const cwd = workspacePath(pending.alias);
+      const res = await postPrComment(cwd, pending.prNumber, pending.review);
+      await sendWhatsApp(
+        from,
+        res.ok
+          ? `Udah aku post ke PR #${pending.prNumber}.`
+          : `Gagal post ke PR #${pending.prNumber}: ${res.error}`
+      );
+    } else if (intent === "no") {
+      await sendWhatsApp(from, "Oke, gak jadi di-post.");
+    } else {
+      await sendWhatsApp(from, 'Gak jelas jawabannya, jadi gak aku post. Kirim "review PR #' + pending.prNumber + '" lagi kalau masih mau.');
     }
     return true;
   }

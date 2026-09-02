@@ -16,6 +16,7 @@ import {
   isHelpCommand,
   isStatusCommand,
   isStopCommand,
+  parseReviewPr,
   isConfirmYes,
   isConfirmNo,
   isConfirmYesWithCheckpoints,
@@ -74,6 +75,21 @@ test("parseDeleteProject returns undefined for unrelated text", () => {
   assert.equal(parseDeleteProject("hapus project"), undefined);
   assert.equal(parseDeleteProject("hapus folder demo"), undefined);
   assert.equal(parseDeleteProject("tambah project demo https://github.com/x/demo.git"), undefined);
+});
+
+test("parseReviewPr pulls the PR number from the common phrasings", () => {
+  assert.equal(parseReviewPr("review PR #12"), 12);
+  assert.equal(parseReviewPr("review pr 12"), 12);
+  assert.equal(parseReviewPr("Review Pull Request #7"), 7);
+  assert.equal(parseReviewPr("tolong review pull request 340 dong"), 340);
+  assert.equal(parseReviewPr("  coba review pr #1  "), 1);
+});
+
+test("parseReviewPr returns undefined without a number or the right shape", () => {
+  assert.equal(parseReviewPr("review PR"), undefined);
+  assert.equal(parseReviewPr("review kode di halaman login"), undefined);
+  assert.equal(parseReviewPr("kenapa PR #12 gagal"), undefined);
+  assert.equal(parseReviewPr("review PR #0"), undefined);
 });
 
 test("isBareDeleteProjectCommand recognizes 'hapus project' with no alias", () => {
