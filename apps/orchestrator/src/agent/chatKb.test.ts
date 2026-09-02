@@ -164,6 +164,20 @@ test("consumeKbCorrection drops the stale row so the question stops matching", a
   assert.equal((await lookup(from, "siapa penemu bohlam")).hit, undefined); // row deleted
 });
 
+test("lookupCachedAnswer flags a near-miss when a stored question scores just below threshold", async () => {
+  const from = uid("nearmiss");
+  await seed(from, "siapa penemu bola lampu pijar", "Thomas Edison.");
+  // 4/5 tokens shared -> Jaccard 0.8: below the 0.85 default but inside the band
+  const r = await lookup(from, "siapa penemu bola lampu");
+  assert.equal(r.hit, undefined);
+  assert.equal(r.nearMiss, true);
+
+  // shares almost nothing -> not a near-miss
+  const far = await lookup(from, "resep nasi goreng");
+  assert.equal(far.hit, undefined);
+  assert.notEqual(far.nearMiss, true);
+});
+
 test("an arithmetic row is never a local-match candidate", async () => {
   const from = uid("arith");
   await recordInteraction(
@@ -193,18 +207,20 @@ test("semanticLookup: cosine against stored vectors, threshold-gated, returns th
   assert.ok(miss.queryVector instanceof Float32Array);
 });
 
-test("kbStatsRepo aggregates by source over a day window and computes the without-AI percentage", () => {
+test("kbStatsRepo aggregates by source, folds nearMiss into model, computes without-AI %", () => {
   // a unique day far in the past so the window catches only this test's rows
   const day = `19${Math.floor(Math.random() * 89) + 10}-06-15`;
   for (let i = 0; i < 3; i++) kbStatsRepo.bump("model", day);
+  kbStatsRepo.bump("model_nearmiss", day);
+  kbStatsRepo.bump("model_nearmiss", day);
   kbStatsRepo.bump("kb", day);
   kbStatsRepo.bump("kb", day);
   kbStatsRepo.bump("arithmetic", day);
 
   const s = kbStatsRepo.summary(3, new Date(`${day}T12:00:00+07:00`));
   assert.deepEqual(
-    { model: s.model, kb: s.kb, arithmetic: s.arithmetic, total: s.total, pct: s.withoutAiPct },
-    { model: 3, kb: 2, arithmetic: 1, total: 6, pct: 50 }
+    { model: s.model, nearMiss: s.nearMiss, kb: s.kb, arithmetic: s.arithmetic, total: s.total, pct: s.withoutAiPct },
+    { model: 5, nearMiss: 2, kb: 2, arithmetic: 1, total: 8, pct: 38 } // (2+1)/8 = 37.5 -> 38
   );
 });
 

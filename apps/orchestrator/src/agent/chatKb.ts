@@ -97,7 +97,13 @@ export interface CacheLookupResult {
   // Only set on the semantic path: the question's vector, so the handler can
   // hand it to recordInteraction instead of embedding twice.
   queryVector?: Float32Array;
+  // On a miss: a stored question scored just below the match threshold, i.e.
+  // lowering the threshold would have caught it. Feeds the stats breakdown.
+  nearMiss?: boolean;
 }
+
+// How far below the threshold still counts as "nearly matched".
+const NEAR_MISS_BAND = 0.18;
 
 // SQLite datetime('now') -> ms since epoch (it's UTC, no zone suffix).
 function parseSqliteTs(ts: string): number {
@@ -138,12 +144,17 @@ export async function lookupCachedAnswer(
     const score = jaccard(qTokens, tokenSet(c.normQuestion));
     if (score > best.score) best = { score, answer: c.answer, createdAt: c.createdAt };
   }
-  if (best.score >= config.chatKb.localMatchThreshold) return { hit: best.answer + ageNote(best.createdAt) };
+  const localThreshold = config.chatKb.localMatchThreshold;
+  if (best.score >= localThreshold) return { hit: best.answer + ageNote(best.createdAt) };
+
+  const textNearMiss = best.score >= localThreshold - NEAR_MISS_BAND;
 
   if (config.chatKb.semanticFallback) {
-    return semanticLookup(params.fromNumber, params.question.trim(), opts);
+    const semantic = await semanticLookup(params.fromNumber, params.question.trim(), opts);
+    if (!semantic.hit && !semantic.nearMiss && textNearMiss) return { ...semantic, nearMiss: true };
+    return semantic;
   }
-  return {};
+  return textNearMiss ? { nearMiss: true } : {};
 }
 
 // --- opt-in semantic (local embedding) fallback -----------------------
@@ -182,8 +193,11 @@ export async function semanticLookup(
 
   void backfillNullEmbeddings(fromNumber, opts);
 
-  return best.score >= config.chatKb.matchThreshold
-    ? { hit: best.answer + ageNote(best.createdAt), queryVector: queryVec }
+  if (best.score >= config.chatKb.matchThreshold) {
+    return { hit: best.answer + ageNote(best.createdAt), queryVector: queryVec };
+  }
+  return best.score >= config.chatKb.matchThreshold - NEAR_MISS_BAND
+    ? { queryVector: queryVec, nearMiss: true }
     : { queryVector: queryVec };
 }
 

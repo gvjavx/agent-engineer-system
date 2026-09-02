@@ -1016,12 +1016,28 @@ async function handleListMemoryCommand(from: string): Promise<void> {
   const factList =
     facts.length > 0 ? `Ini yang aku inget soal kamu:\n${facts.map((f, i) => `${i + 1}. ${f}`).join("\n")}` : "Belum ada fakta khusus yang aku catat soal kamu.";
   const kbLine = kbCount > 0 ? `\n\nAku juga nyimpen ${kbCount} tanya-jawab dari obrolan kita buat belajar. "lupain semua" hapus ini juga.` : "";
-  const stats = config.chatKb.enabled ? kbStatsRepo.summary(30) : undefined;
-  const statsLine =
-    stats && stats.total > 0
-      ? `\n\n30 hari terakhir: ${stats.total} pertanyaan chat, ${stats.kb + stats.arithmetic} dijawab tanpa AI (${stats.withoutAiPct}%) — ${stats.kb} dari memori, ${stats.arithmetic} hitungan.`
+  await sendWhatsApp(from, factList + kbLine + chatKbStatsLine());
+}
+
+// The one number that says whether the KB layer earns its keep, plus why the
+// misses missed and which way the trend is going.
+function chatKbStatsLine(): string {
+  if (!config.chatKb.enabled) return "";
+  const now = new Date();
+  const s = kbStatsRepo.summary(30, now);
+  if (s.total === 0) return "";
+
+  const thisWeek = kbStatsRepo.summary(7, now);
+  const lastWeek = kbStatsRepo.summary(7, new Date(now.getTime() - 7 * 86_400_000));
+  const trend =
+    thisWeek.total >= 3 && lastWeek.total >= 3
+      ? ` (minggu ini ${thisWeek.withoutAiPct}%, minggu lalu ${lastWeek.withoutAiPct}%)`
       : "";
-  await sendWhatsApp(from, factList + kbLine + statsLine);
+  const nearMiss =
+    s.nearMiss > 0
+      ? ` Dari yang ke AI, ${s.nearMiss} nyaris cocok sama jawaban tersimpan — turunin CHAT_KB_MATCH_THRESHOLD/CHAT_KB_LOCAL_THRESHOLD bisa nambah.`
+      : "";
+  return `\n\n30 hari: ${s.total} pertanyaan chat, ${s.kb + s.arithmetic} dijawab tanpa AI (${s.withoutAiPct}%)${trend} — ${s.kb} dari memori, ${s.arithmetic} hitungan.${nearMiss}`;
 }
 
 async function handleClearMemoryCommand(from: string): Promise<void> {
@@ -1168,7 +1184,9 @@ async function handleChatMessage(
     chatHistoryRepo.append(from, "user", message);
     chatHistoryRepo.append(from, "assistant", reply);
     if (result.newFact) memoryRepo.add(from, result.newFact);
-    if (config.chatKb.enabled) kbStatsRepo.bump(result.source ?? "model");
+    if (config.chatKb.enabled) {
+      kbStatsRepo.bump(result.source === "model" && result.nearMiss ? "model_nearmiss" : result.source ?? "model");
+    }
     // Remember a KB-served answer so the next message can correct it; any
     // other reply clears that.
     if (result.source === "kb") noteKbHit(from, message);

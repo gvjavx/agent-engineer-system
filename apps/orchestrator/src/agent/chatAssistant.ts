@@ -38,6 +38,8 @@ export interface ChatReplyResult {
   // lookup already computed. The handler passes it to recordInteraction so
   // the same text isn't embedded twice.
   questionVector?: Float32Array;
+  // A stored question scored just below the match threshold on this miss.
+  nearMiss?: boolean;
 }
 
 export interface GenerateChatReplyOpts {
@@ -139,10 +141,12 @@ export async function generateChatReply(
   // Already answered a near-identical question for this user? Reuse it, no
   // model call. Skipped on a deliberate re-answer (extraContext).
   let questionVector: Float32Array | undefined;
+  let nearMiss = false;
   if (opts.fromNumber && !opts.extraContext) {
     const kb = await lookupCachedAnswer({ fromNumber: opts.fromNumber, question: message }, opts.kb);
     if (kb.hit) return { reply: kb.hit, source: "kb" };
     questionVector = kb.queryVector;
+    nearMiss = kb.nearMiss ?? false;
   }
 
   try {
@@ -150,7 +154,12 @@ export async function generateChatReply(
     if (response.type !== "text") return undefined;
     const result = parseChatReply(response.text);
     if (!result.reply) return undefined;
-    return { ...result, source: "model", ...(questionVector ? { questionVector } : {}) };
+    return {
+      ...result,
+      source: "model",
+      ...(questionVector ? { questionVector } : {}),
+      ...(nearMiss ? { nearMiss: true } : {}),
+    };
   } catch {
     return undefined;
   }
