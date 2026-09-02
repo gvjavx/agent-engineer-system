@@ -3,9 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 
-fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
+// Under `node --test` (each test file is its own subprocess) use a private
+// in-memory DB, so tests never touch — or accumulate rows in — the real
+// sqlite file. DB_PATH=:memory: forces the same for a one-off script.
+const dbPath = process.env.NODE_TEST_CONTEXT ? ":memory:" : config.dbPath;
+if (dbPath !== ":memory:") fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-export const db = new Database(config.dbPath);
+export const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 
 db.exec(`
