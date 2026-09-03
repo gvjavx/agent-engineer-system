@@ -367,10 +367,8 @@ App kita (`META_APP_ID`) harus ada di daftar `data`.
 
 ## Fase lanjutan (belum diimplementasikan)
 
-- Deploy otomatis aplikasi yang dibuat agent (Vercel/Render/DigitalOcean API) supaya langsung dapat URL live.
-- Role PM/BA/QA/Dev sebagai subagent terpisah, bukan satu system prompt.
-- Sandbox Docker per-task untuk isolasi eksekusi.
-- Dukungan lampiran WhatsApp berupa voice note (gambar sudah didukung, lihat "Kirim gambar buat direview/dikerjain" di atas).
+- Sandbox Docker (atau microVM) per-task untuk isolasi eksekusi yang lebih kuat dari `bubblewrap`.
+- Deploy ke selain Vercel (Render/Netlify/Fly) — sekarang cuma Vercel (lihat "Deploy ke Vercel").
 
 ## Lisensi
 
