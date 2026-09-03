@@ -338,6 +338,8 @@ npm run dev:orchestrator   # terminal 1
 npm run dev:gateway        # terminal 2
 ```
 
+`npm run build` + `npm test` jalan otomatis di GitHub Actions (`.github/workflows/ci.yml`) tiap push ke `main` dan tiap PR.
+
 Untuk testing webhook lokal tanpa domain publik, gunakan tunnel (ngrok/cloudflared) ke port `whatsapp-gateway` (default 3000) — atau jalankan `./scripts/dev-tunnel.sh`, yang menyalakan kedua service + tunnel ngrok, **dan otomatis memperbaiki webhook subscription-nya juga** (lihat Troubleshooting di bawah untuk kenapa ini perlu). Butuh ngrok sudah ter-install & `ngrok config add-authtoken` sudah dijalankan sekali, plus `META_APP_ID`/`META_WABA_ID` sudah diisi di `.env`. Ctrl+C untuk stop semuanya.
 
 Kalau kamu jalankan orchestrator/gateway manual di 2 terminal terpisah (bukan lewat script), dan ngrok-nya juga jalan manual/terpisah, jalankan `./scripts/fix-whatsapp-webhook.sh` sendiri setiap kali URL ngrok berubah (script ini auto-detect URL dari ngrok API di `:4040`, atau kasih URL-nya sebagai argumen).
