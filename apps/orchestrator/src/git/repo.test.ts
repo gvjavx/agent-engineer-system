@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { formatNumstat, headSha, revertRange, summarizeChangesSince } from "./repo.js";
+import { commitsOnBranch, formatNumstat, headSha, revertRange, summarizeChangesSince } from "./repo.js";
 
 test("formatNumstat totals the lines and lists the biggest files first", () => {
   const raw = ["4\t1\tsrc/a.ts", "0\t9\tsrc/b.ts", "12\t3\tsrc/c.ts"].join("\n");
@@ -99,6 +99,68 @@ test("revertRange undoes a task's commit range as one new commit and pushes it",
     }
     const originLog = execFileSync("git", ["-C", origin, "log", "--oneline"], { encoding: "utf8" });
     assert.match(originLog, /revert: task work/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("revertRange with commitShas reverts only the task's commits, not a commit pushed alongside", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "revert-precise-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const other = path.join(root, "other");
+  const g = (dir: string, ...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+  const cfg = (dir: string) => {
+    for (const [k, v] of [
+      ["user.email", "t@t.t"],
+      ["user.name", "t"],
+      ["commit.gpgsign", "false"],
+      ["core.autocrlf", "false"],
+    ])
+      g(dir, "config", k, v);
+  };
+  try {
+    execFileSync("git", ["init", "--bare", "-q", "-b", "main", origin], { stdio: "ignore" });
+    execFileSync("git", ["clone", "-q", origin, work], { stdio: "ignore" });
+    cfg(work);
+    fs.writeFileSync(path.join(work, "f.txt"), "base\n");
+    g(work, "add", "-A");
+    g(work, "commit", "-qm", "base");
+    g(work, "push", "-q", "origin", "main");
+    const base = await headSha(work);
+
+    // The task's own branch: two commits.
+    g(work, "checkout", "-q", "-b", "agent/deadbeef");
+    fs.writeFileSync(path.join(work, "task.txt"), "one\n");
+    g(work, "add", "-A");
+    g(work, "commit", "-qm", "task 1");
+    fs.writeFileSync(path.join(work, "task.txt"), "one\ntwo\n");
+    g(work, "add", "-A");
+    g(work, "commit", "-qm", "task 2");
+    const taskCommits = await commitsOnBranch(work, base, "agent/deadbeef");
+    assert.equal(taskCommits.length, 2);
+
+    // Someone else pushes to main in the meantime.
+    execFileSync("git", ["clone", "-q", origin, other], { stdio: "ignore" });
+    cfg(other);
+    fs.writeFileSync(path.join(other, "human.txt"), "not the task\n");
+    g(other, "add", "-A");
+    g(other, "commit", "-qm", "human change");
+    g(other, "push", "-q", "origin", "main");
+
+    // Task lands on main (fast-forward the work branch in, then push).
+    g(work, "checkout", "-q", "main");
+    g(work, "pull", "-q", "origin", "main");
+    g(work, "merge", "-q", "agent/deadbeef");
+    g(work, "push", "-q", "origin", "main");
+    const result = await headSha(work);
+
+    const res = await revertRange(work, "main", base, result, "revert: task", taskCommits);
+    assert.equal(res.ok, true);
+    if (res.ok) {
+      assert.equal(fs.existsSync(path.join(work, "task.txt")), false, "task's file reverted");
+      assert.equal(fs.readFileSync(path.join(work, "human.txt"), "utf8"), "not the task\n", "human's change untouched");
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

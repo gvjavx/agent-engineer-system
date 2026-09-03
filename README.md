@@ -160,7 +160,7 @@ bantuan                               → tampilkan daftar perintah
 
 `batalin yang barusan` (atau `undo`, `batalin task terakhir`) — buat project git aktif, cari task terakhir yang beneran commit + push, tampilin instruksinya, minta konfirmasi. Kalau "ya": agent `git revert` semua commit dari task itu jadi satu commit revert baru di branch utama, terus push. History-nya gak dihapus — cuma ditambahin.
 
-Ini jaring pengaman buat mode `auto_merge = 'direct'` (default) yang push langsung ke branch utama tanpa PR. Kalau di atas task itu udah ada perubahan lain, atau range-nya kena merge commit, auto-revert-nya berhenti dan agent bilang biar dibenerin manual.
+Yang di-revert cuma commit yang task itu sendiri bikin (dicatat dari work branch-nya pas selesai), jadi perubahan orang lain yang nyempil di antara nggak ikut kebalik. Kalau commit-nya udah ke-rewrite (squash/rebase) sampai nggak kelacak, atau revert-nya bentrok, auto-revert berhenti dan agent bilang biar dibenerin manual. Jaring pengaman buat mode `auto_merge = 'direct'` (default) yang push langsung ke branch utama tanpa PR.
 
 ## Deploy ke Vercel
 

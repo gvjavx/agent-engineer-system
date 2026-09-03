@@ -36,6 +36,7 @@ import {
   headSha,
   latestRemoteSha,
   revertRange,
+  commitsOnBranch,
   diffBetween,
   summarizeChangesSince,
 } from "../git/repo.js";
@@ -326,6 +327,9 @@ interface PendingUndoLast {
   branch: string;
   baseSha: string;
   resultSha: string;
+  // The task's own work-branch commits (newest first), for a precise revert;
+  // absent for tasks recorded before this was tracked.
+  commitShas?: string[];
   instruction: string;
 }
 
@@ -1681,12 +1685,23 @@ async function handleUndoLastCommand(from: string): Promise<void> {
     return;
   }
 
+  let commitShas: string[] | undefined;
+  if (task.commit_shas) {
+    try {
+      const parsed = JSON.parse(task.commit_shas);
+      if (Array.isArray(parsed) && parsed.every((s) => typeof s === "string")) commitShas = parsed;
+    } catch {
+      // ignore — falls back to range revert
+    }
+  }
+
   const pending: PendingUndoLast = {
     type: "confirm_undo_last",
     alias: project.alias,
     branch: project.default_branch,
     baseSha: task.base_sha,
     resultSha: task.result_sha,
+    commitShas,
     instruction: task.instruction,
   };
   conversationRepo.setPendingAction(from, JSON.stringify(pending));
@@ -2722,7 +2737,14 @@ async function handlePendingConfirmation(from: string, trimmed: string): Promise
     }
     const short =
       pending.instruction.length > 60 ? pending.instruction.slice(0, 60) + "…" : pending.instruction;
-    const res = await revertRange(cwd, pending.branch, pending.baseSha, pending.resultSha, `revert: ${short}`);
+    const res = await revertRange(
+      cwd,
+      pending.branch,
+      pending.baseSha,
+      pending.resultSha,
+      `revert: ${short}`,
+      pending.commitShas
+    );
     await sendWhatsApp(
       from,
       res.ok
@@ -3303,7 +3325,8 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
         // CI watch on the same commit.
         const resultSha = await latestRemoteSha(cwd, mode.defaultBranch).catch(() => undefined);
         if (baseSha && resultSha && baseSha !== resultSha) {
-          tasksRepo.setShas(taskId, baseSha, resultSha);
+          const taskCommits = await commitsOnBranch(cwd, baseSha, mode.workBranch);
+          tasksRepo.setShas(taskId, baseSha, resultSha, taskCommits.length ? JSON.stringify(taskCommits) : null);
           const smells = scanDiffSmells(await diffBetween(cwd, baseSha, resultSha));
           if (smells.length) {
             await sendWhatsApp(from, `Cek lagi — kayaknya ada yang kesangkut di diff: ${smells.join(", ")}.`);

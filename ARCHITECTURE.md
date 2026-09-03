@@ -218,11 +218,12 @@ Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task g
 
 ## `batalin yang barusan` — undo task terakhir
 
-`isUndoLastCommand` (frasa persis: `undo`, `batalin yang barusan`, `batalin task terakhir`, dst) → `handleUndoLastCommand`. Cuma project git aktif, nggak ada task lagi jalan. `tasksRepo.lastPushedGitTask` ambil task `done` terakhir yang `base_sha != result_sha` (dua kolom itu diisi di ujung `runTaskPipeline` pas task git sukses — `baseSha` diambil sebelum `createWorkBranch`, `resultSha` = `latestRemoteSha` setelah push). Tampilin instruksinya + tombol Ya/Tidak, simpen `pending_action: confirm_undo_last` (bawa `baseSha`/`resultSha`/branch).
+`isUndoLastCommand` (frasa persis: `undo`, `batalin yang barusan`, `batalin task terakhir`, dst) → `handleUndoLastCommand`. Cuma project git aktif, nggak ada task lagi jalan. `tasksRepo.lastPushedGitTask` ambil task `done` terakhir yang `base_sha != result_sha`. Ketiga kolom (`base_sha`/`result_sha`/`commit_shas`) diisi di ujung `runTaskPipeline` pas task git sukses: `baseSha` diambil sebelum `createWorkBranch`, `resultSha` = `latestRemoteSha` setelah push, `commit_shas` = `commitsOnBranch` = `git rev-list <base>..<workBranch>` (SHA yang task-nya bikin di branch-nya sendiri, newest-first — work branch cuma pernah di-commit sama agent, jadi ini persis kerjaan task itu apa pun cara merge-nya). Tampilin instruksi + tombol Ya/Tidak, simpen `pending_action: confirm_undo_last` (bawa `baseSha`/`resultSha`/`commitShas`/branch).
 
-"ya" di `handlePendingConfirmation` → `revertRange` (`git/repo.ts`): `checkout branch` → `pull --ff-only` → `git revert --no-commit <base>..<result>` → satu `git commit` → `push`. Tiap tahap di-try/catch — gagal di mana pun (branch diverged, push ditolak, revert bentrok, merge commit di range yang butuh `-m`, range kosong) balikin `{ ok: false, error }`, **nggak pernah throw**; kalau `revert` udah kebikin tapi commit/push gagal, staged-nya sengaja dibiarin biar bisa dibereskan manual. Deterministik, bukan lewat pipeline — sebangun sama `postPrComment` di `review PR`. Jaring pengaman buat `auto_merge = 'direct'`.
-
-Batasan: `base..result` di-revert apa adanya, jadi kalau ada commit orang lain nyempil di range itu (mis. push manual ke branch utama pas task lagi jalan) commit itu ikut kebalik. Di mode `direct`, kasus ini biasanya kejadian bareng non-FF merge → ada merge commit → `revertRange` udah bail duluan. Mode `pr` + squash gak punya proteksi itu — fix beneran butuh nyimpen daftar SHA commit yang task-nya bikin.
+"ya" di `handlePendingConfirmation` → `revertRange` (`git/repo.ts`): `checkout branch` → `pull --ff-only` →
+- kalau `commitShas` ada: cek tiap SHA masih `merge-base --is-ancestor` HEAD. **Semua ada** → `git revert --no-commit <sha...>` persis SHA itu — commit orang lain yang nyempil di range **nggak kesentuh**, merge commit di range juga nggak masalah karena nggak ikut di-revert. **Nol yang ada** (squash-merge) → fallback ke `git revert --no-commit <base>..<result>`. **Sebagian** (rebase/squash aneh) → bail, suruh manual.
+- terus satu `git commit` → `push`.
+Tiap tahap di-try/catch — gagal di mana pun (branch diverged, push ditolak, revert bentrok, merge commit di *range* pas fallback) balikin `{ ok: false, error }`, **nggak pernah throw**; kalau `revert` udah kebikin tapi commit/push gagal, staged-nya dibiarin biar bisa dibereskan manual. Deterministik, bukan lewat pipeline — sebangun sama `postPrComment` di `review PR`. Jaring pengaman buat `auto_merge = 'direct'`. Task lama sebelum `commit_shas` di-track jatuh ke jalur range lama.
 
 `diff terakhir` (`isLastDiffCommand` → `handleLastDiffCommand`) pakai `base_sha`/`result_sha` yang sama: `diffBetween` (`git diff <base> <result>`) → kirim sebagai lampiran `.diff.txt` (`.diff`/`.patch` nggak ada di allowlist dokumen), dipotong di 4MB. Read-only.
 
@@ -290,7 +291,7 @@ Kredensial GitHub **nggak pernah** disimpen di URL remote atau di disk — `ensu
 | Tabel | Isi |
 |---|---|
 | `projects` | Project terdaftar — alias, remote/path, default branch, mode auto-merge, git atau folder lokal, command test/lint pre-commit (`test_cmd`/`lint_cmd`). |
-| `tasks` | Satu baris per eksekusi task dan hasilnya. `phases_json` + `checkpoints` + `resume_count` bikin task yang ketinggalan pas restart bisa dijalanin ulang (lihat "Persist & resume"). |
+| `tasks` | Satu baris per eksekusi task dan hasilnya. `phases_json` + `checkpoints` + `resume_count` bikin task yang ketinggalan pas restart bisa dijalanin ulang (lihat "Persist & resume"). `base_sha`/`result_sha`/`commit_shas` diisi pas task git sukses — buat `batalin yang barusan` & `diff terakhir`. |
 | `audit_log` | Jejak tiap tool call/note/error per task. |
 | `conversation_state` | State per nomor WhatsApp — project aktif, `pending_action`, provider pilihan. |
 | `figma_oauth` | Token OAuth Figma (single-tenant, satu baris). |

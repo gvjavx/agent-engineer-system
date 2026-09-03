@@ -44,10 +44,14 @@ db.exec(`
     phases_json TEXT,
     checkpoints INTEGER NOT NULL DEFAULT 0,
     resume_count INTEGER NOT NULL DEFAULT 0,
-    -- Default-branch tip before and after a successful git task, so "batalin
-    -- yang barusan" can revert exactly that task's commits. Git tasks only.
+    -- Set on a successful git task so "batalin yang barusan" can revert
+    -- exactly it: base/result = default-branch tip before/after; commit_shas =
+    -- JSON array of the SHAs the task committed on its own work branch
+    -- (newest first), used to revert precisely without touching commits that
+    -- landed alongside.
     base_sha TEXT,
-    result_sha TEXT
+    result_sha TEXT,
+    commit_shas TEXT
   );
 
   CREATE TABLE IF NOT EXISTS audit_log (
@@ -190,6 +194,7 @@ for (const migration of [
   "ALTER TABLE projects ADD COLUMN lint_cmd TEXT",
   "ALTER TABLE tasks ADD COLUMN base_sha TEXT",
   "ALTER TABLE tasks ADD COLUMN result_sha TEXT",
+  "ALTER TABLE tasks ADD COLUMN commit_shas TEXT",
 ]) {
   try {
     db.exec(migration);
@@ -267,6 +272,7 @@ export interface Task {
   resume_count: number;
   base_sha: string | null;
   result_sha: string | null;
+  commit_shas: string | null;
 }
 
 export const tasksRepo = {
@@ -282,10 +288,16 @@ export const tasksRepo = {
       "INSERT INTO tasks (id, project_alias, from_number, instruction, phases_json, checkpoints) VALUES (?, ?, ?, ?, ?, ?)"
     ).run(id, projectAlias, fromNumber, instruction, phasesJson, checkpoints ? 1 : 0);
   },
-  // Default-branch tip before/after a git task — recorded on success so
-  // "batalin yang barusan" (router/handler.ts) knows the exact commit range.
-  setShas(id: string, baseSha: string, resultSha: string): void {
-    db.prepare("UPDATE tasks SET base_sha = ?, result_sha = ? WHERE id = ?").run(baseSha, resultSha, id);
+  // Recorded on git-task success so "batalin yang barusan" (router/handler.ts)
+  // can revert exactly this task. commitShasJson: JSON array of the work
+  // branch's own commits (newest first), or null when it couldn't be read.
+  setShas(id: string, baseSha: string, resultSha: string, commitShasJson: string | null): void {
+    db.prepare("UPDATE tasks SET base_sha = ?, result_sha = ?, commit_shas = ? WHERE id = ?").run(
+      baseSha,
+      resultSha,
+      commitShasJson,
+      id
+    );
   },
   // Most recent finished git task for a project that actually landed commits
   // (result_sha moved past base_sha) — used by "batalin yang barusan" and

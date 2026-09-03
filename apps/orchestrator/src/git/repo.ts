@@ -153,6 +153,18 @@ export async function latestRemoteSha(dir: string, branch: string): Promise<stri
   return (await git.revparse([`origin/${branch}`])).trim();
 }
 
+// The commits a task added on its own work branch, newest first
+// (`git rev-list base..branch`). The work branch is only ever committed to by
+// the agent, so this is exactly the task's own work regardless of how it got
+// merged — used to revert precisely in "batalin yang barusan". Best-effort: []
+// on any failure.
+export async function commitsOnBranch(dir: string, baseSha: string, branch: string): Promise<string[]> {
+  return simpleGit(dir)
+    .raw(["rev-list", `${baseSha}..${branch}`])
+    .then((out) => out.split("\n").map((l) => l.trim()).filter(Boolean))
+    .catch(() => []);
+}
+
 // Turns `git diff --numstat <a> <b>` output into a short WhatsApp-friendly
 // change summary. Split out from the git call so the formatting is unit
 // tested without a repo. Returns undefined when nothing changed.
@@ -209,17 +221,21 @@ export async function diffBetween(dir: string, a: string, b: string): Promise<st
     .catch(() => "");
 }
 
-// Undo a finished task: revert every commit in fromSha..toSha (the task's own
-// commits) as one new commit on `branch`, then push. Pulls first so it stacks
-// on whatever else landed since. A revert conflict, or a merge commit in the
-// range (needs a mainline `-m`, which this doesn't pass), aborts cleanly and
-// returns an error for the caller to relay — those cases need a human.
+// Undo a finished task as one new commit on `branch`, then push. Pulls first
+// so it stacks on whatever else landed since.
+//
+// When `commitShas` is given (the task's own work-branch commits, newest
+// first), revert exactly those — anything a human pushed alongside is left
+// untouched. If none of them are still in history (squash-merged), fall back
+// to reverting the `fromSha..toSha` range. A revert conflict, or a merge
+// commit that needs a mainline `-m`, aborts cleanly and returns an error.
 export async function revertRange(
   dir: string,
   branch: string,
   fromSha: string,
   toSha: string,
-  message: string
+  message: string,
+  commitShas?: string[]
 ): Promise<{ ok: true; head: string } | { ok: false; error: string }> {
   const git = simpleGit(dir);
   const short = (err: unknown) => (err instanceof Error ? err.message.trim().split("\n")[0] : String(err));
@@ -230,8 +246,27 @@ export async function revertRange(
     // Diverged local branch, non-fast-forward pull, etc. — bail before touching anything.
     return { ok: false, error: `gagal nyiapin branch: ${short(err)}` };
   }
+
+  const isAncestor = async (sha: string): Promise<boolean> =>
+    git.raw(["merge-base", "--is-ancestor", sha, "HEAD"]).then(() => true).catch(() => false);
+
+  let revertTargets: string[] | undefined;
+  if (commitShas && commitShas.length > 0) {
+    const present = [] as string[];
+    for (const sha of commitShas) if (await isAncestor(sha)) present.push(sha);
+    if (present.length === commitShas.length) {
+      revertTargets = present; // all still in history — revert precisely
+    } else if (present.length > 0) {
+      return {
+        ok: false,
+        error: "sebagian commit task-nya udah ke-rewrite (rebase/squash?), revert manual lebih aman",
+      };
+    }
+    // present.length === 0 -> squash-merged, fall through to range revert
+  }
+
   try {
-    await git.raw(["revert", "--no-commit", `${fromSha}..${toSha}`]);
+    await git.raw(["revert", "--no-commit", ...(revertTargets ?? [`${fromSha}..${toSha}`])]);
   } catch (err) {
     await git.raw(["revert", "--abort"]).catch(() => {});
     return { ok: false, error: short(err) };

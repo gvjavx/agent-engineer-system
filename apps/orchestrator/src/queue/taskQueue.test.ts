@@ -21,6 +21,7 @@ function taskRow(over: Partial<Task>): Task {
     resume_count: 0,
     base_sha: null,
     result_sha: null,
+    commit_shas: null,
     ...over,
   };
 }
