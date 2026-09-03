@@ -517,6 +517,12 @@ export const auditLog = {
       .get(taskId) as { detail: string } | undefined;
     return row?.detail;
   },
+  // Oldest-first trail of what a task did, for the "log task terakhir" command.
+  forTask(taskId: string, limit = 60): { kind: string; detail: string }[] {
+    return db
+      .prepare("SELECT kind, detail FROM audit_log WHERE task_id = ? ORDER BY id ASC LIMIT ?")
+      .all(taskId, limit) as { kind: string; detail: string }[];
+  },
 };
 
 export interface ConversationState {

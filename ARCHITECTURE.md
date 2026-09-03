@@ -216,6 +216,12 @@ Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task g
 
 `confirm_ci_fix` di-`handlePendingConfirmation`: "ya" → log kegagalan jadi instruksi task biasa, `classifyDepartments` fresh, `executeTask` (tanpa konfirmasi rencana — user udah nyetujui pas tap "Ya"). Task fix-nya masuk antrian project itu kayak task lain.
 
+`CI_WATCH_AUTO_REVERT=true` + project mode `direct`: pas `failure`, sebelum nawarin fix, `watchCiAndReport` (yang sekarang juga terima `taskId`) baca `base_sha`/`result_sha`/`commit_shas` dari `tasksRepo.get(taskId)` dan `revertRange` presisi — main hijau lagi, fix-nya digarap di atas branch bersih. Revert gagal → fallback ke pesan gagal + offer biasa.
+
+## `log task terakhir`
+
+`isTaskLogCommand` → `handleTaskLogCommand`. `tasksRepo.recentForNumber(from, 1)` → `auditLog.forTask(id)` (baris `audit_log` oldest-first, cap 60) → `formatTaskLog` (murni, tested — prefix per `kind`: `•` tool_use, `—` note, `[error]`, potong detail 110 char, 40 baris terakhir). Cuma jalur baca — datanya udah kesimpen tiap `runAgentLoop` tool call.
+
 ## `batalin yang barusan` — undo task terakhir
 
 `isUndoLastCommand` (frasa persis: `undo`, `batalin yang barusan`, `batalin task terakhir`, dst) → `handleUndoLastCommand`. Cuma project git aktif, nggak ada task lagi jalan. `tasksRepo.lastPushedGitTask` ambil task `done` terakhir yang `base_sha != result_sha`. Ketiga kolom (`base_sha`/`result_sha`/`commit_shas`) diisi di ujung `runTaskPipeline` pas task git sukses: `baseSha` diambil sebelum `createWorkBranch`, `resultSha` = `latestRemoteSha` setelah push, `commit_shas` = `commitsOnBranch` = `git rev-list <base>..<workBranch>` (SHA yang task-nya bikin di branch-nya sendiri, newest-first — work branch cuma pernah di-commit sama agent, jadi ini persis kerjaan task itu apa pun cara merge-nya). Tampilin instruksi + tombol Ya/Tidak, simpen `pending_action: confirm_undo_last` (bawa `baseSha`/`resultSha`/`commitShas`/branch).

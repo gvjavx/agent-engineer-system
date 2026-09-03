@@ -44,6 +44,7 @@ import {
   parseMultiRepo,
   isDeployCommand,
   isScreenshotCommand,
+  isTaskLogCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -146,6 +147,13 @@ test("isScreenshotCommand recognises the screenshot phrases only", () => {
   assert.ok(isScreenshotCommand("  Jepret  "));
   assert.ok(isScreenshotCommand("ss dong"));
   assert.ok(!isScreenshotCommand("screenshot the login page and compare"));
+});
+
+test("isTaskLogCommand recognises the task-log phrases only", () => {
+  assert.ok(isTaskLogCommand("log task terakhir"));
+  assert.ok(isTaskLogCommand("  Apa Yang Kamu Lakuin  "));
+  assert.ok(!isTaskLogCommand("log task terakhir yang gagal kenapa"));
+  assert.ok(!isTaskLogCommand("apa yang kamu lakuin tadi malam sama repo A"));
 });
 
 test("parseAskRepo needs the colon and returns the trimmed question", () => {

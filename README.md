@@ -139,6 +139,7 @@ daftar model                          → cek AI provider + model per departemen
 pakai model <nama>                    → model AI default (dipakai departemen yang belum punya model sendiri)
 pakai model <departemen> <nama>       → model AI khusus satu departemen (manajemen/dev/desain/qa/infra/bisnis)
 status                                → lihat task yang sedang berjalan + ringkasan 7 hari
+log task terakhir                     → langkah-langkah (command/edit/error) dari task terakhir
 stop / batalkan                       → hentikan task yang sedang berjalan
 review PR <nomor>                     → baca diff PR di project aktif, kasih review, konfirmasi dulu sebelum posting komentar ke PR
 daftar PR                            → lihat PR yang lagi kebuka (non-draft bisa langsung di-tap buat merge)
@@ -165,6 +166,8 @@ Yang di-revert cuma commit yang task itu sendiri bikin (dicatat dari work branch
 ## Deploy ke Vercel
 
 `deploy` (atau `publish`) — deploy project aktif ke Vercel lewat CLI-nya (`npx vercel --prod`), balikin URL production-nya. Butuh `VERCEL_TOKEN` di `.env` (bikin di [vercel.com/account/tokens](https://vercel.com/account/tokens)) — tanpa itu command-nya cuma bilang perlu diisi dulu. Deteksi framework-nya diserahin ke Vercel (zero-config), jadi mayoritas repo Next/Vite/CRA/static langsung jalan; yang gak kebangun ngasih error dari CLI-nya. Timeout 9 menit (unduhan CLI pertama kali bisa lama).
+
+Abis deploy sukses, URL-nya di-hit sekali (smoke check — 200 atau enggak) dan, kalau `SCREENSHOT_ENABLED`, dijepret sekalian terus dikirim.
 
 ## Screenshot tampilan
 
@@ -205,6 +208,8 @@ Nyala secara default (`CI_WATCH_ENABLED`). Begitu task git selesai dan push, age
 - **Lulus** → satu baris "CI di ... lulus".
 - **Gagal** → potongan log kegagalan + tombol Ya/Tidak. Tap "Ya" bikin task baru dari log itu — agent nyari penyebabnya, benerin, commit + push lagi (kalau masalahnya di file workflow-nya, itu juga dibetulin).
 - Repo tanpa Actions, atau yang run-nya gak kelar dalam `CI_WATCH_TIMEOUT_MINUTES` (default 20), diem aja.
+
+Kalau `CI_WATCH_AUTO_REVERT=true` dan project-nya mode `direct`: begitu CI merah, commit task itu (cuma punya dia sendiri) langsung di-revert biar main hijau lagi, terus fix-nya ditawarin di atas branch yang udah bersih.
 
 Poll-nya jalan di background, gak nahan antrian task project itu. Kalau pas log kegagalan dateng kamu lagi di tengah wizard lain, agent cuma ngabarin tanpa tombol biar gak numpuk.
 

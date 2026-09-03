@@ -235,6 +235,10 @@ export const config = {
   ciWatch: {
     enabled: (process.env.CI_WATCH_ENABLED ?? "true").toLowerCase() !== "false",
     timeoutMinutes: Math.max(1, Number(process.env.CI_WATCH_TIMEOUT_MINUTES ?? 20)),
+    // When on, a red CI run on a 'direct'-merge project is auto-reverted (the
+    // task's own commits only), then the fix is offered on a clean branch.
+    // Off by default. See router/handler.ts's watchCiAndReport.
+    autoRevert: (process.env.CI_WATCH_AUTO_REVERT ?? "false").toLowerCase() === "true",
   },
 
   // Free AI providers, tried in this order with automatic fallback. Only

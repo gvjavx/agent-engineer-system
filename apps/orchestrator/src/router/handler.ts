@@ -48,7 +48,8 @@ import { detectProjectChecks } from "../agent/projectChecks.js";
 import { watchCiForSha } from "../agent/ciWatch.js";
 import { scanDiffSmells } from "../agent/diffSmells.js";
 import { buildDigestText } from "../agent/digest.js";
-import { deployToVercel } from "../agent/deploy.js";
+import { formatTaskLog } from "../agent/taskLog.js";
+import { deployToVercel, smokeCheck } from "../agent/deploy.js";
 import {
   detectDevCommand,
   hasNodeModules,
@@ -135,6 +136,7 @@ import {
   parseMultiRepo,
   isDeployCommand,
   isScreenshotCommand,
+  isTaskLogCommand,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -210,6 +212,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *tanya: <pertanyaan>* — nanya soal kode di project aktif tanpa ngubah apa-apa (mis. "tanya: gimana alur login-nya"). Aku baca-baca kodenya terus jawab, gak nyentuh file
 - *deploy* — deploy project aktif ke Vercel (butuh VERCEL_TOKEN di .env), balikin URL live-nya
 - *screenshot* — nyalain dev server project aktif, jepret tampilannya, kirim gambarnya ke sini
+- *log task terakhir* — lihat langkah-langkah yang aku jalanin di task terakhir (tiap command/edit/error)
 - *di <repo1>, <repo2>: <instruksi>* — jalanin instruksi yang sama di beberapa project sekaligus (paralel, konfirmasi sekali)
 - *atur cek test <cmd>* / *atur cek lint <cmd>* — command yang aku jalanin sebelum commit di project aktif; kalau gagal, commit-nya dibatalin. "atur cek test off" buat matiin. Biasanya udah kedeteksi sendiri dari package.json pas project didaftarin
 - *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
@@ -888,6 +891,11 @@ export async function handleInboundMessage(
     return;
   }
 
+  if (isTaskLogCommand(trimmed)) {
+    await handleTaskLogCommand(from);
+    return;
+  }
+
   const multi = parseMultiRepo(trimmed);
   if (multi) {
     await handleMultiRepoInstruction(from, multi.aliases, multi.instruction);
@@ -1480,6 +1488,18 @@ async function handleLastDiffCommand(from: string): Promise<void> {
   }
 }
 
+// "log task terakhir" — replay the audit trail of this sender's most recent
+// task (any status). The data's all in audit_log; this is just a read path.
+async function handleTaskLogCommand(from: string): Promise<void> {
+  const task = tasksRepo.recentForNumber(from, 1)[0];
+  if (!task) {
+    await sendWhatsApp(from, "Belum ada task yang aku jalanin buat kamu.");
+    return;
+  }
+  const rows = auditLog.forTask(task.id);
+  await sendWhatsApp(from, formatTaskLog(rows, `Task "${task.instruction}" — ${task.status}`));
+}
+
 // "screenshot" — bring up the active project's dev server, capture it with
 // the bundled headless Chromium, send the PNG. Always kills the dev server.
 async function handleScreenshotCommand(from: string): Promise<void> {
@@ -1591,11 +1611,27 @@ async function handleDeployCommand(from: string): Promise<void> {
   );
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 9 * 60_000);
+  let deployed: { url: string } | undefined;
   try {
     const res = await deployToVercel(cwd, config.deploy.vercelToken, ac.signal);
     await sendWhatsApp(from, res.ok ? `Udah live: ${res.url}` : `Gagal deploy: ${res.error}`);
+    if (res.ok) deployed = { url: res.url };
   } finally {
     clearTimeout(timer);
+  }
+  if (!deployed) return;
+
+  // Post-deploy: does the URL actually respond, and what does it look like.
+  const smoke = await smokeCheck(deployed.url);
+  await sendWhatsApp(
+    from,
+    smoke.ok ? `Dicek: ${smoke.detail}, hidup.` : `Tapi pas aku buka: ${smoke.detail}. Cek lagi ya.`
+  );
+  if (config.screenshot.enabled && smoke.ok) {
+    const shot = await screenshotUrl(deployed.url);
+    if (shot.ok) {
+      await sendWhatsAppImage(from, shot.pngBase64, `Screenshot ${deployed.url}`).catch(() => {});
+    }
   }
 }
 
@@ -2277,6 +2313,7 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     isLastDiffCommand(trimmed) ||
     isDeployCommand(trimmed) ||
     isScreenshotCommand(trimmed) ||
+    isTaskLogCommand(trimmed) ||
     parseAskRepo(trimmed) !== undefined ||
     parseAddProject(trimmed) !== undefined ||
     isBareAddProjectCommand(trimmed) ||
@@ -3098,7 +3135,7 @@ async function executeTask(
 // then send a one-line "CI lulus" or stash a fix offer with the failing log.
 // Not awaited by runTaskPipeline — it can poll for many minutes and must not
 // hold the project's task queue.
-async function watchCiAndReport(from: string, alias: string, cwd: string, branch: string): Promise<void> {
+async function watchCiAndReport(from: string, alias: string, taskId: string, cwd: string, branch: string): Promise<void> {
   try {
     const sha = await latestRemoteSha(cwd, branch).catch(() => undefined);
     if (!sha) return;
@@ -3119,8 +3156,38 @@ async function watchCiAndReport(from: string, alias: string, cwd: string, branch
     if (res.state !== "failure") return; // none/timeout/error — nothing worth a ping
 
     const links = (res.failing ?? []).map((f) => `${f.workflowName}: ${f.url}`).join("\n");
-    const body =
+    let body =
       `CI di "${alias}" (${branch}) gagal setelah perubahan terakhir.\n${links}\n\nPotongan log:\n${res.failureLog ?? "(gak ada)"}`;
+
+    // Opt-in: on a direct-merge project, revert the task's own commits so main
+    // is green again while the fix gets worked out.
+    const project = projectsRepo.get(alias);
+    const task = tasksRepo.get(taskId);
+    if (
+      config.ciWatch.autoRevert &&
+      project?.auto_merge === "direct" &&
+      task?.base_sha &&
+      task?.result_sha
+    ) {
+      let commitShas: string[] | undefined;
+      try {
+        const parsed = task.commit_shas ? JSON.parse(task.commit_shas) : undefined;
+        if (Array.isArray(parsed) && parsed.every((s) => typeof s === "string")) commitShas = parsed;
+      } catch {
+        /* fall back to range revert */
+      }
+      const rev = await revertRange(
+        cwd,
+        branch,
+        task.base_sha,
+        task.result_sha,
+        `revert: CI merah — "${task.instruction}"`,
+        commitShas
+      );
+      body = rev.ok
+        ? `CI di "${alias}" (${branch}) gagal — commit-nya udah aku auto-revert (${rev.head.slice(0, 8)}), main hijau lagi.\n${links}\n\nPotongan log:\n${res.failureLog ?? "(gak ada)"}`
+        : `${body}\n\n(Nyoba auto-revert tapi gagal: ${rev.error} — mesti manual.)`;
+    }
 
     // Don't clobber a wizard/confirmation the user started while CI was
     // running — just report it, no tappable offer, if something's pending.
@@ -3332,7 +3399,7 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
             await sendWhatsApp(from, `Cek lagi — kayaknya ada yang kesangkut di diff: ${smells.join(", ")}.`);
           }
         }
-        if (config.ciWatch.enabled) void watchCiAndReport(from, project.alias, cwd, mode.defaultBranch);
+        if (config.ciWatch.enabled) void watchCiAndReport(from, project.alias, taskId, cwd, mode.defaultBranch);
       }
     } else {
       await sendWhatsApp(from, `Gagal nih. ${result.summary}`);

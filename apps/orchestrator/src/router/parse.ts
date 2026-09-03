@@ -460,6 +460,23 @@ export function isScreenshotCommand(text: string): boolean {
   return SCREENSHOT_PHRASES.has(text.trim().toLowerCase());
 }
 
+// "log task terakhir" — replay the audit trail of the most recent task.
+const TASK_LOG_PHRASES = new Set([
+  "log task terakhir",
+  "log terakhir",
+  "log task",
+  "langkah task terakhir",
+  "apa yang kamu lakuin",
+  "apa yang kamu lakukan",
+  "apa yang kamu kerjain",
+  "apa yang kamu kerjakan",
+  "riwayat task terakhir",
+]);
+
+export function isTaskLogCommand(text: string): boolean {
+  return TASK_LOG_PHRASES.has(text.trim().toLowerCase());
+}
+
 const LIST_SCHEDULES_PHRASES = new Set([
   "daftar jadwal",
   "list jadwal",
