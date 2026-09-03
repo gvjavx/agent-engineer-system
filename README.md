@@ -283,6 +283,8 @@ Kirim voice note WhatsApp — gateway ambil audionya, orchestrator transcribe le
 
 Butuh provider AI yang model-nya bisa audio (dari default cuma Gemini) — kalau yang aktif nggak bisa, agent bilang dan minta kamu ketik aja. Maks 16MB per voice note (limit WhatsApp).
 
+**Balasan voice** (opt-in, `VOICE_REPLY_ENABLED`): kalau nyala, voice note dibales voice note juga — balasan substantif pertama disintesis jadi MP3 (Gemini TTS → PCM → MP3 pakai encoder pure-JS, gak butuh ffmpeg) dan dikirim balik. Progress message task yang panjang nggak ikut dibacain — cuma yang pertama. Satu panggilan TTS per balasan yang divoice-in; model TTS-nya punya kuota free-tier sendiri yang bisa ketat, makanya opt-in. Gagal sintesis / gak ada provider TTS → balasan teksnya tetap kekirim, cuma nggak ada versi suaranya.
+
 ## Task terjadwal
 
 `jadwalkan tiap <kapan>: <instruksi>` bikin task yang jalan sendiri berulang di project aktif. Contoh:

@@ -6,6 +6,7 @@ import {
   sendWhatsAppOptions,
   uploadMedia,
   sendWhatsAppDocument,
+  sendWhatsAppAudio,
   downloadMedia,
   verifySignature,
   markReadAndShowTyping,
@@ -200,6 +201,26 @@ app.post("/send-document", express.json({ limit: "20mb" }), async (req, res) => 
   } catch (err) {
     console.error("Failed to send WhatsApp document:", err);
     res.status(502).json({ error: "Failed to send WhatsApp document" });
+  }
+});
+
+// Internal endpoint: orchestrator calls this to reply with a voice note
+// (opt-in, only right after the user sent one). MP3 bytes come over as base64.
+app.post("/send-audio", express.json({ limit: "10mb" }), async (req, res) => {
+  if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
+    return res.sendStatus(401);
+  }
+  const { to, mp3Base64 } = req.body as { to?: string; mp3Base64?: string };
+  if (!to || !mp3Base64) {
+    return res.status(400).json({ error: "Missing 'to' or 'mp3Base64'" });
+  }
+  try {
+    const mediaId = await uploadMedia(Buffer.from(mp3Base64, "base64"), "reply.mp3", "audio/mpeg");
+    await sendWhatsAppAudio(to, mediaId);
+    res.sendStatus(204);
+  } catch (err) {
+    console.error("Failed to send WhatsApp audio:", err);
+    res.status(502).json({ error: "Failed to send WhatsApp audio" });
   }
 });
 

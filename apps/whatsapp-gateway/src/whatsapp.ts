@@ -262,6 +262,10 @@ export async function sendWhatsAppDocument(
   });
 }
 
+export async function sendWhatsAppAudio(to: string, mediaId: string): Promise<void> {
+  await postMessage({ messaging_product: "whatsapp", to, type: "audio", audio: { id: mediaId } });
+}
+
 // Reverse of uploadMedia: the webhook only ever gives us a media id, never
 // the bytes. Two authenticated calls — resolve the id to a short-lived (5
 // minute) CDN url, then fetch that url — both need the same Bearer token.

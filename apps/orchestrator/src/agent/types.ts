@@ -78,6 +78,9 @@ export interface Provider {
   // Optional, same reasoning as describeImage: only providers whose API takes
   // audio input implement it. agent/audioTranscription.ts skips the rest.
   transcribeAudio?(base64Data: string, mimeType: string, signal: AbortSignal): Promise<string>;
+  // Optional: text-to-speech, for the opt-in voice-note reply (agent/voiceReply.ts).
+  // Returns raw signed-16-bit PCM (base64) plus its sample rate.
+  synthesizeSpeech?(text: string, signal: AbortSignal): Promise<{ base64Pcm: string; sampleRate: number }>;
 }
 
 // Both the Gemini SDK's ApiError and the openai package's APIError expose a

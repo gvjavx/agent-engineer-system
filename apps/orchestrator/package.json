@@ -13,6 +13,7 @@
     "kb:hints": "tsx scripts/kb-synonym-hints.ts"
   },
   "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
     "@google/genai": "^2.16.0",
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.30.0",

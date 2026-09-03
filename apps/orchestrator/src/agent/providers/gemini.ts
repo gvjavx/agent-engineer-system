@@ -6,6 +6,8 @@ import { ProviderError, PROVIDER_REQUEST_TIMEOUT_MS, extractHttpStatus } from ".
 export interface GeminiProviderOptions {
   apiKey: string;
   model: string;
+  // Separate model for text-to-speech — the chat model can't do AUDIO output.
+  ttsModel?: string;
 }
 
 // Gemini's Content.role only accepts 'user' or 'model' — tool results are
@@ -76,11 +78,39 @@ export class GeminiProvider implements Provider {
   model: string;
   id: string;
   private client: GoogleGenAI;
+  // Only defined when a TTS model was configured — voiceReply.ts checks for it.
+  synthesizeSpeech?: (text: string, signal: AbortSignal) => Promise<{ base64Pcm: string; sampleRate: number }>;
 
   constructor(options: GeminiProviderOptions) {
     this.client = new GoogleGenAI({ apiKey: options.apiKey });
     this.model = options.model;
     this.id = `gemini@${options.model}#${crypto.createHash("sha1").update(options.apiKey).digest("hex").slice(0, 8)}`;
+    if (options.ttsModel) this.synthesizeSpeech = this.makeSynthesizeSpeech(options.ttsModel);
+  }
+
+  private makeSynthesizeSpeech(ttsModel: string) {
+    return async (text: string, signal: AbortSignal): Promise<{ base64Pcm: string; sampleRate: number }> => {
+      let response;
+      try {
+        response = await this.client.models.generateContent({
+          model: ttsModel,
+          contents: [{ role: "user", parts: [{ text }] }],
+          config: {
+            responseModalities: ["AUDIO"],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },
+            abortSignal: signal,
+            httpOptions: { timeout: PROVIDER_REQUEST_TIMEOUT_MS },
+          },
+        });
+      } catch (err) {
+        throw new ProviderError(this.name, err instanceof Error ? err.message : String(err), err, extractHttpStatus(err));
+      }
+      const part = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+      const data = part?.inlineData?.data;
+      if (!data) throw new ProviderError(this.name, "TTS: respons nggak bawa audio");
+      const rate = Number(/rate=(\d+)/.exec(part?.inlineData?.mimeType ?? "")?.[1]) || 24000;
+      return { base64Pcm: data, sampleRate: rate };
+    };
   }
 
   async chat(messages: ChatMessage[], tools: ToolSchema[], signal: AbortSignal): Promise<ProviderResponse> {

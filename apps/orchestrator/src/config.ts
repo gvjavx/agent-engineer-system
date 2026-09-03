@@ -214,6 +214,13 @@ export const config = {
     vercelToken: process.env.VERCEL_TOKEN || undefined,
   },
 
+  // Off by default: reply to a voice note with a voice note too. Costs one
+  // Gemini TTS call per voiced reply — free-tier quota for the TTS models is
+  // its own bucket and can be tight, hence opt-in. See agent/voiceReply.ts.
+  voiceReply: {
+    enabled: (process.env.VOICE_REPLY_ENABLED ?? "false").toLowerCase() === "true",
+  },
+
   // After a git task pushes, poll the GitHub Actions runs for the pushed
   // commit; a failure is sent to WhatsApp with the log and an offer to fix
   // it. On by default; a repo with no Actions just stays quiet. See
@@ -243,6 +250,9 @@ export const config = {
         apiKeys: parseApiKeys(requiredForProvider("gemini", "GEMINI_API_KEY")),
         model: process.env.GEMINI_MODEL ?? GEMINI_DEFAULT_MODEL,
         fallbackModels: parseApiKeys(process.env.GEMINI_FALLBACK_MODELS ?? GEMINI_DEFAULT_FALLBACK_MODELS),
+        // Only used by the opt-in voice-note reply (config.voiceReply). The
+        // chat model can't emit AUDIO, so TTS needs its own model name.
+        ttsModel: process.env.GEMINI_TTS_MODEL ?? "gemini-2.5-flash-preview-tts",
       }
     : undefined,
 

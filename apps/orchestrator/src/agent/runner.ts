@@ -73,8 +73,9 @@ export function primaryModelForProvider(name: string): string | undefined {
 // is a deliberate choice and shouldn't get silently overridden by a fallback.
 function buildProvidersByName(name: string, modelOverride: string | undefined): Provider[] {
   if (name === "gemini" && config.gemini) {
-    const models = modelOverride ? [modelOverride] : [config.gemini.model, ...config.gemini.fallbackModels];
-    return config.gemini.apiKeys.flatMap((apiKey) => models.map((model) => new GeminiProvider({ apiKey, model })));
+    const { model: defaultModel, fallbackModels, apiKeys, ttsModel } = config.gemini;
+    const models = modelOverride ? [modelOverride] : [defaultModel, ...fallbackModels];
+    return apiKeys.flatMap((apiKey) => models.map((model) => new GeminiProvider({ apiKey, model, ttsModel })));
   }
   const openAiCompatible = config.openAiCompatibleProviders[name];
   if (openAiCompatible) {

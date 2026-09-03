@@ -9,6 +9,16 @@ export interface QuickReplyOption {
   description?: string;
 }
 
+// Optional side-channel: router/handler.ts registers a hook that, right after
+// a voice note comes in, voices the first substantive text reply. Kept as a
+// callback so this module stays decoupled from TTS. Every send calls it; the
+// hook itself decides whether this particular (to, text) should be spoken.
+type VoiceReplyHook = (to: string, text: string) => void;
+let voiceReplyHook: VoiceReplyHook | undefined;
+export function setVoiceReplyHook(hook: VoiceReplyHook | undefined): void {
+  voiceReplyHook = hook;
+}
+
 export async function sendWhatsApp(
   to: string,
   text: string,
@@ -37,8 +47,21 @@ export async function sendWhatsApp(
     // session id gets set in the first place.
     const sessionId = conversationRepo.get(to)?.current_session_id;
     if (sessionId) sessionRepo.append(to, sessionId, "assistant", text);
+
+    voiceReplyHook?.(to, text);
   } catch (err) {
     console.error("Failed to reach whatsapp-gateway:", err);
+  }
+}
+
+export async function sendWhatsAppAudio(to: string, mp3Base64: string): Promise<void> {
+  const res = await fetch(`${config.gatewayUrl}/send-audio`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Internal-Secret": config.internalSharedSecret },
+    body: JSON.stringify({ to, mp3Base64 }),
+  });
+  if (!res.ok) {
+    throw new Error(`Gateway rejected audio (${res.status}): ${await res.text()}`);
   }
 }
 

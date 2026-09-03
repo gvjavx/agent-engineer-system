@@ -17,7 +17,14 @@ import {
   type Project,
   type ScheduledTask,
 } from "../db/index.js";
-import { sendWhatsApp, sendWhatsAppDocument, type QuickReplyOption } from "../whatsappClient.js";
+import {
+  sendWhatsApp,
+  sendWhatsAppDocument,
+  sendWhatsAppAudio,
+  setVoiceReplyHook,
+  type QuickReplyOption,
+} from "../whatsappClient.js";
+import { synthesizeReply } from "../agent/voiceReply.js";
 import {
   ensureWorkspace,
   createWorkBranch,
@@ -500,6 +507,30 @@ function touchAndLogSession(from: string, loggedContent: string): void {
   sessionRepo.append(from, sessionId, "user", loggedContent);
 }
 
+// Armed for exactly one voiced reply right after a voice note comes in (see
+// below + whatsappClient.ts's hook). Cleared at the top of every message so a
+// stale arm can't leak into a later typed one; the hook disarms itself on the
+// first real hit so a long task's progress messages aren't all read aloud.
+let voiceReplyTarget: string | null = null;
+
+function voiceReplyHook(to: string, text: string): void {
+  if (to !== voiceReplyTarget) return;
+  if (text.trim().length < 12) return; // let a fuller reply be the one that's voiced
+  voiceReplyTarget = null;
+  void speakReply(to, text);
+}
+setVoiceReplyHook(voiceReplyHook);
+
+async function speakReply(to: string, text: string): Promise<void> {
+  try {
+    const providers = buildProviders(resolveManajemenProvider(to, conversationRepo.get(to)));
+    const mp3 = await synthesizeReply(text, providers, new AbortController().signal);
+    if (mp3) await sendWhatsAppAudio(to, mp3.toString("base64"));
+  } catch (err) {
+    console.error("[voice-reply]", err);
+  }
+}
+
 export async function handleInboundMessage(
   from: string,
   text: string,
@@ -507,6 +538,7 @@ export async function handleInboundMessage(
   audio?: { mimeType: string; base64Data: string }
 ): Promise<void> {
   let messageText = text;
+  voiceReplyTarget = null;
 
   // A voice note becomes text before anything else looks at it, so it flows
   // through pending-state handlers and command parsing exactly like typing.
@@ -515,6 +547,8 @@ export async function handleInboundMessage(
     if (transcript === undefined) return; // the failure reply was already sent
     messageText = transcript;
     await sendWhatsApp(from, `Oke, aku denger: "${transcript}"`);
+    // Arm only after the transcript echo above, so that line isn't voiced.
+    if (config.voiceReply.enabled) voiceReplyTarget = from;
   }
 
   const trimmed = messageText.trim();
