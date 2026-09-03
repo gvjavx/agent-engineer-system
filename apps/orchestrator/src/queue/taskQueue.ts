@@ -69,12 +69,14 @@ export function enqueueProjectTask(
   const next = previous
     .then(async () => {
       // Marked active before the slot wait so "status"/"stop" can see it while
-      // it's queued behind the global cap; a stop during the wait just means
-      // run() starts with an already-aborted signal and bails immediately.
+      // it's queued behind the global cap; a stop during the wait aborts the
+      // controller and the check below skips run() entirely.
       activeTaskByProject.set(projectAlias, { taskId, abortController });
       await acquireSlot();
       try {
-        await run(abortController);
+        // Cancelled (stop / delete) while queued behind the global cap — don't
+        // start the pipeline at all (no work branch, no "mulai aku kerjain").
+        if (!abortController.signal.aborted) await run(abortController);
       } finally {
         releaseSlot();
         const current = activeTaskByProject.get(projectAlias);

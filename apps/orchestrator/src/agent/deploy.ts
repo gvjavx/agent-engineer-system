@@ -7,13 +7,11 @@ import { execFile } from "node:child_process";
 
 const DEPLOY_TIMEOUT_MS = 8 * 60_000;
 
-// First https URL in the output that looks like a deployment. Vercel prints
-// the production URL on its own line; fall back to any https URL.
+// The deployment URL Vercel prints on success — only a *.vercel.app host
+// counts (the CLI also prints an "Inspect: https://vercel.com/…" dashboard
+// link, which must NOT be mistaken for a live deploy on a failed build).
 export function extractDeployUrl(output: string): string | undefined {
-  return (
-    output.match(/https:\/\/[^\s"'()]+\.vercel\.app[^\s"'()]*/i)?.[0] ??
-    output.match(/https:\/\/[^\s"'()]+/i)?.[0]
-  );
+  return output.match(/https:\/\/[a-z0-9-]+\.vercel\.app[^\s"'()]*/i)?.[0];
 }
 
 export async function deployToVercel(
@@ -28,9 +26,14 @@ export async function deployToVercel(
       { cwd, timeout: DEPLOY_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, signal },
       (err, stdout, stderr) => {
         const url = extractDeployUrl(`${stdout}\n${stderr}`);
-        if (url) return resolve({ ok: true, url });
+        // Trust the exit code: a non-zero exit is a failed build/deploy even
+        // if the CLI already echoed a *.vercel.app URL for a prior deploy.
+        if (!err && url) return resolve({ ok: true, url });
         const msg = (stderr || (err && err.message) || "").trim().split("\n").slice(-3).join(" ");
-        resolve({ ok: false, error: msg || "deploy jalan tapi URL-nya nggak kebaca dari output" });
+        resolve({
+          ok: false,
+          error: msg || (url ? "deploy gagal (exit non-zero)" : "deploy jalan tapi URL-nya nggak kebaca dari output"),
+        });
       }
     );
   });

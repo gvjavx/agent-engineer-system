@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { extractDeployUrl } from "./deploy.js";
 
-test("extractDeployUrl prefers a *.vercel.app URL", () => {
+test("extractDeployUrl picks the *.vercel.app URL, not the Inspect dashboard link", () => {
   const out = [
     "Vercel CLI 39.0.0",
     "Inspect: https://vercel.com/acme/toko/abc123",
@@ -11,7 +11,7 @@ test("extractDeployUrl prefers a *.vercel.app URL", () => {
   assert.equal(extractDeployUrl(out), "https://toko-abc123-acme.vercel.app");
 });
 
-test("extractDeployUrl falls back to any https URL, or undefined", () => {
-  assert.equal(extractDeployUrl("deployed to https://example.com/x"), "https://example.com/x");
+test("extractDeployUrl returns undefined when there's no deployment URL", () => {
+  assert.equal(extractDeployUrl("Inspect: https://vercel.com/acme/toko/abc123\nError: build failed"), undefined);
   assert.equal(extractDeployUrl("error: no build output"), undefined);
 });

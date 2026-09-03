@@ -64,8 +64,18 @@ export interface CiResult {
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) return resolve();
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
+    // Remove the listener when the timeout wins so a long poll loop doesn't
+    // pile up listeners on the shared signal ({once:true} only self-removes on
+    // fire).
+    const onAbort = () => {
+      clearTimeout(t);
+      resolve();
+    };
+    const t = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -75,18 +85,23 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export async function watchCiForSha(params: {
   cwd: string;
   sha: string;
+  branch: string;
   signal: AbortSignal;
   timeoutMs?: number;
 }): Promise<CiResult> {
-  const { cwd, sha, signal } = params;
+  const { cwd, sha, branch, signal } = params;
   const timeoutMs = params.timeoutMs ?? config.ciWatch.timeoutMinutes * 60_000;
   const startedAt = Date.now();
 
   for (;;) {
     if (signal.aborted) return { state: "error" };
+    // Scoped to the branch: on a busy repo an unscoped `-L 40` fills with runs
+    // from other branches/PRs and the pushed commit's runs fall outside it.
     const list = await gh(cwd, [
       "run",
       "list",
+      "-b",
+      branch,
       "-L",
       "40",
       "--json",

@@ -222,22 +222,34 @@ export async function revertRange(
   message: string
 ): Promise<{ ok: true; head: string } | { ok: false; error: string }> {
   const git = simpleGit(dir);
-  await git.checkout(branch);
-  await git.pull("origin", branch, { "--ff-only": null });
+  const short = (err: unknown) => (err instanceof Error ? err.message.trim().split("\n")[0] : String(err));
+  try {
+    await git.checkout(branch);
+    await git.pull("origin", branch, { "--ff-only": null });
+  } catch (err) {
+    // Diverged local branch, non-fast-forward pull, etc. — bail before touching anything.
+    return { ok: false, error: `gagal nyiapin branch: ${short(err)}` };
+  }
   try {
     await git.raw(["revert", "--no-commit", `${fromSha}..${toSha}`]);
   } catch (err) {
     await git.raw(["revert", "--abort"]).catch(() => {});
-    return { ok: false, error: err instanceof Error ? err.message.trim().split("\n")[0] : String(err) };
+    return { ok: false, error: short(err) };
   }
-  const status = await git.status();
-  if (status.staged.length === 0) {
-    await git.raw(["revert", "--abort"]).catch(() => {});
-    return { ok: false, error: "gak ada yang berubah — mungkin udah kebalik duluan" };
+  try {
+    const status = await git.status();
+    if (status.staged.length === 0) {
+      await git.raw(["revert", "--abort"]).catch(() => {});
+      return { ok: false, error: "gak ada yang berubah — mungkin udah kebalik duluan" };
+    }
+    await git.commit(message);
+    await git.push("origin", branch);
+    return { ok: true, head: (await git.revparse(["HEAD"])).trim() };
+  } catch (err) {
+    // Push rejected, commit failed, etc. Leave the staged revert in place so
+    // it's recoverable by hand rather than silently dropping it.
+    return { ok: false, error: `revert kebikin tapi gagal commit/push: ${short(err)}` };
   }
-  await git.commit(message);
-  await git.push("origin", branch);
-  return { ok: true, head: (await git.revparse(["HEAD"])).trim() };
 }
 
 // For kind='local' projects: no clone, no branch — the agent edits the folder

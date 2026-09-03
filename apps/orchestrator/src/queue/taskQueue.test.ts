@@ -79,6 +79,28 @@ test("enqueueProjectTask caps how many tasks run at once across projects", async
   }
 });
 
+test("a task cancelled while queued behind the cap never starts", async () => {
+  const original = config.maxConcurrentTasks;
+  config.maxConcurrentTasks = 1;
+  try {
+    const events: string[] = [];
+    enqueueProjectTask("qc-a", "qa", async () => {
+      events.push("a:start");
+      await new Promise((r) => setTimeout(r, 40));
+      events.push("a:end");
+    });
+    enqueueProjectTask("qc-b", "qb", async () => {
+      events.push("b:ran");
+    });
+    await settle(); // a holds the only slot, b is parked in acquireSlot()
+    assert.equal(cancelActiveTask("qc-b"), "qb");
+    await new Promise((r) => setTimeout(r, 90));
+    assert.deepEqual(events, ["a:start", "a:end"], "b never ran — it was cancelled before its slot freed");
+  } finally {
+    config.maxConcurrentTasks = original;
+  }
+});
+
 test("getActiveTaskId / cancelActiveTask track the running task and abort it", async () => {
   let sawAbort = false;
   enqueueProjectTask("proj-cancel", "c1", async (ac) => {

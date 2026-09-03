@@ -1463,13 +1463,17 @@ async function handleLastDiffCommand(from: string): Promise<void> {
     note = " (dipotong, kegedean)";
   }
   const short = (s: string) => s.slice(0, 8);
-  await sendWhatsAppDocument(
-    from,
-    `${project.alias}-${short(task.id)}.diff.txt`,
-    "text/plain",
-    Buffer.from(diff).toString("base64"),
-    `Diff task terakhir: "${task.instruction}"\n${short(task.base_sha)}..${short(task.result_sha)}${note}`
-  );
+  try {
+    await sendWhatsAppDocument(
+      from,
+      `${project.alias}-${short(task.id)}.diff.txt`,
+      "text/plain",
+      Buffer.from(diff).toString("base64"),
+      `Diff task terakhir: "${task.instruction}"\n${short(task.base_sha)}..${short(task.result_sha)}${note}`
+    );
+  } catch (err) {
+    await sendWhatsApp(from, `Gagal kirim diff-nya: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // "screenshot" — bring up the active project's dev server, capture it with
@@ -1530,10 +1534,14 @@ async function handleScreenshotCommand(from: string): Promise<void> {
   }
   try {
     const shot = await screenshotUrl(preview.url);
-    if (shot.ok) {
-      await sendWhatsAppImage(from, shot.pngBase64, `Screenshot "${project.alias}" (${preview.url})`);
-    } else {
+    if (!shot.ok) {
       await sendWhatsApp(from, `Dev server jalan (${preview.url}) tapi gagal jepret: ${shot.error}`);
+      return;
+    }
+    try {
+      await sendWhatsAppImage(from, shot.pngBase64, `Screenshot "${project.alias}" (${preview.url})`);
+    } catch (err) {
+      await sendWhatsApp(from, `Udah kejepret, tapi gagal kirim gambarnya: ${err instanceof Error ? err.message : String(err)}`);
     }
   } finally {
     preview.stop();
@@ -1877,8 +1885,10 @@ async function runDailyDigest(): Promise<void> {
 
 export function startDailyDigest(): void {
   const tick = async (): Promise<void> => {
+    // hourCycle h23 so midnight is "0", not "24" (en-US + hour12:false yields
+    // "24" at 00:xx, which would make DAILY_DIGEST_HOUR=0 never match).
     const hourWib = Number(
-      new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: "Asia/Jakarta" }).format(new Date())
+      new Intl.DateTimeFormat("en-US", { hour: "numeric", hourCycle: "h23", timeZone: "Asia/Jakarta" }).format(new Date())
     );
     if (hourWib !== config.dailyDigest.hour) return;
     const today = wibYmd();
@@ -3075,7 +3085,7 @@ async function watchCiAndReport(from: string, alias: string, cwd: string, branch
     const timer = setTimeout(() => ac.abort(), config.ciWatch.timeoutMinutes * 60_000 + 60_000);
     let res;
     try {
-      res = await watchCiForSha({ cwd, sha, signal: ac.signal });
+      res = await watchCiForSha({ cwd, sha, branch, signal: ac.signal });
     } finally {
       clearTimeout(timer);
     }
@@ -3174,14 +3184,17 @@ async function runTaskPipeline(opts: RunTaskPipelineOpts): Promise<void> {
       mode = { kind: "git", defaultBranch: workspace.branch, workBranch, autoMerge: project.auto_merge };
     }
 
-    // First task for this project: guess the test/lint gate from package.json
-    // and store it, so a normal npm project is gated with no manual setup. A
-    // determined-but-empty ("") value means "no check" and won't re-detect.
-    if (project.test_cmd === null && project.lint_cmd === null) {
+    // Guess whichever gate slot hasn't been determined yet from package.json,
+    // so a normal npm project is gated with no manual setup — checked per slot
+    // so "atur cek lint ..." on one doesn't freeze auto-detection of the other.
+    // A determined-but-empty ("") value means "no check" and won't re-detect.
+    if (project.test_cmd === null || project.lint_cmd === null) {
       const detected = detectProjectChecks(cwd);
-      projectsRepo.setChecks(project.alias, detected.testCmd, detected.lintCmd);
-      project.test_cmd = detected.testCmd;
-      project.lint_cmd = detected.lintCmd;
+      const testCmd = project.test_cmd === null ? detected.testCmd : project.test_cmd;
+      const lintCmd = project.lint_cmd === null ? detected.lintCmd : project.lint_cmd;
+      projectsRepo.setChecks(project.alias, testCmd, lintCmd);
+      project.test_cmd = testCmd;
+      project.lint_cmd = lintCmd;
     }
     const commitChecks = { testCmd: project.test_cmd, lintCmd: project.lint_cmd };
 
