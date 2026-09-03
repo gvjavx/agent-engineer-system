@@ -150,6 +150,7 @@ atur cek test <cmd> / atur cek lint <cmd> → command yang dijalanin sebelum com
 jadwalkan tiap <kapan>: <instruksi>   → task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies"
 tanya: <pertanyaan>                  → nanya soal kode di project aktif tanpa ngubah apa-apa (read-only)
 deploy                               → deploy project aktif ke Vercel, balikin URL live (butuh VERCEL_TOKEN)
+screenshot                           → nyalain dev server project aktif, jepret tampilannya, kirim gambarnya
 di <repo1>, <repo2>: <instruksi>     → instruksi yang sama di beberapa project sekaligus (paralel)
 daftar jadwal / hapus jadwal <nomor>  → lihat & batalkan task terjadwal
 bantuan                               → tampilkan daftar perintah
@@ -164,6 +165,12 @@ Ini jaring pengaman buat mode `auto_merge = 'direct'` (default) yang push langsu
 ## Deploy ke Vercel
 
 `deploy` (atau `publish`) — deploy project aktif ke Vercel lewat CLI-nya (`npx vercel --prod`), balikin URL production-nya. Butuh `VERCEL_TOKEN` di `.env` (bikin di [vercel.com/account/tokens](https://vercel.com/account/tokens)) — tanpa itu command-nya cuma bilang perlu diisi dulu. Deteksi framework-nya diserahin ke Vercel (zero-config), jadi mayoritas repo Next/Vite/CRA/static langsung jalan; yang gak kebangun ngasih error dari CLI-nya. Timeout 9 menit (unduhan CLI pertama kali bisa lama).
+
+## Screenshot tampilan
+
+`screenshot` (atau `jepret`, `ss`) — buat project aktif: deteksi script `dev`/`preview`/`start` di `package.json`, `npm install` dulu kalau `node_modules` belum ada, nyalain dev server-nya, tunggu dia ngeprint URL localhost, terus jepret full-page pakai headless Chromium dan kirim PNG-nya ke chat. Dev server-nya selalu dimatiin abis itu (kill process group).
+
+Chromium-nya build `@sparticuz/chromium` (~60MB di image, unpack ke `/tmp` pas launch pertama) plus beberapa shared library yang ditambahin di `orchestrator.Dockerfile`. Di mesin dev tanpa library itu (Windows/Mac), command-nya gagal dengan pesan jelas — jalan beneran cuma di server Linux. `SCREENSHOT_ENABLED=false` buat matiin.
 
 ## Instruksi ke beberapa repo sekaligus
 

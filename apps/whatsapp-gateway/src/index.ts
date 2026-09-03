@@ -7,6 +7,7 @@ import {
   uploadMedia,
   sendWhatsAppDocument,
   sendWhatsAppAudio,
+  sendWhatsAppImage,
   downloadMedia,
   verifySignature,
   markReadAndShowTyping,
@@ -221,6 +222,26 @@ app.post("/send-audio", express.json({ limit: "10mb" }), async (req, res) => {
   } catch (err) {
     console.error("Failed to send WhatsApp audio:", err);
     res.status(502).json({ error: "Failed to send WhatsApp audio" });
+  }
+});
+
+// Internal endpoint: orchestrator calls this to send an image (currently the
+// "screenshot" command's PNG). Bytes come over as base64.
+app.post("/send-image", express.json({ limit: "20mb" }), async (req, res) => {
+  if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
+    return res.sendStatus(401);
+  }
+  const { to, pngBase64, caption } = req.body as { to?: string; pngBase64?: string; caption?: string };
+  if (!to || !pngBase64) {
+    return res.status(400).json({ error: "Missing 'to' or 'pngBase64'" });
+  }
+  try {
+    const mediaId = await uploadMedia(Buffer.from(pngBase64, "base64"), "screenshot.png", "image/png");
+    await sendWhatsAppImage(to, mediaId, caption);
+    res.sendStatus(204);
+  } catch (err) {
+    console.error("Failed to send WhatsApp image:", err);
+    res.status(502).json({ error: "Failed to send WhatsApp image" });
   }
 });
 

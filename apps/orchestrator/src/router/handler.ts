@@ -21,6 +21,7 @@ import {
   sendWhatsApp,
   sendWhatsAppDocument,
   sendWhatsAppAudio,
+  sendWhatsAppImage,
   setVoiceReplyHook,
   type QuickReplyOption,
 } from "../whatsappClient.js";
@@ -47,6 +48,13 @@ import { watchCiForSha } from "../agent/ciWatch.js";
 import { scanDiffSmells } from "../agent/diffSmells.js";
 import { buildDigestText } from "../agent/digest.js";
 import { deployToVercel } from "../agent/deploy.js";
+import {
+  detectDevCommand,
+  hasNodeModules,
+  installDeps,
+  startPreview,
+  screenshotUrl,
+} from "../agent/screenshot.js";
 import { gatherPrContext, reviewPr, postPrComment, listOpenPrs, formatPrList, mergePr } from "../agent/prReview.js";
 import { gatherIssueContext, buildIssueInstruction } from "../agent/issue.js";
 import { parseSchedule, computeNextRun, formatWibInstant, type ScheduleSpec } from "../agent/schedule.js";
@@ -125,6 +133,7 @@ import {
   parseAskRepo,
   parseMultiRepo,
   isDeployCommand,
+  isScreenshotCommand,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -199,6 +208,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *diff terakhir* — kirim patch lengkap dari task terakhir sebagai lampiran file
 - *tanya: <pertanyaan>* — nanya soal kode di project aktif tanpa ngubah apa-apa (mis. "tanya: gimana alur login-nya"). Aku baca-baca kodenya terus jawab, gak nyentuh file
 - *deploy* — deploy project aktif ke Vercel (butuh VERCEL_TOKEN di .env), balikin URL live-nya
+- *screenshot* — nyalain dev server project aktif, jepret tampilannya, kirim gambarnya ke sini
 - *di <repo1>, <repo2>: <instruksi>* — jalanin instruksi yang sama di beberapa project sekaligus (paralel, konfirmasi sekali)
 - *atur cek test <cmd>* / *atur cek lint <cmd>* — command yang aku jalanin sebelum commit di project aktif; kalau gagal, commit-nya dibatalin. "atur cek test off" buat matiin. Biasanya udah kedeteksi sendiri dari package.json pas project didaftarin
 - *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
@@ -869,6 +879,11 @@ export async function handleInboundMessage(
     return;
   }
 
+  if (isScreenshotCommand(trimmed)) {
+    await handleScreenshotCommand(from);
+    return;
+  }
+
   const multi = parseMultiRepo(trimmed);
   if (multi) {
     await handleMultiRepoInstruction(from, multi.aliases, multi.instruction);
@@ -1455,6 +1470,74 @@ async function handleLastDiffCommand(from: string): Promise<void> {
     Buffer.from(diff).toString("base64"),
     `Diff task terakhir: "${task.instruction}"\n${short(task.base_sha)}..${short(task.result_sha)}${note}`
   );
+}
+
+// "screenshot" — bring up the active project's dev server, capture it with
+// the bundled headless Chromium, send the PNG. Always kills the dev server.
+async function handleScreenshotCommand(from: string): Promise<void> {
+  if (!config.screenshot.enabled) {
+    await sendWhatsApp(from, "Fitur screenshot lagi dimatiin (SCREENSHOT_ENABLED=false).");
+    return;
+  }
+  const state = conversationRepo.get(from);
+  if (!state?.active_project_alias) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu.');
+    return;
+  }
+  const project = projectsRepo.get(state.active_project_alias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${state.active_project_alias}" udah gak ada.`);
+    return;
+  }
+  if (getActiveTaskId(project.alias)) {
+    await sendWhatsApp(from, `Ada task jalan di "${project.alias}". Tunggu kelar dulu.`);
+    return;
+  }
+
+  let cwd: string;
+  try {
+    cwd = project.kind === "local" ? await ensureLocalFolder(project) : (await ensureWorkspace(project)).dir;
+  } catch (err) {
+    await sendWhatsApp(from, `Gagal nyiapin workspace: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  const dev = detectDevCommand(cwd);
+  if (!dev) {
+    await sendWhatsApp(
+      from,
+      "Gak nemu script `dev`/`preview`/`start` di package.json project ini, jadi aku gak tau gimana nyalain tampilannya."
+    );
+    return;
+  }
+
+  if (!hasNodeModules(cwd)) {
+    await sendWhatsApp(from, "node_modules belum ada, aku install dependency dulu (bisa beberapa menit)...");
+    const inst = await installDeps(cwd, dev.runner);
+    if (!inst.ok) {
+      await sendWhatsApp(from, `Gagal install dependency: ${inst.error}`);
+      return;
+    }
+  }
+
+  await sendWhatsApp(from, `Oke, nyalain "${dev.runner} run ${dev.script}" terus aku jepret...`);
+  let preview;
+  try {
+    preview = await startPreview(cwd, dev);
+  } catch (err) {
+    await sendWhatsApp(from, `Gagal nyalain dev server: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  try {
+    const shot = await screenshotUrl(preview.url);
+    if (shot.ok) {
+      await sendWhatsAppImage(from, shot.pngBase64, `Screenshot "${project.alias}" (${preview.url})`);
+    } else {
+      await sendWhatsApp(from, `Dev server jalan (${preview.url}) tapi gagal jepret: ${shot.error}`);
+    }
+  } finally {
+    preview.stop();
+  }
 }
 
 // "deploy" — ship the active project to Vercel. Token-gated: without
@@ -2167,6 +2250,8 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     isSessionHistoryCommand(trimmed) ||
     isUndoLastCommand(trimmed) ||
     isLastDiffCommand(trimmed) ||
+    isDeployCommand(trimmed) ||
+    isScreenshotCommand(trimmed) ||
     parseAskRepo(trimmed) !== undefined ||
     parseAddProject(trimmed) !== undefined ||
     isBareAddProjectCommand(trimmed) ||

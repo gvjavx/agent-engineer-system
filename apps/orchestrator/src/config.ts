@@ -221,6 +221,13 @@ export const config = {
     enabled: (process.env.VOICE_REPLY_ENABLED ?? "false").toLowerCase() === "true",
   },
 
+  // "screenshot" command — brings up the project's dev server and captures it
+  // with the bundled headless Chromium. On by default; a box without the
+  // Chromium shared libs just fails the command gracefully. See agent/screenshot.ts.
+  screenshot: {
+    enabled: (process.env.SCREENSHOT_ENABLED ?? "true").toLowerCase() !== "false",
+  },
+
   // After a git task pushes, poll the GitHub Actions runs for the pushed
   // commit; a failure is sent to WhatsApp with the log and an offer to fix
   // it. On by default; a repo with no Actions just stays quiet. See

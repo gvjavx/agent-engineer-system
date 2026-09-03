@@ -224,6 +224,16 @@ Nyala default (`CI_WATCH_ENABLED`). Di ujung `runTaskPipeline`, cuma buat task g
 
 `diff terakhir` (`isLastDiffCommand` → `handleLastDiffCommand`) pakai `base_sha`/`result_sha` yang sama: `diffBetween` (`git diff <base> <result>`) → kirim sebagai lampiran `.diff.txt` (`.diff`/`.patch` nggak ada di allowlist dokumen), dipotong di 4MB. Read-only.
 
+## `screenshot` — jepret tampilan
+
+`isScreenshotCommand` → `handleScreenshotCommand` (`config.screenshot.enabled`, default on). `agent/screenshot.ts`:
+- `detectDevCommand` (murni, tested) — ambil script pertama dari `["dev","preview","start","serve"]` di `package.json`, runner dari lockfile.
+- `hasNodeModules` kosong → `installDeps` (`npm/yarn install`, timeout 5 mnt).
+- `startPreview` — `spawn(runner, ["run", script], { detached: true, env: { BROWSER: "none", CI: "1" } })`, kumpulin stdout/stderr, `extractLocalUrl` (murni, tested — regex `localhost|127.0.0.1|0.0.0.0:port`, dinormalin ke `127.0.0.1`) ketemu → tunggu 1.5 dtk → resolve `{ url, stop }`. Timeout 60 dtk / exit dini → reject. `stop()` = `process.kill(-pid, SIGTERM)` lalu SIGKILL setelah 3 dtk (kill process group biar vite/next child ikut mati).
+- `screenshotUrl` — `puppeteer-core` + `@sparticuz/chromium` (`chromium.args`, `await chromium.executablePath()` unpack brotli ke `/tmp` sekali, `headless: true`), `page.goto(networkidle2, 30s)` dengan satu retry `domcontentloaded`, `page.screenshot({ fullPage: true })` → PNG base64.
+
+`finally { preview.stop() }` — dev server selalu dimatiin. Hasil dikirim lewat `sendWhatsAppImage` → gateway `/send-image` → `uploadMedia` + `type:"image"`. `orchestrator.Dockerfile` nambah ~18 `lib*` + `fonts-liberation` (GTK sengaja nggak — new headless mode nggak butuh); browser binary-nya ~60MB dari `@sparticuz/chromium` di `node_modules`.
+
 ## `deploy` — ke Vercel
 
 `isDeployCommand` → `handleDeployCommand`. Token-gated: `config.deploy.vercelToken` kosong → cuma balesan minta isi `VERCEL_TOKEN` (pola "dibangun, butuh config" yang sama kayak Figma). Ada token → `ensureWorkspace`/`ensureLocalFolder`, terus `deployToVercel` (`agent/deploy.ts`) `execFile("npx", ["--yes", "vercel@latest", "--prod", "--yes", "--token", <tok>], { cwd })`, timeout 8 menit (+ AbortController 9 menit di handler). `extractDeployUrl` (murni, tested) narik URL `*.vercel.app` dari output, fallback ke https URL pertama. Bukan pipeline.

@@ -43,6 +43,7 @@ import {
   parseAskRepo,
   parseMultiRepo,
   isDeployCommand,
+  isScreenshotCommand,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -138,6 +139,13 @@ test("isDeployCommand recognises the deploy phrases only", () => {
   assert.ok(isDeployCommand("  Deploy Ke Vercel  "));
   assert.ok(isDeployCommand("publish"));
   assert.ok(!isDeployCommand("deploy the auth service to staging"));
+});
+
+test("isScreenshotCommand recognises the screenshot phrases only", () => {
+  assert.ok(isScreenshotCommand("screenshot"));
+  assert.ok(isScreenshotCommand("  Jepret  "));
+  assert.ok(isScreenshotCommand("ss dong"));
+  assert.ok(!isScreenshotCommand("screenshot the login page and compare"));
 });
 
 test("parseAskRepo needs the colon and returns the trimmed question", () => {

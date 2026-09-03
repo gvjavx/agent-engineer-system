@@ -19,8 +19,15 @@ ENV NODE_ENV=production
 # native binding if no prebuilt binary matches this platform. bubblewrap: the
 # filesystem-confinement layer for the agent's bash tool (agent/sandbox.ts) —
 # without it AGENT_SANDBOX still scrubs the environment but can't jail the fs.
+# The lib* + fonts-liberation set: the shared libraries @sparticuz/chromium's
+# headless build still needs on Debian (it bundles the browser binary itself,
+# ~60MB, but not these). Only pulled in for the "screenshot" command; GTK is
+# deliberately left out — the new headless mode doesn't need it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates gnupg python3 make g++ bubblewrap \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 \
+      libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxext6 libxi6 \
+      libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 fonts-liberation \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \

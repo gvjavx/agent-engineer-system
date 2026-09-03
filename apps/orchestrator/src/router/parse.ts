@@ -443,6 +443,23 @@ export function isDeployCommand(text: string): boolean {
   return DEPLOY_PHRASES.has(text.trim().toLowerCase());
 }
 
+// "screenshot" — bring up the active project and capture it.
+const SCREENSHOT_PHRASES = new Set([
+  "screenshot",
+  "screenshot dong",
+  "ss",
+  "ss dong",
+  "sc",
+  "jepret",
+  "tangkapan layar",
+  "screenshot project",
+  "screenshot tampilannya",
+]);
+
+export function isScreenshotCommand(text: string): boolean {
+  return SCREENSHOT_PHRASES.has(text.trim().toLowerCase());
+}
+
 const LIST_SCHEDULES_PHRASES = new Set([
   "daftar jadwal",
   "list jadwal",

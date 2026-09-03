@@ -65,6 +65,17 @@ export async function sendWhatsAppAudio(to: string, mp3Base64: string): Promise<
   }
 }
 
+export async function sendWhatsAppImage(to: string, pngBase64: string, caption?: string): Promise<void> {
+  const res = await fetch(`${config.gatewayUrl}/send-image`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Internal-Secret": config.internalSharedSecret },
+    body: JSON.stringify({ to, pngBase64, caption }),
+  });
+  if (!res.ok) {
+    throw new Error(`Gateway rejected image (${res.status}): ${await res.text()}`);
+  }
+}
+
 // Unlike sendWhatsApp above, this doesn't swallow errors — the caller (the
 // send_document tool's handler) needs to know it failed so it can tell the
 // AI, which tells the user, rather than silently losing the file.
