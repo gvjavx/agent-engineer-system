@@ -45,6 +45,10 @@ import {
   isDeployCommand,
   isScreenshotCommand,
   isTaskLogCommand,
+  parseSetAutoMerge,
+  parseRenameProject,
+  isResumeLastTaskCommand,
+  expandOwnerRepo,
 } from "./parse.js";
 
 test("parseAddProject extracts alias and repo url", () => {
@@ -147,6 +151,31 @@ test("isScreenshotCommand recognises the screenshot phrases only", () => {
   assert.ok(isScreenshotCommand("  Jepret  "));
   assert.ok(isScreenshotCommand("ss dong"));
   assert.ok(!isScreenshotCommand("screenshot the login page and compare"));
+});
+
+test("parseSetAutoMerge maps the phrasings to a mode", () => {
+  assert.equal(parseSetAutoMerge("pindah project ke pr"), "pr");
+  assert.equal(parseSetAutoMerge("ubah project ke direct"), "direct");
+  assert.equal(parseSetAutoMerge("pindah project ke langsung"), "direct");
+  assert.equal(parseSetAutoMerge("pindah project ke staging"), undefined);
+});
+
+test("parseRenameProject captures both aliases", () => {
+  assert.deepEqual(parseRenameProject("ganti nama project toko toko-baru"), { from: "toko", to: "toko-baru" });
+  assert.equal(parseRenameProject("ganti nama project toko"), undefined);
+});
+
+test("isResumeLastTaskCommand recognises the resume phrases only", () => {
+  assert.ok(isResumeLastTaskCommand("lanjutin task terakhir"));
+  assert.ok(isResumeLastTaskCommand("  Ulangi Task Terakhir  "));
+  assert.ok(!isResumeLastTaskCommand("lanjutin task terakhir tapi di branch lain"));
+});
+
+test("expandOwnerRepo turns owner/repo into a full URL and leaves other inputs alone", () => {
+  assert.equal(expandOwnerRepo("gvjavx/agent-engineer-system"), "https://github.com/gvjavx/agent-engineer-system");
+  assert.equal(expandOwnerRepo("gvjavx/agent-engineer-system.git"), "https://github.com/gvjavx/agent-engineer-system");
+  assert.equal(expandOwnerRepo("https://github.com/x/y"), undefined);
+  assert.equal(expandOwnerRepo("just-one-word"), undefined);
 });
 
 test("isTaskLogCommand recognises the task-log phrases only", () => {

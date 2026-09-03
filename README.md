@@ -133,13 +133,17 @@ Perintah lain:
 
 ```
 daftar project                        → lihat semua project terdaftar
+tambah project <nama> <owner/repo>   → shorthand, gak wajib URL lengkap
 tambah folder <nama> <path>           → daftarkan folder lokal di server (bukan repo git)
+ganti nama project <lama> <baru>     → rename alias
+pindah project ke pr / ke direct     → ganti kebijakan merge project aktif
 pakai <nama>                          → ganti project aktif
 daftar model                          → cek AI provider + model per departemen, masih bisa dipakai atau tidak
 pakai model <nama>                    → model AI default (dipakai departemen yang belum punya model sendiri)
-pakai model <departemen> <nama>       → model AI khusus satu departemen (manajemen/dev/desain/qa/infra/bisnis)
+pakai model <departemen> <nama>       → model AI khusus satu departemen (manajemen/dev/desain/qa/infra/bisnis); "reset" buat balik ke default
 status                                → lihat task yang sedang berjalan + ringkasan 7 hari
 log task terakhir                     → langkah-langkah (command/edit/error) dari task terakhir
+lanjutin task terakhir               → jalanin ulang instruksi task terakhir (konfirmasi rencana lagi)
 stop / batalkan                       → hentikan task yang sedang berjalan
 review PR <nomor>                     → baca diff PR di project aktif, kasih review, konfirmasi dulu sebelum posting komentar ke PR
 daftar PR                            → lihat PR yang lagi kebuka (non-draft bisa langsung di-tap buat merge)
@@ -185,7 +189,7 @@ Chromium-nya build `@sparticuz/chromium` (~60MB di image, unpack ke `/tmp` pas l
 
 ## Kebijakan merge per-project
 
-Default: agent commit langsung ke branch utama repo (`auto_merge = 'direct'`) — sesuai preferensi otonomi penuh. Untuk mengubah suatu project supaya lewat PR dulu, update kolom `auto_merge` jadi `'pr'` di tabel `projects` (`data/orchestrator.sqlite`).
+Default: agent commit langsung ke branch utama repo (`auto_merge = 'direct'`) — sesuai preferensi otonomi penuh. Untuk mengubah suatu project supaya lewat PR dulu, ketik `pindah project ke pr` dari WhatsApp (project aktif), atau `pindah project ke direct` buat balik. Bisa juga edit kolom `auto_merge` langsung di tabel `projects` (`data/orchestrator.sqlite`).
 
 ## Disiplin kode minimal (default, hemat token)
 

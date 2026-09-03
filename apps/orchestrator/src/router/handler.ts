@@ -137,6 +137,10 @@ import {
   isDeployCommand,
   isScreenshotCommand,
   isTaskLogCommand,
+  parseSetAutoMerge,
+  parseRenameProject,
+  isResumeLastTaskCommand,
+  expandOwnerRepo,
 } from "./parse.js";
 
 const INTRO_TEXT = `Aku Mas ADE — AI Developer Engineer. Aku ini software house yang isinya AI: bisa jadi PM buat nangkep kebutuhan, BA buat analisis, engineer buat ngoding (backend/frontend), sampai QA buat ngetes — semua dari chat WhatsApp ini. Yang gak aku pegang cuma manajemen eksekutif; selain itu, dari ide sampai push ke repo, aku yang jalanin.
@@ -196,11 +200,13 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *tambah project <nama> <url-repo>* — daftarin repo GitHub baru
 - *tambah folder <nama> <path-lokal>* — daftarin folder lokal di server (bukan lewat git)
 - *hapus project <nama>* — unregister project dari daftar (gak ngehapus apa pun di server — clone/folder aslinya tetap ada)
+- *ganti nama project <lama> <baru>* — rename alias project
+- *pindah project ke pr* / *pindah project ke direct* — ganti kebijakan merge project aktif (lewat PR / commit langsung)
 - *pakai <nama>* — ganti project aktif buat chat ini
 - *daftar model* — cek AI model yang aku pakai per departemen, masih bisa dipakai atau lagi bermasalah
 - *daftar model <provider> <kata kunci>* — cari model spesifik di provider itu (mis. "daftar model gemini flash") — ditampilin semua beserta statusnya (bisa dipakai / kena limit / error)
 - *pakai model <nama>* atau *pakai model <provider>/<model>* — model AI default (dipakai departemen yang belum punya model sendiri)
-- *pakai model <departemen> <nama>* atau *pakai model <departemen> <provider>/<model>* — model AI khusus satu departemen (${DEPARTMENT_LIST_TEXT})
+- *pakai model <departemen> <nama>* atau *pakai model <departemen> <provider>/<model>* — model AI khusus satu departemen (${DEPARTMENT_LIST_TEXT}). *pakai model <departemen> reset* buat balik ke default
 - *status* — cek task yang lagi jalan, plus ringkasan 7 hari
 - *stop* — batalin task yang lagi jalan di project aktif
 - *review PR <nomor>* — aku baca diff PR di project aktif, kasih review, terus tanya dulu sebelum posting sebagai komentar di PR-nya
@@ -213,6 +219,7 @@ const HELP_TEXT = `Ini yang bisa aku bantu:
 - *deploy* — deploy project aktif ke Vercel (butuh VERCEL_TOKEN di .env), balikin URL live-nya
 - *screenshot* — nyalain dev server project aktif, jepret tampilannya, kirim gambarnya ke sini
 - *log task terakhir* — lihat langkah-langkah yang aku jalanin di task terakhir (tiap command/edit/error)
+- *lanjutin task terakhir* — jalanin ulang instruksi task terakhir (lewat konfirmasi rencana lagi)
 - *di <repo1>, <repo2>: <instruksi>* — jalanin instruksi yang sama di beberapa project sekaligus (paralel, konfirmasi sekali)
 - *atur cek test <cmd>* / *atur cek lint <cmd>* — command yang aku jalanin sebelum commit di project aktif; kalau gagal, commit-nya dibatalin. "atur cek test off" buat matiin. Biasanya udah kedeteksi sendiri dari package.json pas project didaftarin
 - *jadwalkan tiap <kapan>: <instruksi>* — task rutin, mis. "jadwalkan tiap senin jam 9: update dependencies". Kapan: "tiap hari jam 7", "tiap senin jam 9", "tiap tanggal 1", "tiap 6 jam". *daftar jadwal* / *hapus jadwal <nomor>* buat lihat & batalin
@@ -643,6 +650,22 @@ export async function handleInboundMessage(
       );
       return;
     }
+    // "pakai model <departemen> reset" — drop the override, back to the default.
+    if (["reset", "default", "hapus", "kosong", "auto"].includes(useModelCommand.provider.toLowerCase())) {
+      if (department === "semua") {
+        conversationRepo.setPreferredProvider(from, null);
+        await sendWhatsApp(from, "Oke, model default balik ke otomatis (provider pertama yang aktif).");
+      } else {
+        const had = conversationRepo.clearDepartmentModel(from, department);
+        await sendWhatsApp(
+          from,
+          had
+            ? `Oke, ${DEPARTMENT_LABELS[department]} balik pakai model default.`
+            : `${DEPARTMENT_LABELS[department]} emang belum di-set model khusus.`
+        );
+      }
+      return;
+    }
     const { name: providerName, model } = splitProviderSpec(useModelCommand.provider);
     if (!config.providerOrder.includes(providerName)) {
       const names = config.providerOrder.map((n) => `• ${n}`).join("\n");
@@ -676,6 +699,23 @@ export async function handleInboundMessage(
         `Oke, ${DEPARTMENT_LABELS[department]} sekarang pakai model "${useModelCommand.provider}".`
       );
     }
+    return;
+  }
+
+  const setMerge = parseSetAutoMerge(trimmed);
+  if (setMerge) {
+    await handleSetAutoMergeCommand(from, setMerge);
+    return;
+  }
+
+  const rename = parseRenameProject(trimmed);
+  if (rename) {
+    await handleRenameProjectCommand(from, rename.from, rename.to);
+    return;
+  }
+
+  if (isResumeLastTaskCommand(trimmed)) {
+    await handleResumeLastTaskCommand(from);
     return;
   }
 
@@ -1014,6 +1054,8 @@ async function registerGitProject(from: string, alias: string, repoUrl: string):
     await sendWhatsApp(from, `Project "${alias}" udah ada, gak perlu didaftarin lagi.`);
     return;
   }
+  // Accept the "owner/repo" shorthand, not just the full https URL.
+  repoUrl = expandOwnerRepo(repoUrl) ?? repoUrl;
   if (!isAllowedRepoUrl(repoUrl)) {
     await sendWhatsApp(
       from,
@@ -1073,6 +1115,83 @@ async function handleRetryCommand(from: string): Promise<void> {
 
 async function handleCreatorCommand(from: string): Promise<void> {
   await sendWhatsApp(from, CREATOR_INFO_TEXT);
+}
+
+// "pindah project ke pr|direct" — the merge policy, without editing the DB.
+async function handleSetAutoMergeCommand(from: string, mode: "pr" | "direct"): Promise<void> {
+  const alias = conversationRepo.get(from)?.active_project_alias;
+  const project = alias ? projectsRepo.get(alias) : undefined;
+  if (!project) {
+    await sendWhatsApp(from, 'Belum ada project aktif. Ketik "pakai <nama>" dulu.');
+    return;
+  }
+  if (project.kind !== "git") {
+    await sendWhatsApp(from, `"${project.alias}" itu folder lokal, gak ada PR/merge policy-nya.`);
+    return;
+  }
+  projectsRepo.setAutoMerge(project.alias, mode);
+  await sendWhatsApp(
+    from,
+    mode === "pr"
+      ? `Oke, "${project.alias}" sekarang lewat PR dulu — agent buka PR, gak commit langsung ke ${project.default_branch}.`
+      : `Oke, "${project.alias}" balik ke commit langsung ke ${project.default_branch} (tanpa PR).`
+  );
+}
+
+// "ganti nama project <lama> <baru>" — alias in every table + the workspace
+// dir; the RAG index is just dropped and re-built on the next task.
+async function handleRenameProjectCommand(from: string, oldAlias: string, newAlias: string): Promise<void> {
+  const project = projectsRepo.get(oldAlias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${oldAlias}" gak ketemu. Ketik "daftar project" buat lihat.`);
+    return;
+  }
+  if (!isValidAliasInput(newAlias)) {
+    await sendWhatsApp(from, "Nama barunya harus satu kata, tanpa spasi/garis miring.");
+    return;
+  }
+  if (projectsRepo.get(newAlias)) {
+    await sendWhatsApp(from, `"${newAlias}" udah kepakai. Pilih nama lain.`);
+    return;
+  }
+  if (getActiveTaskId(oldAlias)) {
+    await sendWhatsApp(from, `Masih ada task jalan di "${oldAlias}". Tunggu kelar dulu (atau "stop").`);
+    return;
+  }
+
+  if (project.kind === "git") {
+    const oldDir = workspacePath(oldAlias);
+    const newDir = workspacePath(newAlias);
+    if (fs.existsSync(oldDir)) {
+      try {
+        fs.renameSync(oldDir, newDir);
+      } catch (err) {
+        await sendWhatsApp(from, `Gagal pindahin folder clone-nya: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+    }
+  }
+  projectsRepo.rename(oldAlias, newAlias);
+  deleteProjectIndex(oldAlias);
+  await sendWhatsApp(from, `Oke, "${oldAlias}" sekarang namanya "${newAlias}".`);
+}
+
+// "lanjutin task terakhir" — re-run this sender's most recent task through the
+// normal classify → confirm → pipeline flow.
+async function handleResumeLastTaskCommand(from: string): Promise<void> {
+  const task = tasksRepo.recentForNumber(from, 1)[0];
+  if (!task) {
+    await sendWhatsApp(from, "Belum ada task yang bisa aku ulang.");
+    return;
+  }
+  const project = projectsRepo.get(task.project_alias);
+  if (!project) {
+    await sendWhatsApp(from, `Project "${task.project_alias}" dari task itu udah gak ada.`);
+    return;
+  }
+  conversationRepo.setActiveProject(from, project.alias);
+  await sendWhatsApp(from, `Oke, aku susun ulang rencananya buat: "${task.instruction}"`);
+  await classifyAndPresentPlan(from, project, task.instruction, false);
 }
 
 // Each of these three follows the same shape: try an AI-generated reply
@@ -2314,6 +2433,9 @@ function looksLikeAnotherCommand(trimmed: string): boolean {
     isDeployCommand(trimmed) ||
     isScreenshotCommand(trimmed) ||
     isTaskLogCommand(trimmed) ||
+    parseSetAutoMerge(trimmed) !== undefined ||
+    parseRenameProject(trimmed) !== undefined ||
+    isResumeLastTaskCommand(trimmed) ||
     parseAskRepo(trimmed) !== undefined ||
     parseAddProject(trimmed) !== undefined ||
     isBareAddProjectCommand(trimmed) ||

@@ -477,6 +477,46 @@ export function isTaskLogCommand(text: string): boolean {
   return TASK_LOG_PHRASES.has(text.trim().toLowerCase());
 }
 
+// "pindah project ke pr" / "... ke direct" (or "langsung") — change the active
+// project's merge policy without editing the DB by hand.
+const SET_AUTO_MERGE_RE = /^(?:pindah|ubah|set|ganti)\s+project\s+ke\s+(pr|direct|langsung)\s*$/i;
+
+export function parseSetAutoMerge(text: string): "pr" | "direct" | undefined {
+  const m = text.trim().match(SET_AUTO_MERGE_RE);
+  if (!m) return undefined;
+  return m[1].toLowerCase() === "pr" ? "pr" : "direct";
+}
+
+// "ganti nama project toko toko-baru"
+const RENAME_PROJECT_RE = /^(?:ganti|ubah)\s+nama\s+project\s+(\S+)\s+(\S+)\s*$/i;
+
+export function parseRenameProject(text: string): { from: string; to: string } | undefined {
+  const m = text.trim().match(RENAME_PROJECT_RE);
+  if (!m) return undefined;
+  return { from: m[1], to: m[2] };
+}
+
+const RESUME_LAST_TASK_PHRASES = new Set([
+  "lanjutin task terakhir",
+  "lanjutkan task terakhir",
+  "lanjut task terakhir",
+  "ulangi task terakhir",
+  "jalankan lagi task terakhir",
+  "jalanin lagi task terakhir",
+]);
+
+export function isResumeLastTaskCommand(text: string): boolean {
+  return RESUME_LAST_TASK_PHRASES.has(text.trim().toLowerCase());
+}
+
+// Bare owner/repo (from "tambah project x owner/repo") -> full GitHub URL.
+const OWNER_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+export function expandOwnerRepo(ref: string): string | undefined {
+  const t = ref.trim();
+  return OWNER_REPO_RE.test(t) ? `https://github.com/${t.replace(/\.git$/i, "")}` : undefined;
+}
+
 const LIST_SCHEDULES_PHRASES = new Set([
   "daftar jadwal",
   "list jadwal",

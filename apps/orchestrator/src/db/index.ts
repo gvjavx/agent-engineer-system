@@ -236,6 +236,20 @@ export const projectsRepo = {
   setDefaultBranch(alias: string, branch: string): void {
     db.prepare("UPDATE projects SET default_branch = ? WHERE alias = ?").run(branch, alias);
   },
+  setAutoMerge(alias: string, mode: "direct" | "pr"): void {
+    db.prepare("UPDATE projects SET auto_merge = ? WHERE alias = ?").run(mode, alias);
+  },
+  // Rename the alias everywhere it's a foreign key (alias is the projects PK).
+  // The workspace dir on disk and the RAG index are the caller's job.
+  rename(from: string, to: string): void {
+    const tx = db.transaction(() => {
+      db.prepare("UPDATE projects SET alias = ? WHERE alias = ?").run(to, from);
+      db.prepare("UPDATE conversation_state SET active_project_alias = ? WHERE active_project_alias = ?").run(to, from);
+      db.prepare("UPDATE scheduled_tasks SET project_alias = ? WHERE project_alias = ?").run(to, from);
+      db.prepare("UPDATE tasks SET project_alias = ? WHERE project_alias = ?").run(to, from);
+    });
+    tx();
+  },
   // Both slots written together — a NULL means "not determined yet" and the
   // next task auto-detects, so callers pass "" (not NULL) for "no check".
   setChecks(alias: string, testCmd: string | null, lintCmd: string | null): void {
@@ -625,6 +639,16 @@ export const conversationRepo = {
       `INSERT INTO conversation_state (from_number, department_models) VALUES (?, ?)
        ON CONFLICT(from_number) DO UPDATE SET department_models = excluded.department_models`
     ).run(fromNumber, JSON.stringify(current));
+  },
+  clearDepartmentModel(fromNumber: string, department: string): boolean {
+    const current = this.getDepartmentModels(fromNumber);
+    if (!(department in current)) return false;
+    delete current[department];
+    db.prepare("UPDATE conversation_state SET department_models = ? WHERE from_number = ?").run(
+      JSON.stringify(current),
+      fromNumber
+    );
+    return true;
   },
 };
 

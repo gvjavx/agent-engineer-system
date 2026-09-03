@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { enqueueProjectTask, cancelActiveTask, getActiveTaskId, planResume, MAX_RESUME_ATTEMPTS } from "./taskQueue.js";
-import { tasksRepo, scheduledTasksRepo, providerUsageRepo, kvRepo, type Task } from "../db/index.js";
+import { tasksRepo, scheduledTasksRepo, providerUsageRepo, kvRepo, projectsRepo, conversationRepo, type Task } from "../db/index.js";
 import { config } from "../config.js";
 
 const settle = () => new Promise((r) => setTimeout(r, 10));
@@ -163,6 +163,30 @@ test("tasksRepo.pendingForProject counts queued + running oldest-first", () => {
   assert.deepEqual(pending.map((t) => t.id), ["pf-a", "pf-b"]);
   tasksRepo.setStatus("pf-a", "done");
   tasksRepo.setStatus("pf-b", "cancelled");
+});
+
+test("projectsRepo.setAutoMerge / rename move the alias across tables", () => {
+  projectsRepo.create("rn-old", "https://github.com/x/rn-old.git");
+  projectsRepo.setAutoMerge("rn-old", "pr");
+  assert.equal(projectsRepo.get("rn-old")!.auto_merge, "pr");
+
+  conversationRepo.setActiveProject("628rn", "rn-old");
+  scheduledTasksRepo.create("rn-sc", "628rn", "rn-old", "x", "tiap hari jam 08:00", "{}", new Date().toISOString());
+
+  projectsRepo.rename("rn-old", "rn-new");
+  assert.equal(projectsRepo.get("rn-old"), undefined);
+  assert.equal(projectsRepo.get("rn-new")!.auto_merge, "pr");
+  assert.equal(conversationRepo.get("628rn")!.active_project_alias, "rn-new");
+  assert.equal(scheduledTasksRepo.listForProject("rn-new").length, 1);
+  scheduledTasksRepo.delete("rn-sc");
+});
+
+test("conversationRepo.clearDepartmentModel removes just that override", () => {
+  conversationRepo.setDepartmentModel("628dm", "dev", "qwen");
+  conversationRepo.setDepartmentModel("628dm", "qa", "gemini");
+  assert.equal(conversationRepo.clearDepartmentModel("628dm", "dev"), true);
+  assert.equal(conversationRepo.clearDepartmentModel("628dm", "dev"), false); // already gone
+  assert.deepEqual(conversationRepo.getDepartmentModels("628dm"), { qa: "gemini" });
 });
 
 test("providerUsageRepo accumulates per id; kvRepo round-trips", () => {
