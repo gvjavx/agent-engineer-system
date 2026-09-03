@@ -405,3 +405,47 @@ test("runAgentLoop fails the task when a 429 exhausts retries and there's no oth
   assert.equal(result.ok, false);
   assert.match(result.summary, /Semua opsi AI lagi gak bisa dipakai/);
 });
+
+test("runAgentLoop nudges the model when it repeats the exact same tool call", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+  let sawNudge = false;
+  const provider: Provider = {
+    name: "fake",
+    async chat(messages: ChatMessage[]): Promise<ProviderResponse> {
+      if (
+        messages.some(
+          (m) => typeof m.content === "string" && m.content.includes("[sistem]") && m.content.includes("langkah yang sama")
+        )
+      ) {
+        sawNudge = true;
+        return { type: "text", text: "oke aku simpulin" };
+      }
+      return { type: "tool_calls", calls: [{ id: "x", name: "read_file", input: { path: "same.ts" } }] };
+    },
+  };
+
+  const result = await runAgentLoop(baseParams({ providers: [provider], resolveFigmaToolsFn, maxTurns: 20 }));
+  assert.equal(sawNudge, true, "a [sistem] nudge should appear after 3 identical calls");
+  assert.equal(result.ok, true);
+});
+
+test("runAgentLoop warns the model once when it's near the turn cap", async () => {
+  const resolveFigmaToolsFn = async (): Promise<FigmaToolsResult> => ({ kind: "none" });
+  let warnCount = 0;
+  const provider: Provider = {
+    name: "fake",
+    async chat(messages: ChatMessage[]): Promise<ProviderResponse> {
+      const warns = messages.filter(
+        (m) => typeof m.content === "string" && m.content.includes("[sistem]") && m.content.includes("langkah lagi sebelum")
+      ).length;
+      if (warns > warnCount) warnCount = warns;
+      if (warnCount > 0) return { type: "text", text: "wrap up" };
+      // distinct calls each turn so the loop guard doesn't fire instead
+      return { type: "tool_calls", calls: [{ id: String(Math.random()), name: "bash", input: { command: `echo ${Math.random()}` } }] };
+    },
+  };
+
+  const result = await runAgentLoop(baseParams({ providers: [provider], resolveFigmaToolsFn, maxTurns: 12 }));
+  assert.equal(warnCount, 1, "exactly one budget warning");
+  assert.equal(result.ok, true);
+});

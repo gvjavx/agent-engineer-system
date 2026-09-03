@@ -160,6 +160,10 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
     let rateLimitRetries = 0;
     // config.selfReview: at most one advisory review round per task.
     let selfReviewDone = false;
+    // Loop guard: count of each distinct tool call so far, and whether the
+    // near-the-cap warning has been sent.
+    const toolCallCounts = new Map<string, number>();
+    let budgetWarned = false;
 
     for (let turn = 0; turn < maxTurns; turn++) {
       if (abortController.signal.aborted) {
@@ -350,6 +354,32 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
               ? await sendDocument(String(call.input.path ?? ""), typeof call.input.caption === "string" ? call.input.caption : undefined)
               : await executeTool(call.name, call.input, cwd);
         messages.push({ role: "tool", toolCallId: call.id, toolName: call.name, content: result });
+      }
+
+      // Loop guard: the model keeps making the exact same call -> nudge it to
+      // change approach or wrap up, before it burns the whole turn budget
+      // thrashing. role:"user" not "system" — a mid-loop system message is
+      // dropped by the Gemini adapter.
+      for (const call of response.calls) {
+        const sig = `${call.name}: ${briefToolDescription(call.name, call.input)}`;
+        const n = (toolCallCounts.get(sig) ?? 0) + 1;
+        toolCallCounts.set(sig, n);
+        if (n >= 3 && n % 3 === 0) {
+          auditLog.add(taskId, "note", `Loop guard: "${sig}" ke-${n}x`);
+          messages.push({
+            role: "user",
+            content: `[sistem] Kamu udah jalanin langkah yang sama (${sig}) ${n}x. Kalau hasilnya nggak berubah, ganti pendekatan atau langsung simpulin — jangan diulang lagi.`,
+          });
+        }
+      }
+
+      // Turn-budget warning, once — the model has no idea what its cap is.
+      if (!budgetWarned && maxTurns > 8 && turn >= maxTurns - 6) {
+        budgetWarned = true;
+        messages.push({
+          role: "user",
+          content: `[sistem] Tinggal ~${maxTurns - turn} langkah lagi sebelum aku hentiin task ini. Beresin yang inti, jangan mulai hal baru, terus langsung kasih ringkasan.`,
+        });
       }
     }
 
