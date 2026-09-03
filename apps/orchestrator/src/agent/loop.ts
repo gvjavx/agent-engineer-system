@@ -11,6 +11,7 @@ import {
 import { scanStagedFiles, formatSecretHits } from "./secretScan.js";
 import { runProjectChecks, type CommitCheckSpec } from "./projectChecks.js";
 import { reviewStagedDiff } from "./selfReview.js";
+import { stagedDiffSize, diffTooBigReason } from "./diffGuard.js";
 import { markRateLimited } from "./providerCooldown.js";
 import { resolveFigmaTools, type FigmaToolsResult } from "./mcp/figmaTools.js";
 import type { ChatMessage, Provider, ToolSchema } from "./types.js";
@@ -160,6 +161,8 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
     let rateLimitRetries = 0;
     // config.selfReview: at most one advisory review round per task.
     let selfReviewDone = false;
+    // config.diffGuard: once the user rules on an oversized diff, remember it.
+    let diffGuardDecision: "approved" | "denied" | undefined;
     // Loop guard: count of each distinct tool call so far, and whether the
     // near-the-cap warning has been sent.
     const toolCallCounts = new Map<string, number>();
@@ -323,6 +326,41 @@ export async function runAgentLoop(params: RunAgentLoopParams): Promise<RunAgent
                   "Kalau menurut kamu ini bukan masalah beneran, commit lagi aja — cek ini cuma jalan sekali.",
               });
               continue;
+            }
+          }
+
+          // Oversized diff -> one WhatsApp yes/no. Approved once = never asked
+          // again this task; denied once = keep blocking a still-huge diff
+          // (no re-nag) until it shrinks under the threshold.
+          if (config.diffGuard.enabled && isCommit && !readOnly && diffGuardDecision !== "approved") {
+            const size = stagedDiffSize(cwd, command);
+            const reason = diffTooBigReason(size, config.diffGuard.maxFiles, config.diffGuard.maxLines);
+            if (reason && diffGuardDecision === "denied") {
+              messages.push({
+                role: "tool",
+                toolCallId: call.id,
+                toolName: call.name,
+                content: "Error: diff-nya masih kegedean dan user udah bilang jangan. Pecah jadi commit lebih kecil dulu.",
+              });
+              continue;
+            }
+            if (reason) {
+              auditLog.add(taskId, "note", `Diff guard: ${size.files} file, +${size.added}/-${size.removed} — nunggu konfirmasi`);
+              const approved = await onDangerousBash(command, `${reason}. Yakin commit segini?`);
+              if (abortController.signal.aborted) {
+                return { ok: false, cancelled: true, summary: "Oke, task-nya udah aku batalin." };
+              }
+              diffGuardDecision = approved ? "approved" : "denied";
+              if (!approved) {
+                messages.push({
+                  role: "tool",
+                  toolCallId: call.id,
+                  toolName: call.name,
+                  content:
+                    "Error: commit ditahan — diff-nya kegedean dan user belum setuju. Pecah jadi lebih kecil, atau kalau emang segini semua yang perlu jelasin di ringkasan.",
+                });
+                continue;
+              }
             }
           }
 

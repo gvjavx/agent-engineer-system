@@ -208,6 +208,15 @@ export const config = {
     enabled: (process.env.SELF_REVIEW_ENABLED ?? "false").toLowerCase() === "true",
   },
 
+  // Pause for a WhatsApp yes/no before a commit whose staged diff blows past
+  // these bounds — catches runaway generation. On by default; asked at most
+  // once per task. See agent/diffGuard.ts.
+  diffGuard: {
+    enabled: (process.env.DIFF_GUARD_ENABLED ?? "true").toLowerCase() !== "false",
+    maxFiles: Math.max(1, Number(process.env.DIFF_GUARD_MAX_FILES ?? 60)),
+    maxLines: Math.max(1, Number(process.env.DIFF_GUARD_MAX_LINES ?? 1500)),
+  },
+
   // "deploy" command. Undefined (no VERCEL_TOKEN) => the command explains it
   // needs one and does nothing. See agent/deploy.ts.
   deploy: {
