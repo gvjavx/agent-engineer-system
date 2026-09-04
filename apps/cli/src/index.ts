@@ -24,7 +24,12 @@ const CLI_READY = " cli-ready"; // first SSE event from /cli/stream
 // ── colours ────────────────────────────────────────────────────────────────
 
 const TTY = process.stdout.isTTY === true;
-const COLOR = TTY && !process.env.NO_COLOR && process.env.TERM !== "dumb";
+const COLOR =
+  (TTY || process.env.FORCE_COLOR === "1") && !process.env.NO_COLOR && process.env.TERM !== "dumb";
+// The bordered-input frame + cursor tricks only make sense on a real
+// interactive terminal; colour alone (e.g. FORCE_COLOR into a pipe) doesn't.
+const FANCY = TTY && COLOR;
+
 const paint =
   (code: string) =>
   (s: string): string =>
@@ -36,7 +41,14 @@ const green = paint("32");
 const yellow = paint("33");
 const cyan = paint("36");
 const magenta = paint("35");
-const vlen = (s: string): number => s.replace(/\x1b\[[0-9;]*m/g, "").length;
+
+// One colour each for the A / D / E — the initials of Ai · Developer · Engineer.
+const cA = paint("31"); // red
+const cD = paint("33"); // yellow
+const cE = paint("36"); // cyan
+const acronym = (): string => `${bold("Mas")} ${cA("A")}${cD("D")}${cE("E")}`;
+const titleFull = (): string =>
+  `${bold("Mas")} ${dim("(")}${cA("A")}i ${cD("D")}eveloper ${cE("E")}ngineer${dim(")")}`;
 
 // ── logo ───────────────────────────────────────────────────────────────────
 
@@ -49,6 +61,7 @@ function intro(): void {
   console.log();
   for (const row of LOGO) console.log("  " + magenta(row));
   console.log();
+  console.log("  " + titleFull());
   console.log("  " + dim("AI dev team di terminal") + "   " + dim("·") + "   " + dim(BASE));
   console.log("  " + dim("Ketik instruksi bebas atau command WhatsApp (status, pakai <project>, tanya: …)."));
   console.log("  " + dim("Ctrl+C buat keluar."));
@@ -167,7 +180,7 @@ async function main(): Promise<void> {
     process.exit(code);
   };
   process.on("SIGINT", () => {
-    if (COLOR) process.stdout.write("\r\x1b[K");
+    if (FANCY) process.stdout.write("\r\x1b[K");
     quit(0);
   });
 
@@ -211,7 +224,7 @@ async function main(): Promise<void> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: COLOR ? "" : "> ",
+    prompt: FANCY ? "" : "> ",
     historySize: 200,
   });
 
@@ -221,13 +234,14 @@ async function main(): Promise<void> {
   // Three-line input frame: top rule with the label, the prompt line
   // (readline owns it), a bottom rule. Cursor is left on the prompt line.
   function drawFrame(): void {
-    if (!COLOR) {
+    if (!FANCY) {
       rl.prompt();
       frameUp = true;
       return;
     }
     const w = frameWidth();
-    const top = dim("╭─ ") + magenta("Mas ADE") + " " + dim("─".repeat(Math.max(1, w - 9)) + "╮");
+    const label = acronym(); // "Mas ADE" (7 visible), A/D/E each coloured
+    const top = dim("╭─ ") + label + " " + dim("─".repeat(Math.max(1, w - 9)) + "╮");
     const bot = dim("╰" + "─".repeat(w) + "╯");
     process.stdout.write(top + "\n");
     rl.setPrompt(dim("│") + "  " + cyan("❯ "));
@@ -236,10 +250,10 @@ async function main(): Promise<void> {
     frameUp = true;
   }
 
-  // Print something while the frame is showing without corrupting it: clear
-  // the prompt line + top rule, render, wipe the stale bottom rule, redraw.
+  // Print something while the frame is up without corrupting it: clear the
+  // prompt line + top rule, render, wipe the stale bottom rule, redraw.
   function emitAboveFrame(render: () => void): void {
-    if (!COLOR) {
+    if (!FANCY) {
       render();
       rl.prompt();
       return;
@@ -250,13 +264,17 @@ async function main(): Promise<void> {
     drawFrame();
   }
 
+  // After Enter the cursor sits on the bottom-rule row; wipe all three frame
+  // rows so the prompt doesn't stack on redraw.
+  const clearFrame = () => process.stdout.write("\r\x1b[K\x1b[1A\r\x1b[K\x1b[1A\r\x1b[K");
+
   let backToPrompt: NodeJS.Timeout | undefined;
   const armPrompt = () => {
     if (backToPrompt) clearTimeout(backToPrompt);
     backToPrompt = setTimeout(() => {
       stopSpinner();
       rl.resume();
-      if (COLOR) console.log();
+      if (FANCY) console.log();
       drawFrame();
     }, 2500);
   };
@@ -280,20 +298,16 @@ async function main(): Promise<void> {
     }
   })();
 
-  // After Enter the cursor sits on the bottom-rule row; wipe all three frame
-  // rows so the prompt doesn't stack on redraw.
-  const clearFrame = () => process.stdout.write("\r\x1b[K\x1b[1A\r\x1b[K\x1b[1A\r\x1b[K");
-
   drawFrame();
   rl.on("line", async (line) => {
-    if (COLOR) clearFrame();
+    if (FANCY) clearFrame();
     frameUp = false;
     const t = line.trim();
     if (!t) {
       drawFrame();
       return;
     }
-    if (COLOR) console.log(dim("❯ ") + t);
+    if (FANCY) console.log(dim("❯ ") + t);
     rl.pause();
     await send(t);
     startSpinner();
