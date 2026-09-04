@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -20,6 +23,11 @@ try {
 const BASE = (process.env.ORCHESTRATOR_URL ?? "http://localhost:4000").replace(/\/$/, "");
 const SECRET = process.env.INTERNAL_SHARED_SECRET;
 const CLI_READY = " cli-ready"; // first SSE event from /cli/stream
+
+const SELF = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8")) as {
+  name: string;
+  version: string;
+};
 
 // ── colours ────────────────────────────────────────────────────────────────
 
@@ -106,6 +114,73 @@ function stopSpinner(): void {
   process.stdout.write("\r\x1b[K");
 }
 
+// ── self-update ────────────────────────────────────────────────────────────
+
+const UPDATE_CACHE = path.join(os.homedir() || os.tmpdir(), ".mas-ade-update.json");
+const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+
+function cmpVer(a: string, b: string): number {
+  const pa = a.split("-")[0].split(".").map(Number);
+  const pb = b.split("-")[0].split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
+}
+
+// Check npm for a newer version (throttled to every 6h) and, if there is one,
+// `npm i -g` it and re-exec so the new version runs right away. Best-effort:
+// offline, a failed install, or an npx invocation all just fall through.
+async function maybeAutoUpdate(argv: string[]): Promise<void> {
+  if (
+    process.env.MAS_ADE_UPDATED === "1" ||
+    process.env.MAS_ADE_NO_UPDATE === "1" ||
+    process.env.CI ||
+    argv.includes("--no-update") ||
+    __dirname.includes("_npx") // npx already runs a fresh copy
+  ) {
+    return;
+  }
+  try {
+    const c = JSON.parse(fs.readFileSync(UPDATE_CACHE, "utf8")) as { at: number };
+    if (Date.now() - c.at < CHECK_EVERY_MS) return;
+  } catch {
+    /* no cache yet */
+  }
+
+  let latest: string | undefined;
+  try {
+    const res = await fetch(`https://registry.npmjs.org/${SELF.name}/latest`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (res.ok) latest = ((await res.json()) as { version?: string }).version;
+  } catch {
+    return; // offline / slow — don't hold up the CLI
+  }
+  try {
+    fs.writeFileSync(UPDATE_CACHE, JSON.stringify({ at: Date.now(), latest }));
+  } catch {
+    /* ignore */
+  }
+  if (!latest || cmpVer(latest, SELF.version) <= 0) return;
+
+  process.stderr.write(dim(`\n  ${SELF.name} ${SELF.version} → ${latest}, update dulu…\n`));
+  const r = spawnSync("npm", ["i", "-g", `${SELF.name}@latest`, "--no-audit", "--no-fund"], {
+    stdio: "ignore",
+    shell: process.platform === "win32",
+  });
+  if (r.status !== 0) {
+    process.stderr.write(
+      yellow(`  auto-update gagal (mungkin butuh sudo). Manual: npm i -g ${SELF.name}@latest\n\n`)
+    );
+    return;
+  }
+  process.stderr.write(dim(`  ke ${latest}. Jalanin ulang…\n\n`));
+  const again = spawnSync(process.execPath, [process.argv[1], ...argv], {
+    stdio: "inherit",
+    env: { ...process.env, MAS_ADE_UPDATED: "1" },
+  });
+  process.exit(again.status ?? 0);
+}
+
 // ── network ────────────────────────────────────────────────────────────────
 
 async function send(text: string): Promise<void> {
@@ -163,12 +238,31 @@ async function* streamReplies(replay: boolean, signal: AbortSignal): AsyncGenera
 // ── main ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log(SELF.version);
+    return;
+  }
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(
+      `${SELF.name} ${SELF.version}\n\n` +
+        `  mas-ade                 REPL\n` +
+        `  mas-ade "<instruksi>"   sekali jalan\n` +
+        `  mas-ade --wait=<detik>  jeda sepi buat one-shot (default 8)\n` +
+        `  mas-ade --no-update     skip cek versi baru sekali ini\n\n` +
+        `  env: INTERNAL_SHARED_SECRET (wajib), ORCHESTRATOR_URL (default http://localhost:4000)\n` +
+        `       MAS_ADE_NO_UPDATE=1 buat matiin auto-update permanen, NO_COLOR=1 buat polos`
+    );
+    return;
+  }
+
+  await maybeAutoUpdate(args);
+
   if (!SECRET) {
     console.error(red("INTERNAL_SHARED_SECRET belum keset (di .env repo root atau di environment)."));
     process.exit(1);
   }
 
-  const args = process.argv.slice(2);
   const message = args.filter((a) => !a.startsWith("--")).join(" ");
   const waitArg = args.find((a) => a.startsWith("--wait="));
   const idleMs = Math.max(1, waitArg ? Number(waitArg.split("=")[1]) : 8) * 1000;

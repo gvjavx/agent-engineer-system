@@ -200,6 +200,8 @@ Selain WhatsApp, agent yang sama bisa dikendaliin dari terminal. Mati secara def
 npm i -g mas-ade      # atau tanpa install: npx mas-ade "status"
 ```
 
+Sekali kepasang global, dia **auto-update sendiri** tiap dijalanin (cek npm max sekali per 6 jam; kalau ada versi baru, `npm i -g` + jalan ulang). Matiin dengan `--no-update` (sekali) atau `MAS_ADE_NO_UPDATE=1` (permanen).
+
 Dari checkout repo ini juga bisa: `npm run cli` (REPL) atau `npm run cli "<instruksi>"` (sekali jalan). `--wait=<detik>` buat atur jeda sepi sebelum one-shot dianggap kelar.
 
 **Konfigurasi** (env var atau `.env` di folder tempat kamu jalanin):

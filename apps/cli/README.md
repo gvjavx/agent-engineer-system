@@ -42,7 +42,16 @@ ssh -N -L 4000:localhost:4000 user@your-server
 mas-ade                              # REPL — type instructions line by line, Ctrl+C to quit
 mas-ade "tambahin endpoint /health"  # one-shot: send, print replies until it goes quiet, exit
 mas-ade --wait=30 "review PR 12"     # wait 30s of silence before deciding it's done
+mas-ade --version                    # print the version
 ```
+
+## Auto-update
+
+On startup (throttled to once every 6h) it checks npm for a newer version and,
+if there is one, `npm i -g`s it and re-execs so you're always on the latest.
+Turn it off with `--no-update` (once) or `MAS_ADE_NO_UPDATE=1` (permanent). It's
+also skipped under `npx` and in CI. If the install fails (e.g. needs sudo) it
+just prints the command and continues on the current version.
 
 Every command that works over WhatsApp works here (`status`, `pakai <project>`,
 `daftar model`, `tanya: ...`, `kerjain issue 5`, ...). Tappable options are shown

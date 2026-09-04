@@ -1,6 +1,6 @@
 {
   "name": "mas-ade",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Terminal client for a Mas ADE agent — drive it from the CLI instead of WhatsApp.",
   "license": "MIT",
   "type": "module",
