@@ -194,34 +194,27 @@ Selain WhatsApp, agent yang sama bisa dikendaliin dari terminal. Mati secara def
 
 **Nyalain di orchestrator:** set `CLI_ENABLED=true` di `.env`, restart orchestrator-nya. Aksesnya digerbangi `INTERNAL_SHARED_SECRET` — cuma yang punya secret itu yang bisa masuk.
 
-**Install di device yang sama dengan orchestrator** (paling gampang):
+**Install** (client-nya dipublish ke npm sebagai `mas-ade`, lihat `apps/cli/README.md`):
 
 ```bash
-npm install && npm run build          # sekali, di root repo
-npm run cli                           # REPL — ketik instruksi baris per baris
-npm run cli "tambahin endpoint /health"   # sekali jalan: kirim, print balasan sampai sepi, keluar
-npm run cli --wait=30 "review PR 12"      # jeda 30 detik sebelum dianggap sepi
+npm i -g mas-ade      # atau tanpa install: npx mas-ade "status"
 ```
 
-Mau jadi command global `mas-ade`:
+Dari checkout repo ini juga bisa: `npm run cli` (REPL) atau `npm run cli "<instruksi>"` (sekali jalan). `--wait=<detik>` buat atur jeda sepi sebelum one-shot dianggap kelar.
+
+**Konfigurasi** (env var atau `.env` di folder tempat kamu jalanin):
+
+| Variable | Default | |
+|---|---|---|
+| `ORCHESTRATOR_URL` | `http://localhost:4000` | base URL orchestrator |
+| `INTERNAL_SHARED_SECRET` | *(wajib)* | harus sama persis dengan yang di orchestrator |
+
+**Orchestrator di device lain** (VPS): port 4000 sengaja nggak diexpose ke internet — tembus lewat SSH tunnel, jangan buka lewat Caddy (secret-nya jadi bearer token di jalur publik = kendali penuh atas agent kalau bocor):
 
 ```bash
-npm i -g ./apps/cli        # atau: cd apps/cli && npm link
-mas-ade "status"
+ssh -N -L 4000:localhost:4000 user@vps-kamu    # biarin jalan
+INTERNAL_SHARED_SECRET=... mas-ade "status"     # ORCHESTRATOR_URL default udah localhost:4000
 ```
-
-**Install di device lain** (orchestrator di VPS): port orchestrator (4000) sengaja nggak diexpose ke internet, jadi tembus lewat SSH tunnel:
-
-```bash
-ssh -N -L 4000:localhost:4000 user@vps-kamu      # biarin jalan di terminal lain
-# di device, set INTERNAL_SHARED_SECRET (sama persis dengan yang di VPS) + ORCHESTRATOR_URL=http://localhost:4000
-git clone <repo-ini> && cd agent-engineer-system && npm i -g ./apps/cli
-INTERNAL_SHARED_SECRET=... ORCHESTRATOR_URL=http://localhost:4000 mas-ade "status"
-```
-
-(Kalau device-nya nggak punya checkout repo, `apps/cli` cuma butuh satu file + `dotenv` — atau nol dependency kalau env var-nya kamu `export` langsung. dotenv-nya opsional.)
-
-Jangan expose `/cli/*` langsung ke internet lewat Caddy kecuali kamu terima risikonya: secret-nya jadi bearer token di jalur publik, bocor = kendali penuh atas agent. SSH tunnel jauh lebih aman.
 
 **Cara kerjanya:** CLI nyambung ke orchestrator yang lagi jalan (`ORCHESTRATOR_URL`, default `http://localhost:4000`) — tiap baris di-`POST` ke `/cli/message`, balasan di-stream balik lewat `/cli/stream` (SSE). Pakai satu identitas percakapan tetap (`CLI_SENDER_ID`, default `cli`) yang **terpisah** dari nomor WhatsApp — `pakai <project>`, memori, dan project aktifnya sendiri, kekunci lintas run. Semua command WhatsApp jalan di sini juga; tombol pilihan ditampilin sebagai `[id] label` yang tinggal diketik. Gambar/dokumen/voice cuma muncul sebagai catatan `[file: ...]`.
 

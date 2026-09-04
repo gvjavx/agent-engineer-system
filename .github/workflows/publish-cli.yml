@@ -1,0 +1,24 @@
+name: Publish mas-ade CLI
+
+# Tag a release as cli-vX.Y.Z (matching apps/cli/package.json's version), or
+# run this workflow manually. Needs an NPM_TOKEN repo secret (an npm automation
+# token with publish rights).
+on:
+  push:
+    tags: ["cli-v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run build --workspace apps/cli
+      - run: npm publish --workspace apps/cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

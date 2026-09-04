@@ -1,15 +1,39 @@
 {
-  "name": "@agent-engineer-system/cli",
-  "private": true,
+  "name": "mas-ade",
   "version": "0.1.0",
+  "description": "Terminal client for a Mas ADE agent — drive it from the CLI instead of WhatsApp.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "mas-ade": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mas-ade",
+    "cli",
+    "agent",
+    "ai",
+    "whatsapp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gvjavx/mas-ade.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "dotenv": "^17.4.2"
