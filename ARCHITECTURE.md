@@ -5,15 +5,16 @@ Dokumen ini menjelaskan alur kerja internal sistem, bukan cara pakainya (itu ada
 ## Peta besar
 
 ```
-WhatsApp user
-   │ pesan/tombol/gambar
-   ▼
-Meta Cloud API ──webhook──▶ apps/whatsapp-gateway
+WhatsApp user                              terminal (apps/cli, opsional)
+   │ pesan/tombol/gambar                      │ POST /cli/message  (X-Internal-Secret + CLI_ENABLED)
+   ▼                                          │ balasan di-stream balik lewat GET /cli/stream (SSE)
+Meta Cloud API ──webhook──▶ apps/whatsapp-gateway   │
                                   │ verifikasi HMAC signature, filter ALLOWED_SENDERS,
                                   │ download+validasi gambar kalau ada
-                                  ▼
-                            POST /inbound ──▶ apps/orchestrator
-                                                  │ filter ALLOWED_SENDERS lagi (defense in depth)
+                                  ▼                                     │
+                            POST /inbound ──▶ apps/orchestrator ◀───────┘
+                                                  │ filter ALLOWED_SENDERS lagi (defense in depth;
+                                                  │   jalur CLI lewat identitas tetap config.cli.senderId)
                                                   │ router/handler.ts: handleInboundMessage
                                                   ▼
                                           dispatch chain (lihat bagian bawah)
@@ -27,6 +28,8 @@ Meta Cloud API ──webhook──▶ apps/whatsapp-gateway
 ```
 
 Dua proses Node terpisah (`apps/whatsapp-gateway`, `apps/orchestrator`), komunikasi lewat HTTP internal dengan header `X-Internal-Secret`. Gateway itu satu-satunya yang punya endpoint publik beneran (`POST /webhook` dari Meta, `GET /figma/oauth/callback` dari browser user); orchestrator cuma nerima dari gateway.
+
+**Front CLI (opsional, `CLI_ENABLED`)**: `apps/cli` — REPL/one-shot yang nyambung ke orchestrator yang lagi jalan. `POST /cli/message` → `handleInboundMessage(config.cli.senderId, text)` (identitas tetap, `"cli"` by default — kepisah dari nomor WA, punya `conversation_state`/memori/project aktif sendiri). Balasan: `whatsappClient.ts`'s `sendWhatsApp` cek `isCliSender(to)` (`src/cli/channel.ts`) — kalau iya, teksnya (+ opsi tombol jadi baris `[id] label`) di-`pushCliReply` ke ring buffer + fan-out ke listener SSE, **nggak** ke gateway. `sendWhatsAppImage`/`Document`/`Audio` cuma naruh catatan `[file: ...]`. `GET /cli/stream` (SSE) drain buffer + listen; `?replay=1` buat replay backlog (REPL pas reconnect; one-shot nggak). Digerbangi `X-Internal-Secret` + `CLI_ENABLED` — bukan `ALLOWED_SENDERS`.
 
 Tidak pakai Claude Agent SDK — tool-calling loop custom di `agent/loop.ts`, provider-agnostic lewat interface `Provider` (`agent/types.ts`) supaya bisa jalan di atas Gemini/OpenRouter/Qwen/provider OpenAI-compatible lain secara bergantian (fallback chain, lihat bagian Provider AI).
 

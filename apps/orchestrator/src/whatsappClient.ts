@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import { conversationRepo, sessionRepo } from "./db/index.js";
+import { isCliSender, pushCliReply } from "./cli/channel.js";
 
 export interface QuickReplyOption {
   // Sent back verbatim as the inbound message text when tapped — should be
@@ -19,12 +20,25 @@ export function setVoiceReplyHook(hook: VoiceReplyHook | undefined): void {
   voiceReplyHook = hook;
 }
 
+function logAssistantTurn(to: string, text: string): void {
+  const sessionId = conversationRepo.get(to)?.current_session_id;
+  if (sessionId) sessionRepo.append(to, sessionId, "assistant", text);
+}
+
 export async function sendWhatsApp(
   to: string,
   text: string,
   options?: QuickReplyOption[],
   listButtonLabel?: string
 ): Promise<void> {
+  if (isCliSender(to)) {
+    const opts = options?.length
+      ? "\n" + options.map((o) => `  [${o.id}]${o.title && o.title !== o.id ? ` ${o.title}` : ""}`).join("\n")
+      : "";
+    pushCliReply(text + opts);
+    logAssistantTurn(to, text);
+    return;
+  }
   try {
     const res = await fetch(`${config.gatewayUrl}/send`, {
       method: "POST",
@@ -55,6 +69,7 @@ export async function sendWhatsApp(
 }
 
 export async function sendWhatsAppAudio(to: string, mp3Base64: string): Promise<void> {
+  if (isCliSender(to)) return; // no audio in a terminal
   const res = await fetch(`${config.gatewayUrl}/send-audio`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Internal-Secret": config.internalSharedSecret },
@@ -66,6 +81,10 @@ export async function sendWhatsAppAudio(to: string, mp3Base64: string): Promise<
 }
 
 export async function sendWhatsAppImage(to: string, pngBase64: string, caption?: string): Promise<void> {
+  if (isCliSender(to)) {
+    pushCliReply(`[gambar ${Math.round((pngBase64.length * 3) / 4 / 1024)}KB${caption ? ` — ${caption}` : ""}]`);
+    return;
+  }
   const res = await fetch(`${config.gatewayUrl}/send-image`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Internal-Secret": config.internalSharedSecret },
@@ -86,6 +105,10 @@ export async function sendWhatsAppDocument(
   contentBase64: string,
   caption?: string
 ): Promise<void> {
+  if (isCliSender(to)) {
+    pushCliReply(`[file: ${filename}${caption ? ` — ${caption}` : ""}]`);
+    return;
+  }
   const res = await fetch(`${config.gatewayUrl}/send-document`, {
     method: "POST",
     headers: {

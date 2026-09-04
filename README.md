@@ -13,6 +13,7 @@ WhatsApp → Meta Cloud API → whatsapp-gateway (webhook) → orchestrator → 
 - **`apps/whatsapp-gateway`** — menerima webhook dari Meta, verifikasi signature, kirim balasan.
 - **`apps/orchestrator`** — registry project, routing perintah, menjalankan sesi agent per task, audit log, kirim progress ke WA.
   - **`src/agent/`** — tool-calling loop custom (bukan Claude Agent SDK): `loop.ts` (loop utamanya), `tools.ts` (tool `bash`/`read_file`/`write_file`/`edit_file`), `providers/` (adapter tiap penyedia AI). Provider dicoba berurutan sesuai `AI_PROVIDER_ORDER`; kalau satu gagal/kena rate limit, otomatis pindah ke provider berikutnya tanpa mengulang task dari awal.
+- **`apps/cli`** — front terminal opsional; nyetir agent yang sama lewat route `/cli/*` di orchestrator (lihat "Pakai lewat CLI").
 - **`workspaces/`** — clone lokal tiap repo yang terdaftar.
 - **`infra/`** — Dockerfile, docker-compose, Caddyfile untuk deploy.
 
@@ -186,6 +187,18 @@ Chromium-nya build `@sparticuz/chromium` (~60MB di image, unpack ke `/tmp` pas l
 ## Tanya-jawab soal kode (read-only)
 
 `tanya: <pertanyaan>` — mis. `tanya: gimana alur auth di project ini` atau `tanya: kenapa ada file scripts/foo.ts`. Agent baca-baca kode di project aktif (grep/find/`git log`/baca file, plus potongan RAG kalau nyala) terus jawab langsung — **tanpa** pipeline, tanpa branch, tanpa commit. Tool tulis (`write_file`/`edit_file`) dimatiin dan command bash yang keliatan mau ngubah sesuatu (commit/install/hapus/redirect) ditolak. Tanda titik dua wajib biar gak ketuker sama ngobrol biasa.
+
+## Pakai lewat CLI
+
+Selain WhatsApp, agent yang sama bisa dikendaliin dari terminal. Mati secara default — nyalain dengan `CLI_ENABLED=true` di `.env` orchestrator, terus restart. Aksesnya digerbangi `INTERNAL_SHARED_SECRET` juga, jadi cuma yang punya secret itu (biasanya di box yang sama) yang bisa masuk.
+
+```bash
+npm run cli                                  # REPL — ketik instruksi baris per baris
+npm run cli "tambahin endpoint /health"      # sekali jalan, print balasan sampai sepi terus keluar
+npm run cli --wait=30 "review PR 12"         # kasih jeda 30 detik sebelum dianggap sepi
+```
+
+CLI-nya nyambung ke orchestrator yang lagi jalan (`ORCHESTRATOR_URL`, default `http://localhost:4000`): tiap baris di-`POST` ke `/cli/message`, balasan di-stream balik lewat `/cli/stream` (SSE). Pakai satu identitas percakapan tetap (`CLI_SENDER_ID`, default `cli`) yang **terpisah** dari nomor WhatsApp — `pakai <project>`, memori, dan project aktifnya sendiri, kekunci lintas run. Semua command yang jalan di WhatsApp jalan di sini (`status`, `pakai`, `daftar model`, dst); tombol pilihan ditampilin sebagai `[id] label` yang tinggal diketik. Gambar/dokumen/voice cuma muncul sebagai catatan `[file: ...]` — terminal gak bisa nampilin.
 
 ## Kebijakan merge per-project
 

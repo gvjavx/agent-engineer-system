@@ -14,6 +14,8 @@
     "dev:orchestrator": "npm run dev --workspace apps/orchestrator",
     "start:gateway": "npm run start --workspace apps/whatsapp-gateway",
     "start:orchestrator": "npm run start --workspace apps/orchestrator",
+    "cli": "npm run start --workspace apps/cli --",
+    "dev:cli": "npm run dev --workspace apps/cli --",
     "test": "npm run test --workspaces --if-present"
   },
   "engines": {

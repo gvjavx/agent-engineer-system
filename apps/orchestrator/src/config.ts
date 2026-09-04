@@ -136,6 +136,15 @@ export const config = {
   // parallelism so a burst doesn't run every free-tier provider dry at once.
   maxConcurrentTasks: Math.max(1, Number(process.env.MAX_CONCURRENT_TASKS ?? 3)),
 
+  // A second way in besides WhatsApp: the /cli/* routes let a local CLI
+  // (apps/cli) drive the same agent. Gated by X-Internal-Secret + this flag;
+  // off by default. Uses one stable conversation identity so `pakai <project>`
+  // etc. persist. See src/cli/channel.ts.
+  cli: {
+    enabled: (process.env.CLI_ENABLED ?? "false").toLowerCase() === "true",
+    senderId: process.env.CLI_SENDER_ID || "cli",
+  },
+
   // Once-a-day unsolicited push to OWNER_WHATSAPP_NUMBER: last 24h of tasks
   // across all projects, today's schedules, provider usage. Off by default
   // (it's unsolicited). Hour is WIB, 0-23. See router/handler.ts's startDailyDigest.

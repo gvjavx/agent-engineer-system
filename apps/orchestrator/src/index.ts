@@ -14,6 +14,7 @@ import { isDuplicateInboundMessage } from "./inboundDedup.js";
 import { warmLocalEmbedder } from "./agent/localEmbedder.js";
 import { warmLocalLlm } from "./agent/localLlm.js";
 import { sandboxSummary } from "./agent/sandbox.js";
+import { attachCliListener, recentCliBuffer } from "./cli/channel.js";
 
 const app = express();
 
@@ -88,6 +89,43 @@ app.post("/internal/figma-oauth-callback", express.json(), (req, res) => {
     .catch((err) =>
       sendWhatsApp(fromNumber, `Gagal nyambungin Figma: ${err instanceof Error ? err.message : String(err)}`)
     );
+});
+
+// Second way in besides WhatsApp (apps/cli). Gated by the internal secret +
+// CLI_ENABLED; drives the same handleInboundMessage under one fixed identity
+// (config.cli.senderId), so `pakai <project>` and memory carry across runs.
+function cliAuthed(req: express.Request): boolean {
+  return config.cli.enabled && req.header("X-Internal-Secret") === config.internalSharedSecret;
+}
+
+app.post("/cli/message", express.json({ limit: "1mb" }), (req, res) => {
+  if (!cliAuthed(req)) return res.sendStatus(config.cli.enabled ? 401 : 403);
+  const { text } = req.body as { text?: string };
+  if (!text || !text.trim()) return res.status(400).json({ error: "Missing 'text'" });
+  res.sendStatus(202);
+  handleInboundMessage(config.cli.senderId, text.trim()).catch((err) =>
+    console.error("Unhandled error handling CLI message:", err)
+  );
+});
+
+app.get("/cli/stream", (req, res) => {
+  if (!cliAuthed(req)) return res.sendStatus(config.cli.enabled ? 401 : 403);
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  // Only replay the backlog when asked (the REPL wants to catch up on a
+  // reconnect; a one-shot invocation doesn't want stale lines).
+  if (req.query.replay === "1") {
+    for (const line of recentCliBuffer()) res.write(`data: ${JSON.stringify(line)}\n\n`);
+  }
+  const detach = attachCliListener((line) => res.write(`data: ${JSON.stringify(line)}\n\n`));
+  const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
+  req.on("close", () => {
+    clearInterval(ping);
+    detach();
+  });
 });
 
 app.get("/healthz", (_req, res) => res.sendStatus(200));
