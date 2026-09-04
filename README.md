@@ -190,15 +190,40 @@ Chromium-nya build `@sparticuz/chromium` (~60MB di image, unpack ke `/tmp` pas l
 
 ## Pakai lewat CLI
 
-Selain WhatsApp, agent yang sama bisa dikendaliin dari terminal. Mati secara default — nyalain dengan `CLI_ENABLED=true` di `.env` orchestrator, terus restart. Aksesnya digerbangi `INTERNAL_SHARED_SECRET` juga, jadi cuma yang punya secret itu (biasanya di box yang sama) yang bisa masuk.
+Selain WhatsApp, agent yang sama bisa dikendaliin dari terminal. Mati secara default.
+
+**Nyalain di orchestrator:** set `CLI_ENABLED=true` di `.env`, restart orchestrator-nya. Aksesnya digerbangi `INTERNAL_SHARED_SECRET` — cuma yang punya secret itu yang bisa masuk.
+
+**Install di device yang sama dengan orchestrator** (paling gampang):
 
 ```bash
-npm run cli                                  # REPL — ketik instruksi baris per baris
-npm run cli "tambahin endpoint /health"      # sekali jalan, print balasan sampai sepi terus keluar
-npm run cli --wait=30 "review PR 12"         # kasih jeda 30 detik sebelum dianggap sepi
+npm install && npm run build          # sekali, di root repo
+npm run cli                           # REPL — ketik instruksi baris per baris
+npm run cli "tambahin endpoint /health"   # sekali jalan: kirim, print balasan sampai sepi, keluar
+npm run cli --wait=30 "review PR 12"      # jeda 30 detik sebelum dianggap sepi
 ```
 
-CLI-nya nyambung ke orchestrator yang lagi jalan (`ORCHESTRATOR_URL`, default `http://localhost:4000`): tiap baris di-`POST` ke `/cli/message`, balasan di-stream balik lewat `/cli/stream` (SSE). Pakai satu identitas percakapan tetap (`CLI_SENDER_ID`, default `cli`) yang **terpisah** dari nomor WhatsApp — `pakai <project>`, memori, dan project aktifnya sendiri, kekunci lintas run. Semua command yang jalan di WhatsApp jalan di sini (`status`, `pakai`, `daftar model`, dst); tombol pilihan ditampilin sebagai `[id] label` yang tinggal diketik. Gambar/dokumen/voice cuma muncul sebagai catatan `[file: ...]` — terminal gak bisa nampilin.
+Mau jadi command global `mas-ade`:
+
+```bash
+npm i -g ./apps/cli        # atau: cd apps/cli && npm link
+mas-ade "status"
+```
+
+**Install di device lain** (orchestrator di VPS): port orchestrator (4000) sengaja nggak diexpose ke internet, jadi tembus lewat SSH tunnel:
+
+```bash
+ssh -N -L 4000:localhost:4000 user@vps-kamu      # biarin jalan di terminal lain
+# di device, set INTERNAL_SHARED_SECRET (sama persis dengan yang di VPS) + ORCHESTRATOR_URL=http://localhost:4000
+git clone <repo-ini> && cd agent-engineer-system && npm i -g ./apps/cli
+INTERNAL_SHARED_SECRET=... ORCHESTRATOR_URL=http://localhost:4000 mas-ade "status"
+```
+
+(Kalau device-nya nggak punya checkout repo, `apps/cli` cuma butuh satu file + `dotenv` — atau nol dependency kalau env var-nya kamu `export` langsung. dotenv-nya opsional.)
+
+Jangan expose `/cli/*` langsung ke internet lewat Caddy kecuali kamu terima risikonya: secret-nya jadi bearer token di jalur publik, bocor = kendali penuh atas agent. SSH tunnel jauh lebih aman.
+
+**Cara kerjanya:** CLI nyambung ke orchestrator yang lagi jalan (`ORCHESTRATOR_URL`, default `http://localhost:4000`) — tiap baris di-`POST` ke `/cli/message`, balasan di-stream balik lewat `/cli/stream` (SSE). Pakai satu identitas percakapan tetap (`CLI_SENDER_ID`, default `cli`) yang **terpisah** dari nomor WhatsApp — `pakai <project>`, memori, dan project aktifnya sendiri, kekunci lintas run. Semua command WhatsApp jalan di sini juga; tombol pilihan ditampilin sebagai `[id] label` yang tinggal diketik. Gambar/dokumen/voice cuma muncul sebagai catatan `[file: ...]`.
 
 ## Kebijakan merge per-project
 

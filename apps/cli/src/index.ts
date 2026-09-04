@@ -1,7 +1,7 @@
+#!/usr/bin/env node
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import dotenv from "dotenv";
 
 // A terminal front for the same agent WhatsApp drives. It POSTs each line to
 // the running orchestrator's /cli/message and prints replies streamed back
@@ -9,8 +9,16 @@ import dotenv from "dotenv";
 // shared INTERNAL_SHARED_SECRET.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// apps/cli/src (or dist) -> repo root, same as the orchestrator's config.ts
-dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env") });
+// Load the monorepo's root .env when present (apps/cli/dist -> repo root), so
+// running from a checkout Just Works. dotenv is optional — a standalone copy
+// with the env vars exported directly still runs.
+try {
+  const dotenv = await import("dotenv");
+  dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env"), quiet: true });
+  dotenv.config({ quiet: true }); // also a .env in the current dir, if any
+} catch {
+  /* no dotenv installed — rely on the process environment */
+}
 
 const BASE = (process.env.ORCHESTRATOR_URL ?? "http://localhost:4000").replace(/\/$/, "");
 const SECRET = process.env.INTERNAL_SHARED_SECRET;
