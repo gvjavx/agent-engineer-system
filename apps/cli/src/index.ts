@@ -3,30 +3,28 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
-// A terminal front for the same agent WhatsApp drives. It POSTs each line to
-// the running orchestrator's /cli/message and prints replies streamed back
-// over /cli/stream (SSE). Needs CLI_ENABLED=true on the orchestrator and the
-// shared INTERNAL_SHARED_SECRET.
+// Terminal front for the same agent WhatsApp drives. POSTs each line to the
+// running orchestrator's /cli/message and prints replies streamed back over
+// /cli/stream (SSE). Needs CLI_ENABLED=true on the orchestrator + the shared
+// INTERNAL_SHARED_SECRET.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 try {
   const dotenv = await import("dotenv");
   dotenv.config({ path: path.resolve(__dirname, "..", "..", "..", ".env"), quiet: true });
-  dotenv.config({ quiet: true }); // also a .env in the current dir, if any
+  dotenv.config({ quiet: true });
 } catch {
-  /* no dotenv installed — rely on the process environment */
+  /* no dotenv — rely on the environment */
 }
 
 const BASE = (process.env.ORCHESTRATOR_URL ?? "http://localhost:4000").replace(/\/$/, "");
 const SECRET = process.env.INTERNAL_SHARED_SECRET;
+const CLI_READY = " cli-ready"; // first SSE event from /cli/stream
 
-// Sent by the orchestrator as the first SSE event — see /cli/stream.
-const CLI_READY = " cli-ready";
+// ── colours ────────────────────────────────────────────────────────────────
 
-// ── look & feel ─────────────────────────────────────────────────────────────
-
-const COLOR =
-  process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== "dumb";
+const TTY = process.stdout.isTTY === true;
+const COLOR = TTY && !process.env.NO_COLOR && process.env.TERM !== "dumb";
 const paint =
   (code: string) =>
   (s: string): string =>
@@ -38,24 +36,27 @@ const green = paint("32");
 const yellow = paint("33");
 const cyan = paint("36");
 const magenta = paint("35");
+const vlen = (s: string): number => s.replace(/\x1b\[[0-9;]*m/g, "").length;
 
-const width = (s: string): number => s.replace(/\x1b\[[0-9;]*m/g, "").length;
-const PROMPT = COLOR ? cyan("❯ ") : "> ";
+// ── logo ───────────────────────────────────────────────────────────────────
 
-function banner(): void {
-  const inner = 52;
-  const box = (s = "") => `${dim("│")} ${s}${" ".repeat(Math.max(0, inner - width(s)))} ${dim("│")}`;
-  console.log(dim("╭" + "─".repeat(inner + 2) + "╮"));
-  console.log(box(`${magenta("✳")}  ${bold("Mas ADE")} ${dim("— terminal")}`));
-  console.log(box(dim(BASE)));
-  console.log(dim("╰" + "─".repeat(inner + 2) + "╯"));
-  console.log(dim("  Ketik instruksi bebas, atau command kaya di WhatsApp (status, pakai <project>, …)."));
-  console.log(dim("  Ctrl+C buat keluar."));
+const LOGO = [
+  "█▀▄▀█ ▄▀█ █▀   ▄▀█ █▀▄ █▀▀",
+  "█░▀░█ █▀█ ▄█   █▀█ █▄▀ ██▄",
+];
+
+function intro(): void {
+  console.log();
+  for (const row of LOGO) console.log("  " + magenta(row));
+  console.log();
+  console.log("  " + dim("AI dev team di terminal") + "   " + dim("·") + "   " + dim(BASE));
+  console.log("  " + dim("Ketik instruksi bebas atau command WhatsApp (status, pakai <project>, tanya: …)."));
+  console.log("  " + dim("Ctrl+C buat keluar."));
   console.log();
 }
 
-// Render one streamed reply. First physical line gets a bullet; wrapped lines
-// (and the "  [id] label" option rows) are indented under it.
+// ── reply rendering ────────────────────────────────────────────────────────
+
 function printReply(text: string): void {
   const lines = text.split("\n");
   const meta = /^\s*\[(sistem|file|gambar)[:\]]/.test(lines[0]);
@@ -66,16 +67,21 @@ function printReply(text: string): void {
   });
 }
 
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+// ── spinner ────────────────────────────────────────────────────────────────
+
+const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const WORDS = ["mikir", "nyusun", "ngerjain", "ngoprek", "nyari", "nulis"];
 let spinTimer: NodeJS.Timeout | undefined;
 let spinStart = 0;
-function startSpinner(label = "mikir"): void {
+let spinWord = WORDS[0];
+function startSpinner(): void {
   if (!COLOR || spinTimer) return;
   spinStart = Date.now();
+  spinWord = WORDS[Math.floor(Math.random() * WORDS.length)];
   let f = 0;
   const tick = () => {
-    const secs = Math.floor((Date.now() - spinStart) / 1000);
-    process.stdout.write(`\r${magenta(SPINNER[(f = (f + 1) % SPINNER.length)])} ${dim(`${label}… ${secs}s`)}\x1b[K`);
+    const s = Math.floor((Date.now() - spinStart) / 1000);
+    process.stdout.write(`\r${magenta(FRAMES[(f = (f + 1) % FRAMES.length)])} ${dim(`${spinWord}… ${s}s`)}\x1b[K`);
   };
   tick();
   spinTimer = setInterval(tick, 90);
@@ -131,11 +137,11 @@ async function* streamReplies(replay: boolean, signal: AbortSignal): AsyncGenera
         .filter((l) => l.startsWith("data:"))
         .map((l) => l.slice(5).trimStart())
         .join("");
-      if (!data) continue; // keepalive comment
+      if (!data) continue;
       try {
         yield JSON.parse(data) as string;
       } catch {
-        /* not a data event we care about */
+        /* ignore */
       }
     }
   }
@@ -167,9 +173,6 @@ async function main(): Promise<void> {
 
   // ── one-shot ──
   if (message) {
-    // Subscribe before sending so a fast reply isn't missed. Wait for the
-    // ready sentinel, or ~1.5s, whichever comes first (works even against an
-    // orchestrator too old to send the sentinel).
     const gen = streamReplies(false, ac.signal);
     try {
       await Promise.race([gen.next(), new Promise((r) => setTimeout(r, 1500))]);
@@ -202,17 +205,59 @@ async function main(): Promise<void> {
   }
 
   // ── REPL ──
-  banner();
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: PROMPT });
+  if (COLOR) intro();
+  else console.log(`Mas ADE — ${BASE}  (Ctrl+C keluar)`);
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: COLOR ? "" : "> ",
+    historySize: 200,
+  });
+
+  const frameWidth = () => Math.min(Math.max((process.stdout.columns || 80) - 2, 24), 78);
+  let frameUp = false;
+
+  // Three-line input frame: top rule with the label, the prompt line
+  // (readline owns it), a bottom rule. Cursor is left on the prompt line.
+  function drawFrame(): void {
+    if (!COLOR) {
+      rl.prompt();
+      frameUp = true;
+      return;
+    }
+    const w = frameWidth();
+    const top = dim("╭─ ") + magenta("Mas ADE") + " " + dim("─".repeat(Math.max(1, w - 9)) + "╮");
+    const bot = dim("╰" + "─".repeat(w) + "╯");
+    process.stdout.write(top + "\n");
+    rl.setPrompt(dim("│") + "  " + cyan("❯ "));
+    rl.prompt();
+    process.stdout.write("\x1b7\n" + bot + "\x1b8"); // save cursor, drop, draw bottom, restore
+    frameUp = true;
+  }
+
+  // Print something while the frame is showing without corrupting it: clear
+  // the prompt line + top rule, render, wipe the stale bottom rule, redraw.
+  function emitAboveFrame(render: () => void): void {
+    if (!COLOR) {
+      render();
+      rl.prompt();
+      return;
+    }
+    process.stdout.write("\r\x1b[K\x1b[1A\r\x1b[K");
+    render();
+    process.stdout.write("\x1b[0J");
+    drawFrame();
+  }
 
   let backToPrompt: NodeJS.Timeout | undefined;
   const armPrompt = () => {
     if (backToPrompt) clearTimeout(backToPrompt);
-    // agent went quiet -> hand the prompt back
     backToPrompt = setTimeout(() => {
       stopSpinner();
       rl.resume();
-      rl.prompt();
+      if (COLOR) console.log();
+      drawFrame();
     }, 2500);
   };
 
@@ -220,10 +265,14 @@ async function main(): Promise<void> {
     try {
       for await (const line of streamReplies(true, ac.signal)) {
         if (line === CLI_READY) continue;
-        stopSpinner();
-        printReply(line);
-        startSpinner();
-        armPrompt();
+        if (frameUp) {
+          emitAboveFrame(() => printReply(line));
+        } else {
+          stopSpinner();
+          printReply(line);
+          startSpinner();
+          armPrompt();
+        }
       }
     } catch (e) {
       stopSpinner();
@@ -231,11 +280,21 @@ async function main(): Promise<void> {
     }
   })();
 
-  rl.prompt();
+  // After Enter the cursor sits on the bottom-rule row; wipe all three frame
+  // rows so the prompt doesn't stack on redraw.
+  const clearFrame = () => process.stdout.write("\r\x1b[K\x1b[1A\r\x1b[K\x1b[1A\r\x1b[K");
+
+  drawFrame();
   rl.on("line", async (line) => {
+    if (COLOR) clearFrame();
+    frameUp = false;
     const t = line.trim();
-    if (!t) return rl.prompt();
-    rl.pause(); // agent's turn — prompt comes back on armPrompt()
+    if (!t) {
+      drawFrame();
+      return;
+    }
+    if (COLOR) console.log(dim("❯ ") + t);
+    rl.pause();
     await send(t);
     startSpinner();
     armPrompt();
