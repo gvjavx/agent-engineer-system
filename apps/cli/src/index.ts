@@ -43,33 +43,27 @@ const paint =
   (s: string): string =>
     COLOR ? `\x1b[${code}m${s}\x1b[0m` : s;
 const dim = paint("2");
-const bold = paint("1");
 const red = paint("31");
 const green = paint("32");
 const yellow = paint("33");
 const cyan = paint("36");
 const magenta = paint("35");
 
-// One colour each for the A / D / E — the initials of Ai · Developer · Engineer.
-const cA = paint("31"); // red
-const cD = paint("33"); // yellow
-const cE = paint("36"); // cyan
-const acronym = (): string => `${bold("Mas")} ${cA("A")}${cD("D")}${cE("E")}`;
-const titleFull = (): string =>
-  `${bold("Mas")} ${dim("(")}${cA("A")}i ${cD("D")}eveloper ${cE("E")}ngineer${dim(")")}`;
+// The wordmark: white "Mas (Ai Developer Engineer)" with the A / D / E — the
+// initials of Ai · Developer · Engineer — in orange. Built with raw SGR so the
+// bold+white base carries through and orange only swaps the foreground.
+const _O = COLOR ? "\x1b[1;38;5;208m" : ""; // bold orange
+const _W = COLOR ? "\x1b[1;97m" : ""; // bold bright-white
+const _R = COLOR ? "\x1b[0m" : "";
+const TITLE = `${_W}Mas (${_O}A${_W}i ${_O}D${_W}eveloper ${_O}E${_W}ngineer)${_R}`;
+// Compact form for the input-frame label — same colours.
+const acronym = (): string => `${_W}Mas ${_O}A${_O}D${_O}E${_R}`;
 
-// ── logo ───────────────────────────────────────────────────────────────────
-
-const LOGO = [
-  "█▀▄▀█ ▄▀█ █▀   ▄▀█ █▀▄ █▀▀",
-  "█░▀░█ █▀█ ▄█   █▀█ █▄▀ ██▄",
-];
+// ── intro ──────────────────────────────────────────────────────────────────
 
 function intro(): void {
   console.log();
-  for (const row of LOGO) console.log("  " + magenta(row));
-  console.log();
-  console.log("  " + titleFull());
+  console.log("  " + TITLE);
   console.log("  " + dim("AI dev team di terminal") + "   " + dim("·") + "   " + dim(BASE));
   console.log("  " + dim("Ketik instruksi bebas atau command WhatsApp (status, pakai <project>, tanya: …)."));
   console.log("  " + dim("Ctrl+C buat keluar."));
