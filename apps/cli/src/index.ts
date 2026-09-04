@@ -197,6 +197,85 @@ async function send(text: string): Promise<void> {
   if (res.status !== 202) console.error(red(`orchestrator nolak (${res.status}): ${(await res.text()).slice(0, 200)}`));
 }
 
+interface SessionMeta {
+  id: string;
+  firstAt: string;
+  lastAt: string;
+  turns: number;
+  preview: string;
+}
+interface Turn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+async function getSessions(): Promise<SessionMeta[]> {
+  try {
+    const res = await fetch(`${BASE}/cli/sessions`, { headers: { "X-Internal-Secret": SECRET! } });
+    if (!res.ok) return [];
+    return ((await res.json()) as { sessions: SessionMeta[] }).sessions ?? [];
+  } catch {
+    return [];
+  }
+}
+
+async function postSession(body: { action: "new" | "resume"; id?: string }): Promise<Turn[]> {
+  try {
+    const res = await fetch(`${BASE}/cli/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Internal-Secret": SECRET! },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return [];
+    return ((await res.json()) as { transcript?: Turn[] }).transcript ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function ago(iso: string): string {
+  const m = Math.max(0, (Date.now() - Date.parse(iso)) / 60000);
+  if (m < 1) return "barusan";
+  if (m < 60) return `${Math.round(m)}m lalu`;
+  if (m < 60 * 24) return `${Math.round(m / 60)}j lalu`;
+  return `${Math.round(m / 1440)}h lalu`;
+}
+
+function printTranscript(rows: Turn[]): void {
+  if (!rows.length) return;
+  console.log(dim("  ┄ sesi sebelumnya ┄"));
+  for (const r of rows.slice(-24)) {
+    const who = r.role === "user" ? "kamu" : "ade ";
+    console.log(dim(`  ${who} › ${r.content.split("\n")[0].slice(0, 100)}`));
+  }
+  console.log(dim("  ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"));
+}
+
+// Startup picker: continue a past conversation or start a new one.
+async function pickSession(rl: readline.Interface): Promise<void> {
+  const sessions = await getSessions();
+  if (!sessions.length) {
+    await postSession({ action: "new" });
+    return;
+  }
+  console.log(dim("  Sesi sebelumnya:"));
+  sessions.slice(0, 6).forEach((s, i) => {
+    const prev = (s.preview || "(kosong)").replace(/\s+/g, " ").slice(0, 46);
+    console.log(`  ${cyan(String(i + 1))}  ${dim(`${ago(s.lastAt)} · ${s.turns} pesan · ${prev}`)}`);
+  });
+  console.log(`  ${cyan("b")}  ${dim("mulai sesi baru")}`);
+  const ans = (await new Promise<string>((r) => rl.question(`  pilih [${cyan("1")}]: `, r))).trim().toLowerCase();
+  if (["b", "baru", "n", "new"].includes(ans)) {
+    await postSession({ action: "new" });
+    console.log(dim("  sesi baru.\n"));
+    return;
+  }
+  const idx = ans === "" ? 0 : Number(ans) - 1;
+  const s = sessions[Number.isInteger(idx) && idx >= 0 && idx < sessions.length ? idx : 0];
+  console.log(dim(`  lanjutin sesi (${s.turns} pesan).\n`));
+  printTranscript(await postSession({ action: "resume", id: s.id }));
+}
+
 async function* streamReplies(replay: boolean, signal: AbortSignal): AsyncGenerator<string> {
   const res = await fetch(`${BASE}/cli/stream${replay ? "?replay=1" : ""}`, {
     headers: { "X-Internal-Secret": SECRET! },
@@ -240,8 +319,10 @@ async function main(): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(
       `${SELF.name} ${SELF.version}\n\n` +
-        `  mas-ade                 REPL\n` +
+        `  mas-ade                 REPL (pilih sesi lama / baru pas mulai)\n` +
         `  mas-ade "<instruksi>"   sekali jalan\n` +
+        `  mas-ade --continue      lanjutin sesi terakhir, skip pilihan\n` +
+        `  mas-ade --new           langsung sesi baru, skip pilihan\n` +
         `  mas-ade --wait=<detik>  jeda sepi buat one-shot (default 8)\n` +
         `  mas-ade --no-update     skip cek versi baru sekali ini\n\n` +
         `  env: INTERNAL_SHARED_SECRET (wajib), ORCHESTRATOR_URL (default http://localhost:4000)\n` +
@@ -316,12 +397,33 @@ async function main(): Promise<void> {
     historySize: 200,
   });
 
+  // Register this before the first await below: with piped/closed stdin
+  // readline fires "close" during the session picker, and anything that
+  // touches rl afterwards (drawFrame's rl.prompt()) throws ERR_USE_AFTER_CLOSE.
+  let closed = false;
+  rl.on("close", () => {
+    closed = true;
+    quit(0);
+  });
+
+  // Session: continue a past one or start fresh.
+  if (args.includes("--new")) {
+    await postSession({ action: "new" });
+  } else if (args.includes("--continue") || args.includes("-c")) {
+    const [latest] = await getSessions();
+    if (latest) printTranscript(await postSession({ action: "resume", id: latest.id }));
+    else await postSession({ action: "new" });
+  } else {
+    await pickSession(rl);
+  }
+
   const frameWidth = () => Math.min(Math.max((process.stdout.columns || 80) - 2, 24), 78);
   let frameUp = false;
 
   // Three-line input frame: top rule with the label, the prompt line
   // (readline owns it), a bottom rule. Cursor is left on the prompt line.
   function drawFrame(): void {
+    if (closed) return;
     if (!FANCY) {
       rl.prompt();
       frameUp = true;
@@ -401,7 +503,6 @@ async function main(): Promise<void> {
     startSpinner();
     armPrompt();
   });
-  rl.on("close", () => quit(0));
 }
 
 main().catch((err) => {

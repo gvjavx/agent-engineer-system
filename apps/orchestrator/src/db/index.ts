@@ -791,4 +791,26 @@ export const sessionRepo = {
       .all(fromNumber, prior.session_id, SESSION_HISTORY_TRANSCRIPT_LIMIT) as SessionTurn[];
     return { sessionId: prior.session_id, messages: rows.reverse() };
   },
+  // Recent sessions for a number, newest-last-activity first, with a first-
+  // user-message preview — for the CLI's "continue / new" picker at startup.
+  list(fromNumber: string, limit = 8): { id: string; firstAt: string; lastAt: string; turns: number; preview: string }[] {
+    return db
+      .prepare(
+        `SELECT session_id AS id, MIN(created_at) AS firstAt, MAX(created_at) AS lastAt, COUNT(*) AS turns,
+           (SELECT content FROM session_log x WHERE x.from_number = session_log.from_number
+              AND x.session_id = session_log.session_id AND x.role = 'user'
+              ORDER BY x.created_at ASC LIMIT 1) AS preview
+         FROM session_log WHERE from_number = ?
+         GROUP BY session_id ORDER BY lastAt DESC LIMIT ?`
+      )
+      .all(fromNumber, limit) as { id: string; firstAt: string; lastAt: string; turns: number; preview: string }[];
+  },
+  transcript(fromNumber: string, sessionId: string, limit = 40): SessionTurn[] {
+    const rows = db
+      .prepare(
+        "SELECT role, content FROM session_log WHERE from_number = ? AND session_id = ? ORDER BY created_at DESC LIMIT ?"
+      )
+      .all(fromNumber, sessionId, limit) as SessionTurn[];
+    return rows.reverse();
+  },
 };
