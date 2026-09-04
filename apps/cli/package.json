@@ -24,7 +24,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gvjavx/mas-ade.git"
+    "url": "git+https://github.com/gvjavx/agent-engineer-system.git",
+    "directory": "apps/cli"
+  },
+  "homepage": "https://github.com/gvjavx/agent-engineer-system/tree/main/apps/cli#readme",
+  "bugs": {
+    "url": "https://github.com/gvjavx/agent-engineer-system/issues"
   },
   "publishConfig": {
     "access": "public"
