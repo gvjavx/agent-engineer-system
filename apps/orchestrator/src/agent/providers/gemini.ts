@@ -8,6 +8,9 @@ export interface GeminiProviderOptions {
   model: string;
   // Separate model for text-to-speech — the chat model can't do AUDIO output.
   ttsModel?: string;
+  // Candidate models for image generation, tried in order — likewise, the
+  // chat model can't emit IMAGE. Only set when image generation is configured.
+  imageModels?: string[];
 }
 
 // Gemini's Content.role only accepts 'user' or 'model' — tool results are
@@ -80,12 +83,15 @@ export class GeminiProvider implements Provider {
   private client: GoogleGenAI;
   // Only defined when a TTS model was configured — voiceReply.ts checks for it.
   synthesizeSpeech?: (text: string, signal: AbortSignal) => Promise<{ base64Pcm: string; sampleRate: number }>;
+  // Only defined when an image model was configured — imageGeneration.ts checks for it.
+  generateImage?: (prompt: string, signal: AbortSignal) => Promise<{ base64: string; mimeType: string }>;
 
   constructor(options: GeminiProviderOptions) {
     this.client = new GoogleGenAI({ apiKey: options.apiKey });
     this.model = options.model;
     this.id = `gemini@${options.model}#${crypto.createHash("sha1").update(options.apiKey).digest("hex").slice(0, 8)}`;
     if (options.ttsModel) this.synthesizeSpeech = this.makeSynthesizeSpeech(options.ttsModel);
+    if (options.imageModels?.length) this.generateImage = this.makeGenerateImage(options.imageModels);
   }
 
   private makeSynthesizeSpeech(ttsModel: string) {
@@ -110,6 +116,40 @@ export class GeminiProvider implements Provider {
       if (!data) throw new ProviderError(this.name, "TTS: respons nggak bawa audio");
       const rate = Number(/rate=(\d+)/.exec(part?.inlineData?.mimeType ?? "")?.[1]) || 24000;
       return { base64Pcm: data, sampleRate: rate };
+    };
+  }
+
+  private makeGenerateImage(imageModels: string[]) {
+    return async (prompt: string, signal: AbortSignal): Promise<{ base64: string; mimeType: string }> => {
+      const failures: string[] = [];
+      let lastErr: unknown;
+      for (const model of imageModels) {
+        try {
+          const response = await this.client.models.generateContent({
+            model,
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            // These models return an image part plus a short text part; ask for
+            // both since IMAGE-only is rejected by some of them.
+            config: {
+              responseModalities: ["IMAGE", "TEXT"],
+              abortSignal: signal,
+              httpOptions: { timeout: PROVIDER_REQUEST_TIMEOUT_MS },
+            },
+          });
+          const part = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+          const data = part?.inlineData?.data;
+          if (!data) throw new Error("respons nggak bawa gambar");
+          return { base64: data, mimeType: part?.inlineData?.mimeType ?? "image/png" };
+        } catch (err) {
+          lastErr = err;
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[image-gen] ${model}:`, message);
+          // Keep the model name + first line of each failure — the user only
+          // sees this via the WhatsApp reply, so all attempts have to be in it.
+          failures.push(`${model}: ${message.split("\n")[0].slice(0, 200)}`);
+        }
+      }
+      throw new ProviderError(this.name, failures.join(" | "), lastErr, extractHttpStatus(lastErr));
     };
   }
 
@@ -174,7 +214,9 @@ export class GeminiProvider implements Provider {
 
   async transcribeAudio(base64Data: string, mimeType: string, signal: AbortSignal): Promise<string> {
     const prompt =
-      "Transcribe this WhatsApp voice note verbatim. It is most likely Indonesian and may mix in English technical terms — keep those as spoken. Output only the transcription, no preamble, no translation, no timestamps.";
+      "Transcribe this WhatsApp voice note verbatim. The speaker is Indonesian and the language is Indonesian; keep English only for genuine technical terms actually said (git, deploy, endpoint, commit, dark mode, etc.). " +
+      "Do not substitute an English word that merely sounds like the Indonesian one: a short English word or phrase landing in the middle of an Indonesian sentence is almost always the Indonesian word it rhymes with — \"hurry up\" is \"hari apa\", \"jump\" is \"jam\", \"my\"/\"mao\" is \"mau\", \"kiss\"/\"quiz\" is \"kuis\", \"click\"/\"trick\" is \"klik\", \"tolong\" not \"too long\". Prefer the reading that makes sense in the sentence. " +
+      "Output only the transcription, no preamble, no translation, no timestamps.";
     let response;
     try {
       response = await this.client.models.generateContent({

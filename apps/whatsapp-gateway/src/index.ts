@@ -225,18 +225,26 @@ app.post("/send-audio", express.json({ limit: "10mb" }), async (req, res) => {
   }
 });
 
-// Internal endpoint: orchestrator calls this to send an image (currently the
-// "screenshot" command's PNG). Bytes come over as base64.
+// Internal endpoint: orchestrator calls this to send an image — the
+// "screenshot" PNG, or a generated image which may be jpeg/webp. Bytes come
+// over as base64; mimeType is optional and defaults to PNG.
+const IMAGE_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
 app.post("/send-image", express.json({ limit: "20mb" }), async (req, res) => {
   if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
     return res.sendStatus(401);
   }
-  const { to, pngBase64, caption } = req.body as { to?: string; pngBase64?: string; caption?: string };
+  const { to, pngBase64, mimeType, caption } = req.body as {
+    to?: string;
+    pngBase64?: string;
+    mimeType?: string;
+    caption?: string;
+  };
   if (!to || !pngBase64) {
     return res.status(400).json({ error: "Missing 'to' or 'pngBase64'" });
   }
+  const type = mimeType && IMAGE_EXT[mimeType] ? mimeType : "image/png";
   try {
-    const mediaId = await uploadMedia(Buffer.from(pngBase64, "base64"), "screenshot.png", "image/png");
+    const mediaId = await uploadMedia(Buffer.from(pngBase64, "base64"), `image.${IMAGE_EXT[type]}`, type);
     await sendWhatsAppImage(to, mediaId, caption);
     res.sendStatus(204);
   } catch (err) {

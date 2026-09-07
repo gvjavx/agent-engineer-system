@@ -72,6 +72,10 @@ import { checkNeedsClarification } from "../agent/requestClarity.js";
 import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/confirmationIntent.js";
 import { describeImage, mergeImageDescription } from "../agent/imageDescription.js";
 import { transcribeVoiceNote } from "../agent/audioTranscription.js";
+import { generateImageFromPrompt } from "../agent/imageGeneration.js";
+import { refineImagePrompt } from "../agent/imagePrompt.js";
+import { cloudflareImageProviders } from "../agent/cloudflareImage.js";
+import { generateDocument } from "../agent/documentGen.js";
 import { generateChatReply, needsConversationContext } from "../agent/chatAssistant.js";
 import type { Provider } from "../agent/types.js";
 import { explainInSimpleTerms, introduceYourself, explainHelp } from "../agent/dynamicReplies.js";
@@ -2212,6 +2216,47 @@ async function transcribeInboundVoiceNote(
   return transcript;
 }
 
+async function handleGenerateImageCommand(from: string, prompt: string, providers: Provider[]): Promise<void> {
+  // Cloudflare first — Gemini's image models 429 on a free key, so only fall
+  // through to them if Cloudflare isn't set up or fails.
+  const imageProviders = [...cloudflareImageProviders(), ...providers];
+  if (!imageProviders.some((p) => p.generateImage)) {
+    await sendWhatsApp(
+      from,
+      "Belum ada yang bisa bikin gambar. Set CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN di .env (Workers AI, gratis), atau pakai key Gemini yang image-gen-nya aktif."
+    );
+    return;
+  }
+
+  await sendWhatsApp(from, "Oke, bentar aku gambar dulu...");
+  const signal = new AbortController().signal;
+  const imagePrompt = await refineImagePrompt(prompt, providers[0], signal);
+  const result = await generateImageFromPrompt(imagePrompt, imageProviders, signal);
+  if (!result.ok) {
+    await sendWhatsApp(from, `Waduh, gagal bikin gambarnya. Errornya:\n${result.error}`);
+    return;
+  }
+  try {
+    await sendWhatsAppImage(from, result.base64, undefined, result.mimeType);
+  } catch (err) {
+    await sendWhatsApp(from, `Gambarnya jadi, tapi gagal kekirim: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function handleGenerateDocumentCommand(from: string, request: string, providers: Provider[]): Promise<void> {
+  await sendWhatsApp(from, "Oke, bentar aku susun dokumennya...");
+  const result = await generateDocument(request, providers, new AbortController().signal);
+  if (!result.ok) {
+    await sendWhatsApp(from, `Waduh, gagal bikin dokumennya. Errornya:\n${result.error}`);
+    return;
+  }
+  try {
+    await sendWhatsAppDocument(from, result.doc.filename, result.doc.mimeType, result.doc.base64);
+  } catch (err) {
+    await sendWhatsApp(from, `Dokumennya jadi, tapi gagal kekirim: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function handleImageMessage(
   from: string,
   caption: string,
@@ -2305,6 +2350,12 @@ async function tryHandleSemanticIntent(from: string, trimmed: string): Promise<b
       return true;
     case "session_history":
       await handleSessionHistoryCommand(from);
+      return true;
+    case "generate_image":
+      await handleGenerateImageCommand(from, trimmed, providers);
+      return true;
+    case "generate_document":
+      await handleGenerateDocumentCommand(from, trimmed, providers);
       return true;
     case "chat":
       await handleChatMessage(from, trimmed, providers[0]);

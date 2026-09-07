@@ -80,15 +80,23 @@ export async function sendWhatsAppAudio(to: string, mp3Base64: string): Promise<
   }
 }
 
-export async function sendWhatsAppImage(to: string, pngBase64: string, caption?: string): Promise<void> {
+export async function sendWhatsAppImage(
+  to: string,
+  imageBase64: string,
+  caption?: string,
+  // Defaults to PNG on the gateway side. Set it when the source isn't PNG
+  // (image-gen models can return jpeg/webp) — WhatsApp's media upload rejects
+  // a content-type that doesn't match the bytes.
+  mimeType?: string
+): Promise<void> {
   if (isCliSender(to)) {
-    pushCliReply(`[gambar ${Math.round((pngBase64.length * 3) / 4 / 1024)}KB${caption ? ` — ${caption}` : ""}]`);
+    pushCliReply(`[gambar ${Math.round((imageBase64.length * 3) / 4 / 1024)}KB${caption ? ` — ${caption}` : ""}]`);
     return;
   }
   const res = await fetch(`${config.gatewayUrl}/send-image`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Internal-Secret": config.internalSharedSecret },
-    body: JSON.stringify({ to, pngBase64, caption }),
+    body: JSON.stringify({ to, pngBase64: imageBase64, mimeType, caption }),
   });
   if (!res.ok) {
     throw new Error(`Gateway rejected image (${res.status}): ${await res.text()}`);

@@ -18,6 +18,8 @@ export const INTENTS = [
   "connect_figma",
   "session_history",
   "greeting",
+  "generate_image",
+  "generate_document",
   "chat",
   "task",
 ] as const;
@@ -38,12 +40,14 @@ stop — asking to cancel/stop the currently running task
 connect_figma — asking to connect/link a Figma account
 session_history — asking what was discussed in a previous conversation/session (e.g. "apa chat kita sebelumnya?", "riwayat obrolan kemarin apa?") — NOT asking about a currently running task's status (that's status)
 greeting — a greeting or small-talk opener with no other content (e.g. "halo", "hi", "apa kabar", "selamat pagi") — nothing else being asked yet
+generate_image — asking the bot to draw, paint, generate, or make a standalone image, illustration, picture, photo, logo, icon, or artwork as the thing being asked for (e.g. "buatkan gambar pohon", "gambarin kucing lucu", "bikinin logo warung kopi"). The bot generates the picture and sends it back. If the request is about a UI, screen, page, or component that lives inside an app/website, that's task, not this.
+generate_document — asking the bot to produce a finished document or office file as the deliverable itself — a report, proposal, letter, spreadsheet, slide deck — or naming a file format to get it in (e.g. "buatkan dokumen laporan penjualan", "bikinin proposal dalam pdf", "buat file excel daftar stok barang", "bikin slide presentasi company profile"). This is a one-off file, not a feature. If the thing being "made" is a page/screen/report/export INSIDE an app or codebase ("buatkan halaman laporan penjualan", "bikin fitur export ke excel"), that's task, not this.
 
-Anything that isn't one of the fixed commands above is one of these two:
-chat — general conversation: a question, opinion, comment, or small talk that is NOT asking the bot to build/fix/change anything right now and isn't one of the fixed commands. This includes hypothetical or meta questions about what the bot would do or how it works (e.g. "kalau saya minta bikin aplikasi dari nol, apa yang bakal kamu lakukan") — these ask ABOUT a process, they are not themselves a request to start one.
-task — an instruction or request to build, fix, change, deploy, or otherwise work on software/code, right now, however short or vague (e.g. "tambahin dark mode", "kenapa error terus", "benerin bug di halaman login"), and anything not confidently one of the categories above.
+Anything that isn't one of the categories above is one of these two:
+chat — general conversation: a question, opinion, comment, or small talk that is NOT asking the bot to build/fix/change anything right now and isn't one of the categories above. This includes hypothetical or meta questions about what the bot would do or how it works (e.g. "kalau saya minta bikin aplikasi dari nol, apa yang bakal kamu lakukan") — these ask ABOUT a process, they are not themselves a request to start one. It also includes asking the bot to look something up or check real-world / live information — weather, news, prices, exchange rates, scores, a definition, general trivia (e.g. "cek cuaca hari ini di Surabaya", "kurs dollar sekarang berapa") — even phrased as an order; the bot answers or says it can't, it does not start a coding task.
+task — an instruction or request to build, fix, change, deploy, or otherwise work on the user's own software/code/app/repo, right now, however short or vague (e.g. "tambahin dark mode", "kenapa error terus", "benerin bug di halaman login"), and anything not confidently one of the categories above. "cek"/"check" here means checking the user's own project (e.g. "cek kenapa build gagal"), not looking up outside facts.
 
-A message describing a hypothetical task ("kalau saya minta X", "misalnya saya mau Y") without actually requesting it right now is "chat", not "task". If genuinely unsure between chat and task, prefer task.
+A message describing a hypothetical task ("kalau saya minta X", "misalnya saya mau Y") without actually requesting it right now is "chat", not "task". If genuinely unsure between chat and task, prefer task. If genuinely unsure between generate_image / generate_document and task — i.e. the "picture" or "document" might be part of an app — prefer task.
 
 Reply with exactly one line, in exactly this format, nothing else:
 INTENT: <key>

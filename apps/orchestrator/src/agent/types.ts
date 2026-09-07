@@ -81,6 +81,10 @@ export interface Provider {
   // Optional: text-to-speech, for the opt-in voice-note reply (agent/voiceReply.ts).
   // Returns raw signed-16-bit PCM (base64) plus its sample rate.
   synthesizeSpeech?(text: string, signal: AbortSignal): Promise<{ base64Pcm: string; sampleRate: number }>;
+  // Optional, same reasoning as the others: only providers with an image-output
+  // model implement it. agent/imageGeneration.ts walks the chain and skips the
+  // rest. Returns the raw image bytes (base64) and their mime type.
+  generateImage?(prompt: string, signal: AbortSignal): Promise<{ base64: string; mimeType: string }>;
 }
 
 // Both the Gemini SDK's ApiError and the openai package's APIError expose a

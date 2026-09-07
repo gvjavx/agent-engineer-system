@@ -282,8 +282,30 @@ export const config = {
         // Only used by the opt-in voice-note reply (config.voiceReply). The
         // chat model can't emit AUDIO, so TTS needs its own model name.
         ttsModel: process.env.GEMINI_TTS_MODEL ?? "gemini-2.5-flash-preview-tts",
+        // Image generation ("buatkan gambar ..."). Separate model, same reason
+        // as TTS. Free-tier availability here is unstable and Google keeps
+        // renaming these — so it's a comma-separated candidate list tried in
+        // order, and GEMINI_IMAGE_MODEL overrides the whole list.
+        imageModels: parseApiKeys(
+          process.env.GEMINI_IMAGE_MODEL ??
+            "gemini-2.5-flash-image,gemini-2.5-flash-image-preview,gemini-2.0-flash-preview-image-generation"
+        ),
       }
     : undefined,
+
+  // Cloudflare Workers AI — the actually-free image generator for "buatkan
+  // gambar ..." (Gemini's image models need billing). Needs a free Cloudflare
+  // account: account id + an API token scoped to Workers AI. Tried before
+  // Gemini when set; absent, image requests fall back to Gemini (which will
+  // usually 429 on a free key).
+  cloudflareImage:
+    process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN
+      ? {
+          accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+          apiToken: process.env.CLOUDFLARE_API_TOKEN,
+          model: process.env.CLOUDFLARE_IMAGE_MODEL ?? "@cf/black-forest-labs/flux-1-schnell",
+        }
+      : undefined,
 
   // Code retrieval for the agent loop (agent/rag/*). Off by default. Embeds
   // with the local model (agent/localEmbedder.ts) — no key, no rate limit;

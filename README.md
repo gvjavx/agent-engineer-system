@@ -317,6 +317,15 @@ Batasan:
 - Maksimal 16MB per file — jauh di bawah limit dokumen WhatsApp (100MB) karena file dikirim base64 lewat panggilan internal, bukan streaming.
 - Kalau tipe file gak didukung atau kegedean, agent kasih tau jelas kenapa (bukan error mentah dari API).
 
+## Minta dibuatkan gambar atau dokumen
+
+Beda dari bagian di atas — ini bukan agent nyerahin file dari repo, tapi bikin file baru dari nol lewat chat, tanpa perlu ada project terdaftar.
+
+- **Gambar**: `buatkan gambar pohon di tepi sawah pas senja` → digenerate, dikirim balik sebagai gambar. Jalur utamanya **Cloudflare Workers AI** (`flux-1-schnell`) — gratis beneran, tinggal isi `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` di `.env`. Akun Cloudflare gratis; tokennya bikin lewat *Create Custom Token* dengan satu permission **Account / Workers AI / Read**. Kalau gak diisi, jatuh ke model image Gemini — tapi itu butuh billing aktif (tier gratisnya 429). Gagal di semua jalur → Mas ADE nempelin error aslinya di balasan, gak diam-diam. Sebelum digenerate, permintaanmu ditulis ulang jadi prompt Inggris yang deskriptif (flux dilatih pakai caption Inggris, jadi "buatkan gambar pohon" mentah hasilnya jelek) — satu panggilan AI kecil, jatuh ke versi teks yang dibersihkan kalau gagal.
+- **Dokumen**: `bikinin proposal sponsorship dalam pdf`, `buat file excel daftar stok`, `bikin slide company profile`. Mas ADE nyusun isinya lalu ngirim file-nya. Format: `pdf`, `docx`, `xlsx`, `pptx`, `csv`, `md`, `txt` — sebut kalau mau format tertentu, kalau nggak dia pilih sendiri (laporan/proposal → pdf, tabel data → xlsx, deck → pptx). Semua render pure-JS (PDF pakai `pdfmake`, bukan headless browser), jadi jalan di mesin dev maupun server.
+
+Permintaan panjang (lebih dari ~40 kata) lewat ke pipeline task biasa, bukan ke jalur ini — jadi buat gambar/dokumen, instruksinya singkat aja.
+
 ## Kirim gambar buat direview/dikerjain
 
 Kirim gambar (screenshot, mockup, error dialog, dsb) langsung dari WhatsApp — agent bakal "liat" isinya dulu lewat AI vision sebelum mulai kerja. Kalau gambarnya dikirim bareng caption (mis. "perbaiki tampilan sesuai screenshot ini"), caption + hasil liatan gambar langsung jadi instruksi, lewat alur konfirmasi rencana yang sama seperti instruksi teks biasa. Kirim tanpa caption juga boleh — agent bakal ceritain apa yang dia liat, terus nanya mau diapain, daripada nebak-nebak sendiri.
