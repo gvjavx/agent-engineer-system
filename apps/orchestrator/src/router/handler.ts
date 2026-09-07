@@ -75,6 +75,7 @@ import { transcribeVoiceNote } from "../agent/audioTranscription.js";
 import { generateImageFromPrompt } from "../agent/imageGeneration.js";
 import { refineImagePrompt, isFreshImageRequest, looksLikeCodeTask } from "../agent/imagePrompt.js";
 import { cloudflareImageProviders, cloudflareEditImage } from "../agent/cloudflareImage.js";
+import { huggingfaceEditImage } from "../agent/huggingfaceImage.js";
 import { generateDocument } from "../agent/documentGen.js";
 import { generateChatReply, needsConversationContext } from "../agent/chatAssistant.js";
 import type { Provider } from "../agent/types.js";
@@ -2298,29 +2299,53 @@ async function handleGenerateDocumentCommand(from: string, request: string, prov
   }
 }
 
+// Real img2img backends in order: Hugging Face (instruct-pix2pix) then
+// Cloudflare. Returns the edited image, or the joined errors so the caller
+// can decide to fall back.
+async function tryImg2Img(
+  prompt: string,
+  imageBase64: string,
+  signal: AbortSignal
+): Promise<{ base64: string; mimeType: string } | { error: string }> {
+  const errs: string[] = [];
+  if (config.huggingface) {
+    try {
+      return await huggingfaceEditImage(config.huggingface, prompt, imageBase64, signal);
+    } catch (e) {
+      errs.push(`hf: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (config.cloudflareImage) {
+    try {
+      return await cloudflareEditImage(config.cloudflareImage, prompt, imageBase64, signal);
+    } catch (e) {
+      errs.push(`cf: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { error: errs.join(" | ") || "gak ada backend edit gambar yang aktif" };
+}
+
 async function handleEditImageCommand(
   from: string,
   caption: string,
   image: { mimeType: string; base64Data: string }
 ): Promise<void> {
-  const cf = config.cloudflareImage;
-  if (!cf) return; // guarded by the caller, but keep the type narrowing local
+  if (!config.huggingface && !config.cloudflareImage) return; // guarded by the caller
   await sendWhatsApp(from, "Oke, bentar aku edit gambarnya...");
   const signal = new AbortController().signal;
   const providers = buildProviders(resolveManajemenProvider(from, conversationRepo.get(from)));
   const prompt = await refineImagePrompt(caption, providers[0], signal);
 
   let out: { base64: string; mimeType: string };
-  try {
-    out = await cloudflareEditImage(cf, prompt, image.base64Data, signal);
-  } catch (err) {
-    // img2img models are often not enabled on a free Cloudflare account
-    // (403 / "not allowed to access"). Fall back to describing the image and
-    // regenerating from that description plus the requested change.
-    const editErr = err instanceof Error ? err.message : String(err);
+  const edited = await tryImg2Img(prompt, image.base64Data, signal);
+  if ("base64" in edited) {
+    out = edited;
+  } else {
+    // Every img2img backend failed (usually account-gated models). Fall back
+    // to describing the image and regenerating from that plus the change.
     const description = await describeImage(image.base64Data, image.mimeType, caption, providers, signal);
     if (!description) {
-      await sendWhatsApp(from, `Waduh, gagal edit gambarnya. Errornya:\n${editErr}`);
+      await sendWhatsApp(from, `Waduh, gagal edit gambarnya. Errornya:\n${edited.error}`);
       return;
     }
     const regenPrompt = await refineImagePrompt(
@@ -2330,13 +2355,13 @@ async function handleEditImageCommand(
     );
     const regen = await generateImageFromPrompt(regenPrompt, [...cloudflareImageProviders(), ...providers], signal);
     if (!regen.ok) {
-      await sendWhatsApp(from, `Waduh, gagal edit gambarnya (${editErr}), dan bikin ulang juga gagal:\n${regen.error}`);
+      await sendWhatsApp(from, `Waduh, gagal edit gambarnya (${edited.error}), dan bikin ulang juga gagal:\n${regen.error}`);
       return;
     }
     out = regen;
     await sendWhatsApp(
       from,
-      "Model edit gambar gak bisa diakses akun Cloudflare ini, jadi aku bikinin versi baru dari deskripsi gambar + ubahanmu — komposisinya bisa beda dari aslinya."
+      "Model edit gambar gak bisa dipakai, jadi aku bikinin versi baru dari deskripsi gambar + ubahanmu — komposisinya bisa beda dari aslinya."
     );
   }
 
@@ -2363,7 +2388,12 @@ async function handleImageMessage(
   caption: string,
   image: { mimeType: string; base64Data: string }
 ): Promise<void> {
-  if (config.cloudflareImage && caption && IMAGE_EDIT_VERB_RE.test(caption) && !looksLikeCodeTask(caption)) {
+  if (
+    (config.huggingface || config.cloudflareImage) &&
+    caption &&
+    IMAGE_EDIT_VERB_RE.test(caption) &&
+    !looksLikeCodeTask(caption)
+  ) {
     await handleEditImageCommand(from, caption, image);
     return;
   }

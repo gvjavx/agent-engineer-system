@@ -314,6 +314,18 @@ export const config = {
         }
       : undefined,
 
+  // Hugging Face Inference — the image-edit ("ubah jadi ...") backend when
+  // Cloudflare's img2img models are account-gated. Free token, no card:
+  // huggingface.co/settings/tokens. instruct-pix2pix does instruction editing
+  // on the original image. Free tier is rate-limited and cold-starts (first
+  // call can 503 "model loading"); huggingfaceImage.ts retries that once.
+  huggingface: process.env.HF_API_TOKEN
+    ? {
+        apiToken: process.env.HF_API_TOKEN,
+        editModel: process.env.HF_IMAGE_EDIT_MODEL ?? "timbrooks/instruct-pix2pix",
+      }
+    : undefined,
+
   // Code retrieval for the agent loop (agent/rag/*). Off by default. Embeds
   // with the local model (agent/localEmbedder.ts) — no key, no rate limit;
   // needs @huggingface/transformers installed, absent it just no-ops.
