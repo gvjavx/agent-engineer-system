@@ -8,6 +8,7 @@ import {
   sendWhatsAppDocument,
   sendWhatsAppAudio,
   sendWhatsAppImage,
+  imageUploadMeta,
   downloadMedia,
   verifySignature,
   markReadAndShowTyping,
@@ -228,7 +229,6 @@ app.post("/send-audio", express.json({ limit: "10mb" }), async (req, res) => {
 // Internal endpoint: orchestrator calls this to send an image — the
 // "screenshot" PNG, or a generated image which may be jpeg/webp. Bytes come
 // over as base64; mimeType is optional and defaults to PNG.
-const IMAGE_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
 app.post("/send-image", express.json({ limit: "20mb" }), async (req, res) => {
   if (req.header("X-Internal-Secret") !== config.internalSharedSecret) {
     return res.sendStatus(401);
@@ -242,9 +242,9 @@ app.post("/send-image", express.json({ limit: "20mb" }), async (req, res) => {
   if (!to || !pngBase64) {
     return res.status(400).json({ error: "Missing 'to' or 'pngBase64'" });
   }
-  const type = mimeType && IMAGE_EXT[mimeType] ? mimeType : "image/png";
+  const { filename, contentType } = imageUploadMeta(mimeType);
   try {
-    const mediaId = await uploadMedia(Buffer.from(pngBase64, "base64"), `image.${IMAGE_EXT[type]}`, type);
+    const mediaId = await uploadMedia(Buffer.from(pngBase64, "base64"), filename, contentType);
     await sendWhatsAppImage(to, mediaId, caption);
     res.sendStatus(204);
   } catch (err) {

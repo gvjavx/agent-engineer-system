@@ -266,6 +266,17 @@ export async function sendWhatsAppAudio(to: string, mediaId: string): Promise<vo
   await postMessage({ messaging_product: "whatsapp", to, type: "audio", audio: { id: mediaId } });
 }
 
+// WhatsApp's media upload rejects a declared type that doesn't match the
+// bytes, so a generated jpeg/webp can't go up as image/png. Anything we don't
+// recognise (or a missing hint) falls back to PNG — the screenshot path and
+// the historical default.
+const IMAGE_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
+
+export function imageUploadMeta(mimeType?: string): { filename: string; contentType: string } {
+  const contentType = mimeType && IMAGE_EXT[mimeType] ? mimeType : "image/png";
+  return { filename: `image.${IMAGE_EXT[contentType]}`, contentType };
+}
+
 export async function sendWhatsAppImage(to: string, mediaId: string, caption?: string): Promise<void> {
   await postMessage({
     messaging_product: "whatsapp",

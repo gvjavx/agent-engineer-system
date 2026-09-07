@@ -51,3 +51,31 @@ test("refineImagePrompt falls back when the model returns a non-text or empty re
   const blank: Provider = { name: "f", chat: async () => ({ type: "text", text: "   " }) };
   assert.equal(await refineImagePrompt("gambarin kucing", blank, sig()), "kucing");
 });
+
+test("refineImagePrompt merges a tweak onto the previous prompt", async () => {
+  let seenPrompt = "";
+  const provider: Provider = {
+    name: "f",
+    chat: async (messages) => {
+      seenPrompt = String(messages[0].content);
+      return { type: "text", text: "A red car at night, dark moody lighting, photorealistic" } satisfies ProviderResponse;
+    },
+  };
+  const out = await refineImagePrompt("bikin lebih gelap", provider, sig(), "A red car in daylight, photorealistic");
+  assert.match(seenPrompt, /A red car in daylight, photorealistic/);
+  assert.match(seenPrompt, /bikin lebih gelap/);
+  assert.equal(out, "A red car at night, dark moody lighting, photorealistic");
+});
+
+test("refineImagePrompt tweak fallback keeps the previous prompt plus the stripped change", async () => {
+  const throwing: Provider = {
+    name: "f",
+    chat: async () => {
+      throw new Error("down");
+    },
+  };
+  assert.equal(
+    await refineImagePrompt("tambahin sungai di belakang", throwing, sig(), "A lone tree in a field"),
+    "A lone tree in a field, tambahin sungai di belakang"
+  );
+});

@@ -69,11 +69,11 @@ Ini fungsi paling sentral di seluruh sistem. Urutan pengecekan penting — makin
 
 Tiga pending-state handler (1–3) dicek **sebelum** apa pun lain, termasuk sebelum gambar — supaya konfirmasi yang lagi nunggu jawaban nggak ke-timpa diam-diam. Urutan 1→2→3 dipilih karena bash-approval & checkpoint itu in-memory (terikat task yang lagi jalan di proses ini), sedangkan pending_action itu persisten di DB (bertahan lintas restart, dipakai buat wizard multi-langkah).
 
-**Kenapa command deterministik (5–6) didahulukan dari AI classifier (7–8)**: command yang persis match nggak boleh digantungkan ke tebakan model — command dengan argumen (`tambah project <alias> <url>`, dst) di-parse regex; command tanpa argumen (`bantuan`, `status`, dst) di-cek exact-phrase dulu (`router/parse.ts`, Set-based, case-insensitive) sebelum jatuh ke classifier buat nangkep parafrase ("gimana caranya pake ini" → `bantuan`).
+**Kenapa command deterministik (5–6) didahulukan dari AI classifier (7)**: command yang persis match nggak boleh digantungkan ke tebakan model — command dengan argumen (`tambah project <alias> <url>`, dst) di-parse regex; command tanpa argumen (`bantuan`, `status`, dst) di-cek exact-phrase dulu (`router/parse.ts`, Set-based, case-insensitive) sebelum jatuh ke classifier buat nangkep parafrase ("gimana caranya pake ini" → `bantuan`).
 
 **Kasus command yang argumennya ketinggalan** (`hapus project` tanpa nama, `tambah project` tanpa alias/url): ini bug nyata yang udah kejadian — kalau nggak ditangkep di sini, jatuh ke classifier lalu ke task pipeline, dan AI-nya salah baca "hapus project" sebagai instruksi **membangun fitur penghapusan project di dalam kode**, bukan perintah admin ke bot itu sendiri. Makanya ada matcher `isBareDeleteProjectCommand`/`isBareAddProjectCommand`/`isBareAddFolderCommand` yang nangkep persis frasa itu tanpa argumen dan langsung start wizard/picker yang sesuai, sebelum sempat nyampe ke classifier mana pun.
 
-**Dua AI classifier terakhir (7–8) punya gate biaya yang sama**: `isPlausibleShortCommand(trimmed, 40)` — pesan kosong, mengandung URL, atau lebih dari 40 kata, langsung skip (nggak keluar biaya panggilan AI). Batas ini pernah 12 kata dan kegedean-sempit — pertanyaan wajar macam "jika saya meminta bantuan untuk bikin aplikasi dari awal apa yang akan kamu lakukan" (14 kata) nggak pernah nyampe ke classifier "explain", langsung dieksekusi sebagai task sungguhan. Dinaikin ke 40 buat kedua classifier.
+**Gate biaya `classifyIntent` (langkah 7)**: `isPlausibleShortCommand(trimmed, 40)` — pesan kosong, mengandung URL, atau lebih dari 40 kata, langsung skip (nggak keluar biaya panggilan AI). Batas ini pernah 12 kata dan kegedean-sempit — pertanyaan wajar macam "jika saya meminta bantuan untuk bikin aplikasi dari awal apa yang akan kamu lakukan" (14 kata) nggak pernah nyampe ke classifier "explain", langsung dieksekusi sebagai task sungguhan. Dinaikin ke 40. Satu pengecualian buat pesan panjang: kalau bukanya diawali frasa "buatkan gambar/dokumen ..." dan nggak ada URL (`GENERATION_REQUEST_RE` di `handler.ts`), classifier tetap jalan tapi cuma `generate_image`/`generate_document` yang diterima — hasil lain balik ke pipeline task seperti biasa.
 
 ## `pending_action` — state machine wizard & konfirmasi
 
@@ -114,8 +114,7 @@ Semua pakai pola yang sama: satu prompt, satu pesan `role:"user"`, minta jawaban
 
 | Classifier | Mutusin | Default kalau gagal |
 |---|---|---|
-| `classifyCommandIntent` | Parafrase dari 9 command tetap, atau `none` | `none` |
-| `classifyMessageKind` | `task` vs `chat` | `task` — ambigu selalu dianggap task sungguhan, nggak pernah diam-diam dianggap obrolan |
+| `classifyIntent` (`agent/commandIntent.ts`) | Satu dari: parafrase command tetap, `chat`, `task`, `generate_image`, `generate_document`. Gabungan dari dua classifier lama (`classifyCommandIntent` + `classifyMessageKind`) jadi satu round-trip | `task` — parse miss / respons non-teks nggak pernah jatuh ke command atau `chat`, selalu ke task pipeline |
 | `classifyConfirmationIntent` | `yes`/`no`/`unclear` buat jawaban konfirmasi | `unclear` — nggak pernah nebak jadi "yes" |
 | `classifyDepartments` | Daftar fase departemen buat task koding | Satu fase `semua` (catch-all) |
 | `checkNeedsClarification` | Instruksi task terlalu ngambang (nol info produk) → satu pertanyaan | `undefined` (fail-open) — nggak pernah nahan task gara-gara classifier hiccup |

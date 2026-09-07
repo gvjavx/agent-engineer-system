@@ -15,23 +15,34 @@ export function stripImageInstruction(request: string): string {
   return stripped || request.trim();
 }
 
-function buildPrompt(request: string): string {
+function buildPrompt(request: string, previousPrompt?: string): string {
+  if (previousPrompt) {
+    return `A previous image was generated from this prompt:
+"${previousPrompt}"
+
+The user now wants this change: "${request}"
+
+Output one updated English text-to-image prompt that keeps everything from the previous one except what the change asks to alter. Concise — at most ~40 words. No quotes, no explanation, output only the prompt.`;
+  }
   return `Turn this image request into a single English text-to-image prompt: describe the subject, then style, composition, and lighting. Concise — at most ~40 words. No quotes, no explanation, output only the prompt itself.
 
 Request: "${request}"`;
 }
 
-// Never throws — on any model failure it falls back to the stripped request,
-// which is still better than sending the raw instruction to the image model.
+// Never throws — on any model failure it falls back to the stripped request
+// (or, for a tweak, the previous prompt plus the stripped tweak), still better
+// than sending the raw instruction to the image model.
 export async function refineImagePrompt(
   request: string,
   provider: Provider | undefined,
-  signal: AbortSignal
+  signal: AbortSignal,
+  previousPrompt?: string
 ): Promise<string> {
-  const fallback = stripImageInstruction(request);
+  const stripped = stripImageInstruction(request);
+  const fallback = previousPrompt ? `${previousPrompt}, ${stripped}` : stripped;
   if (!provider) return fallback;
   try {
-    const response = await provider.chat([{ role: "user", content: buildPrompt(request) }], [], signal);
+    const response = await provider.chat([{ role: "user", content: buildPrompt(request, previousPrompt) }], [], signal);
     if (response.type !== "text") return fallback;
     const refined = response.text.trim().replace(/^["'`]|["'`]$/g, "").trim();
     return refined || fallback;

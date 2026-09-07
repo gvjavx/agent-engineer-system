@@ -492,6 +492,16 @@ const HELP_OPTIONS: QuickReplyOption[] = [
 // sent it straight into the task pipeline instead of getting an actual
 // explanation.
 const INTENT_MAX_WORDS = 40;
+
+// A "buatkan gambar/dokumen ..." request can run long when the user describes
+// the picture or document in detail — past INTENT_MAX_WORDS it would skip the
+// classifier and land in the task pipeline. When a long message clearly opens
+// with a generation phrase (and carries no URL, which would mark a real
+// coding task), still classify it, but only act on generate_image /
+// generate_document — anything else falls through unchanged.
+const GENERATION_REQUEST_RE =
+  /^\s*(tolong\s+|coba\s+)?(buat(kan|in)?|bikin(in|kan)?|gambar(kan|in)?|lukis(kan|in)?|generate|susun(kan)?)\s+[\s\S]{0,60}?\b(gambar|ilustrasi|foto|lukisan|logo|ikon|sketsa|poster|banner|dokumen|laporan|proposal|surat|makalah|artikel|file|spreadsheet|slide|deck|presentasi|pdf|docx?|word|excel|xlsx?|powerpoint|pptx?|csv)\b/i;
+
 // Confirmation replies are inherently short, so a tighter bound is safe here.
 const CONFIRMATION_INTENT_MAX_WORDS = 8;
 // How many past chat turns to load as context for a reply — a handful of
@@ -2216,6 +2226,17 @@ async function transcribeInboundVoiceNote(
   return transcript;
 }
 
+// Last generated image prompt per sender, so a quick "bikin yang lebih gelap"
+// can build on it without restating everything. In-memory, best-effort.
+const lastImagePrompt = new Map<string, { prompt: string; at: number }>();
+const IMAGE_TWEAK_TTL_MS = 10 * 60_000;
+const IMAGE_TWEAK_RE =
+  /^\s*(yang\s+)?(lebih|kurang(in)?|tanpa|pakai|pake|ganti|ubah|tambah(in|kan)?|hapus|buang|jadiin|jadikan|warnanya|background(nya)?|latar(nya)?|gayanya|style-?nya|bikin\s+(lebih|jadi)|coba\s+(lebih|ganti|ubah|tambah))\b/i;
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // WhatsApp inbound image cap
+const MAX_DOC_BYTES = 16 * 1024 * 1024; // our internal base64 transfer cap
+const approxBytes = (base64: string): number => Math.floor((base64.length * 3) / 4);
+
 async function handleGenerateImageCommand(from: string, prompt: string, providers: Provider[]): Promise<void> {
   // Cloudflare first — Gemini's image models 429 on a free key, so only fall
   // through to them if Cloudflare isn't set up or fails.
@@ -2230,14 +2251,21 @@ async function handleGenerateImageCommand(from: string, prompt: string, provider
 
   await sendWhatsApp(from, "Oke, bentar aku gambar dulu...");
   const signal = new AbortController().signal;
-  const imagePrompt = await refineImagePrompt(prompt, providers[0], signal);
+  const prev = lastImagePrompt.get(from);
+  const tweakOf = prev && Date.now() - prev.at < IMAGE_TWEAK_TTL_MS && IMAGE_TWEAK_RE.test(prompt) ? prev.prompt : undefined;
+  const imagePrompt = await refineImagePrompt(prompt, providers[0], signal, tweakOf);
   const result = await generateImageFromPrompt(imagePrompt, imageProviders, signal);
   if (!result.ok) {
     await sendWhatsApp(from, `Waduh, gagal bikin gambarnya. Errornya:\n${result.error}`);
     return;
   }
+  if (approxBytes(result.base64) > MAX_IMAGE_BYTES) {
+    await sendWhatsApp(from, "Gambarnya jadi tapi kegedean buat dikirim ke WhatsApp (>5MB). Coba minta yang lebih simpel.");
+    return;
+  }
   try {
     await sendWhatsAppImage(from, result.base64, undefined, result.mimeType);
+    lastImagePrompt.set(from, { prompt: imagePrompt, at: Date.now() });
   } catch (err) {
     await sendWhatsApp(from, `Gambarnya jadi, tapi gagal kekirim: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -2248,6 +2276,10 @@ async function handleGenerateDocumentCommand(from: string, request: string, prov
   const result = await generateDocument(request, providers, new AbortController().signal);
   if (!result.ok) {
     await sendWhatsApp(from, `Waduh, gagal bikin dokumennya. Errornya:\n${result.error}`);
+    return;
+  }
+  if (approxBytes(result.doc.base64) > MAX_DOC_BYTES) {
+    await sendWhatsApp(from, "Dokumennya jadi tapi kegedean (>16MB) buat dikirim. Coba pecah jadi bagian yang lebih kecil.");
     return;
   }
   try {
@@ -2310,13 +2342,18 @@ async function handleImageMessage(
 // costs an AI call) for messages that are clearly full task instructions
 // already.
 async function tryHandleSemanticIntent(from: string, trimmed: string): Promise<boolean> {
-  if (!isPlausibleShortCommand(trimmed, INTENT_MAX_WORDS)) return false;
+  const short = isPlausibleShortCommand(trimmed, INTENT_MAX_WORDS);
+  const longGenRequest = !short && !/https?:\/\//i.test(trimmed) && GENERATION_REQUEST_RE.test(trimmed);
+  if (!short && !longGenRequest) return false;
 
   const state = conversationRepo.get(from);
   const providers = buildProviders(resolveManajemenProvider(from, state));
   if (providers.length === 0) return false; // let handleFreeTextInstruction give its own "no provider" message
 
   const intent = await classifyIntent(trimmed, providers[0], new AbortController().signal);
+  // A long message only gets here on the generation prefilter — don't let the
+  // classifier reroute it to intro/help/chat/etc, only the two it was let in for.
+  if (!short && intent !== "generate_image" && intent !== "generate_document") return false;
   switch (intent) {
     case "intro":
       await handleIntroCommand(from, trimmed);

@@ -8,6 +8,7 @@ import {
   sendWhatsAppDocument,
   downloadMedia,
   markReadAndShowTyping,
+  imageUploadMeta,
 } from "./whatsapp.js";
 
 // sendWhatsAppOptions hits the real Graph API via global fetch — swap it out
@@ -346,4 +347,13 @@ test("downloadMedia throws with the response body when downloading the bytes fai
     ),
     /Failed to download media bytes \(410\)/
   );
+});
+
+test("imageUploadMeta maps known image types and defaults everything else to PNG", () => {
+  assert.deepEqual(imageUploadMeta("image/jpeg"), { filename: "image.jpg", contentType: "image/jpeg" });
+  assert.deepEqual(imageUploadMeta("image/webp"), { filename: "image.webp", contentType: "image/webp" });
+  assert.deepEqual(imageUploadMeta("image/png"), { filename: "image.png", contentType: "image/png" });
+  assert.deepEqual(imageUploadMeta(undefined), { filename: "image.png", contentType: "image/png" });
+  assert.deepEqual(imageUploadMeta("image/gif"), { filename: "image.png", contentType: "image/png" });
+  assert.deepEqual(imageUploadMeta("garbage"), { filename: "image.png", contentType: "image/png" });
 });
