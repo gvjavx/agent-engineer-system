@@ -2318,13 +2318,37 @@ async function handleEditImageCommand(
   const signal = new AbortController().signal;
   const providers = buildProviders(resolveManajemenProvider(from, conversationRepo.get(from)));
   const prompt = await refineImagePrompt(caption, providers[0], signal);
-  let out;
+
+  let out: { base64: string; mimeType: string };
   try {
     out = await cloudflareEditImage(cf, prompt, image.base64Data, signal);
   } catch (err) {
-    await sendWhatsApp(from, `Waduh, gagal edit gambarnya. Errornya:\n${err instanceof Error ? err.message : String(err)}`);
-    return;
+    // img2img models are often not enabled on a free Cloudflare account
+    // (403 / "not allowed to access"). Fall back to describing the image and
+    // regenerating from that description plus the requested change.
+    const editErr = err instanceof Error ? err.message : String(err);
+    const description = await describeImage(image.base64Data, image.mimeType, caption, providers, signal);
+    if (!description) {
+      await sendWhatsApp(from, `Waduh, gagal edit gambarnya. Errornya:\n${editErr}`);
+      return;
+    }
+    const regenPrompt = await refineImagePrompt(
+      `${description}\n\nUbahan yang diminta: ${caption}`,
+      providers[0],
+      signal
+    );
+    const regen = await generateImageFromPrompt(regenPrompt, [...cloudflareImageProviders(), ...providers], signal);
+    if (!regen.ok) {
+      await sendWhatsApp(from, `Waduh, gagal edit gambarnya (${editErr}), dan bikin ulang juga gagal:\n${regen.error}`);
+      return;
+    }
+    out = regen;
+    await sendWhatsApp(
+      from,
+      "Model edit gambar gak bisa diakses akun Cloudflare ini, jadi aku bikinin versi baru dari deskripsi gambar + ubahanmu — komposisinya bisa beda dari aslinya."
+    );
   }
+
   if (approxBytes(out.base64) > MAX_IMAGE_BYTES) {
     await sendWhatsApp(from, "Hasil editnya kegedean buat dikirim ke WhatsApp (>5MB).");
     return;
