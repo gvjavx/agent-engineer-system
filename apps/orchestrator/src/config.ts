@@ -304,8 +304,11 @@ export const config = {
           accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
           apiToken: process.env.CLOUDFLARE_API_TOKEN,
           model: process.env.CLOUDFLARE_IMAGE_MODEL ?? "@cf/black-forest-labs/flux-1-schnell",
-          // img2img — used when a sent image comes with an "ubah jadi ..." caption.
-          editModel: process.env.CLOUDFLARE_EDIT_MODEL ?? "@cf/runwayml/stable-diffusion-v1-5-img2img",
+          // img2img — used when a sent image comes with an "ubah jadi ..."
+          // caption. The runwayml SD1.5 models are restricted on most accounts
+          // now; dreamshaper-8-lcm takes an image input and isn't gated. If
+          // this 403s too, the edit path falls back to describe + regenerate.
+          editModel: process.env.CLOUDFLARE_EDIT_MODEL ?? "@cf/lykon/dreamshaper-8-lcm",
         }
       : undefined,
 

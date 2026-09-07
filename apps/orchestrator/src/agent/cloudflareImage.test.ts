@@ -6,7 +6,7 @@ const cfg = {
   accountId: "acct",
   apiToken: "tok",
   model: "@cf/black-forest-labs/flux-1-schnell",
-  editModel: "@cf/runwayml/stable-diffusion-v1-5-img2img",
+  editModel: "@cf/lykon/dreamshaper-8-lcm",
 };
 const sig = () => new AbortController().signal;
 
@@ -73,7 +73,7 @@ test("makeCloudflareImageProvider throws when JSON has no image", async () => {
 test("cloudflareEditImage hits the edit model with the image and returns the redrawn bytes", async () => {
   await withFetch(
     async (url, init) => {
-      assert.match(String(url), /ai\/run\/@cf\/runwayml\/stable-diffusion-v1-5-img2img$/);
+      assert.match(String(url), /ai\/run\/@cf\/lykon\/dreamshaper-8-lcm$/);
       const body = JSON.parse(String((init as RequestInit).body));
       assert.equal(body.prompt, "a red car at night");
       assert.equal(body.image_b64, "SU1H");
