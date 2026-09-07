@@ -59,10 +59,23 @@ const TITLE = `${_W}Mas (${_O}A${_W}i ${_O}D${_W}eveloper ${_O}E${_W}ngineer)${_
 // Compact form for the input-frame label — same colours.
 const acronym = (): string => `${_W}Mas ${_O}A${_O}D${_O}E${_R}`;
 
+// Two-row block wordmark, "AI DEVELOPER ENGINEER" with the A/D/E in orange.
+// Each row is 80 visible cells, so it only gets printed when the terminal is
+// wide enough for it plus the 2-space indent — otherwise TITLE alone stands
+// in. Every row ends with _R so the loop can't leave the terminal bold.
+const LOGO = [
+  `${_O}▄▀█ ${_W}█  ${_O}█▀▄ ${_W}█▀▀ █▄ ▄█ █▀▀ █   ▄▀▀▄ █▀▄ █▀▀ █▀▄  ${_O}█▀▀ ${_W}██▄ █ ▄▀▀ █ ██▄ █ █▀▀ █▀▀ █▀▄${_R}`,
+  `${_O}█▀█ ${_W}█  ${_O}█▄▀ ${_W}██▄  █▄█  ██▄ █▄▄ ▀▄▄▀ █▀  ██▄ █▀▄  ${_O}██▄ ${_W}█ ▀▄█ █▄█ █ █ ▀▄█ ██▄ ██▄ █▀▄${_R}`,
+];
+const LOGO_MIN_COLUMNS = 82;
+
 // ── intro ──────────────────────────────────────────────────────────────────
 
 function intro(): void {
   console.log();
+  if ((process.stdout.columns || 80) >= LOGO_MIN_COLUMNS) {
+    for (const row of LOGO) console.log("  " + row);
+  }
   console.log("  " + TITLE);
   console.log("  " + dim("AI dev team di terminal") + "   " + dim("·") + "   " + dim(BASE));
   console.log("  " + dim("Ketik instruksi bebas atau command WhatsApp (status, pakai <project>, tanya: …)."));
