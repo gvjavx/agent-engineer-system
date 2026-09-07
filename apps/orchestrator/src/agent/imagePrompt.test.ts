@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { refineImagePrompt, stripImageInstruction, isImageTweak } from "./imagePrompt.js";
+import {
+  refineImagePrompt,
+  stripImageInstruction,
+  isFreshImageRequest,
+  looksLikeCodeTask,
+} from "./imagePrompt.js";
 import type { Provider, ProviderResponse } from "./types.js";
 
 const sig = () => new AbortController().signal;
@@ -52,26 +57,27 @@ test("refineImagePrompt falls back when the model returns a non-text or empty re
   assert.equal(await refineImagePrompt("gambarin kucing", blank, sig()), "kucing");
 });
 
-test("isImageTweak recognizes short modifier phrases, rejects fresh requests and long text", () => {
-  for (const s of [
-    "bikin yang lebih gelap",
-    "lebih cerah dong",
-    "buat lebih gelap",
-    "tambahin pohon di belakang",
-    "ganti warnanya jadi biru",
-    "tanpa background",
-    "jadikan hitam putih",
-    "coba lebih zoom",
-  ]) {
-    assert.equal(isImageTweak(s), true, s);
+test("isFreshImageRequest matches a new 'make an image of X' but not a change to the last one", () => {
+  for (const s of ["buatkan gambar mobil merah", "bikin ilustrasi kucing", "gambarin logo warung", "buat foto sunset"]) {
+    assert.equal(isFreshImageRequest(s), true, s);
   }
+  for (const s of ["bikin yang lebih gelap", "tanpa background", "ganti warnanya jadi biru", "tambahin pohon"]) {
+    assert.equal(isFreshImageRequest(s), false, s);
+  }
+});
+
+test("looksLikeCodeTask flags app/code vocabulary, not plain picture edits", () => {
   for (const s of [
-    "buatkan gambar mobil merah",
-    "bikin ilustrasi kucing",
-    "tambahin fitur login di halaman dashboard aplikasi yang kemarin itu ya",
-    "kenapa error terus",
+    "ubah tampilan halaman login",
+    "jadikan komponen ini responsive",
+    "perbaiki sesuai screenshot",
+    "tambahin fitur dark mode",
+    "ganti endpoint API-nya",
   ]) {
-    assert.equal(isImageTweak(s), false, s);
+    assert.equal(looksLikeCodeTask(s), true, s);
+  }
+  for (const s of ["jadikan hitam putih", "ganti background jadi pantai", "ubah jadi malam hari", "bikin lebih cerah"]) {
+    assert.equal(looksLikeCodeTask(s), false, s);
   }
 });
 

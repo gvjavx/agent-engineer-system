@@ -73,7 +73,7 @@ import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/co
 import { describeImage, mergeImageDescription } from "../agent/imageDescription.js";
 import { transcribeVoiceNote } from "../agent/audioTranscription.js";
 import { generateImageFromPrompt } from "../agent/imageGeneration.js";
-import { refineImagePrompt, isImageTweak } from "../agent/imagePrompt.js";
+import { refineImagePrompt, isFreshImageRequest, looksLikeCodeTask } from "../agent/imagePrompt.js";
 import { cloudflareImageProviders, cloudflareEditImage } from "../agent/cloudflareImage.js";
 import { generateDocument } from "../agent/documentGen.js";
 import { generateChatReply, needsConversationContext } from "../agent/chatAssistant.js";
@@ -955,11 +955,6 @@ export async function handleInboundMessage(
     await handleMultiRepoInstruction(from, multi.aliases, multi.instruction);
     return;
   }
-
-  // A short "bikin yang lebih gelap" right after an image is a tweak of that
-  // image — the classifier can't know that (no memory), it'd read "gelap" as
-  // dark mode and start a coding task. Catch it here, before classification.
-  if (await tryHandleImageTweak(from, trimmed)) return;
 
   // Nothing matched exactly — before assuming it's a coding task, check
   // whether it's actually a paraphrase of one of the fixed commands above,
@@ -2231,8 +2226,9 @@ async function transcribeInboundVoiceNote(
   return transcript;
 }
 
-// Last generated image prompt per sender, so a quick "bikin yang lebih gelap"
-// can build on it without restating everything. In-memory, best-effort.
+// Last generated image prompt per sender: feeds classifyIntent the "an image
+// was just made" signal and lets a follow-up ("bikin yang lebih gelap") build
+// on the prompt instead of restating it. In-memory, best-effort.
 const lastImagePrompt = new Map<string, { prompt: string; at: number }>();
 const IMAGE_TWEAK_TTL_MS = 30 * 60_000;
 
@@ -2240,19 +2236,9 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // WhatsApp inbound image cap
 const MAX_DOC_BYTES = 16 * 1024 * 1024; // our internal base64 transfer cap
 const approxBytes = (base64: string): number => Math.floor((base64.length * 3) / 4);
 
-// Only fires when there's a recent generated image for this sender and the
-// message is a short modifier phrase ("lebih gelap", "tambahin pohon", "ganti
-// warnanya jadi biru"). Routes straight to image generation, which then folds
-// the phrase into the previous prompt.
-async function tryHandleImageTweak(from: string, trimmed: string): Promise<boolean> {
+function hasRecentImage(from: string): boolean {
   const prev = lastImagePrompt.get(from);
-  if (!prev || Date.now() - prev.at >= IMAGE_TWEAK_TTL_MS) return false;
-  if (!isImageTweak(trimmed)) return false;
-
-  const providers = buildProviders(resolveManajemenProvider(from, conversationRepo.get(from)));
-  if (providers.length === 0 && cloudflareImageProviders().length === 0) return false;
-  await handleGenerateImageCommand(from, trimmed, providers);
-  return true;
+  return !!prev && Date.now() - prev.at < IMAGE_TWEAK_TTL_MS;
 }
 
 async function handleGenerateImageCommand(from: string, prompt: string, providers: Provider[]): Promise<void> {
@@ -2269,8 +2255,13 @@ async function handleGenerateImageCommand(from: string, prompt: string, provider
 
   await sendWhatsApp(from, "Oke, bentar aku gambar dulu...");
   const signal = new AbortController().signal;
+  // If a recent image exists and this message isn't itself a fresh "buatkan
+  // gambar X" request, treat it as a change to that image and fold in the
+  // previous prompt. No word list here — we're already committed to generating
+  // an image, so "ganti tombol jadi merah" on a mockup is a valid tweak.
   const prev = lastImagePrompt.get(from);
-  const tweakOf = prev && Date.now() - prev.at < IMAGE_TWEAK_TTL_MS && isImageTweak(prompt) ? prev.prompt : undefined;
+  const tweakOf =
+    prev && Date.now() - prev.at < IMAGE_TWEAK_TTL_MS && !isFreshImageRequest(prompt) ? prev.prompt : undefined;
   const imagePrompt = await refineImagePrompt(prompt, providers[0], signal, tweakOf);
   const result = await generateImageFromPrompt(imagePrompt, imageProviders, signal);
   if (!result.ok) {
@@ -2363,18 +2354,16 @@ async function handleEditImageCommand(
 
 // A caption that opens with an edit verb ("ubah jadi ...", "jadikan hitam
 // putih", "ganti background jadi ...") — but not one that's really "build this
-// UI from the screenshot", which uses a different vocabulary.
+// UI from the screenshot" (looksLikeCodeTask, shared with imagePrompt.ts).
 const IMAGE_EDIT_VERB_RE =
   /^\s*(tolong\s+|coba\s+)?(ubah(lah)?|jadikan|jadiin|ganti|edit|olah|redraw|convert|bikin\s+(ini|jadi)|buat\s+(ini|versi))\b/i;
-const CODE_TASK_HINT_RE =
-  /\b(tampilan|halaman|layout|komponen|css|html|ui|ux|button|tombol|screenshot|mockup|desain\s+ulang|sesuai\s+(gambar|screenshot|desain|mockup))\b/i;
 
 async function handleImageMessage(
   from: string,
   caption: string,
   image: { mimeType: string; base64Data: string }
 ): Promise<void> {
-  if (config.cloudflareImage && caption && IMAGE_EDIT_VERB_RE.test(caption) && !CODE_TASK_HINT_RE.test(caption)) {
+  if (config.cloudflareImage && caption && IMAGE_EDIT_VERB_RE.test(caption) && !looksLikeCodeTask(caption)) {
     await handleEditImageCommand(from, caption, image);
     return;
   }
@@ -2435,7 +2424,11 @@ async function tryHandleSemanticIntent(from: string, trimmed: string): Promise<b
   const providers = buildProviders(resolveManajemenProvider(from, state));
   if (providers.length === 0) return false; // let handleFreeTextInstruction give its own "no provider" message
 
-  const intent = await classifyIntent(trimmed, providers[0], new AbortController().signal);
+  // Tell the classifier when an image was just generated — otherwise a short
+  // "bikin yang lebih gelap" reads as dark mode and starts a coding task.
+  const intent = await classifyIntent(trimmed, providers[0], new AbortController().signal, {
+    recentImage: hasRecentImage(from),
+  });
   // A long message only gets here on the generation prefilter — don't let the
   // classifier reroute it to intro/help/chat/etc, only the two it was let in for.
   if (!short && intent !== "generate_image" && intent !== "generate_document") return false;

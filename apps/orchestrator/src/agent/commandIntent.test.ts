@@ -38,6 +38,21 @@ test("classifyIntent recognizes a question about a past conversation as session_
   assert.equal(result, "session_history");
 });
 
+test("classifyIntent adds the recent-image guidance to the prompt only when recentImage is set", async () => {
+  const prompts: string[] = [];
+  const provider: Provider = {
+    name: "fake",
+    chat: async (messages) => {
+      prompts.push(String(messages[0].content));
+      return { type: "text", text: "INTENT: generate_image" };
+    },
+  };
+  await classifyIntent("bikin yang lebih gelap", provider, new AbortController().signal, { recentImage: true });
+  await classifyIntent("bikin yang lebih gelap", provider, new AbortController().signal);
+  assert.match(prompts[0], /just generated an image/);
+  assert.doesNotMatch(prompts[1], /just generated an image/);
+});
+
 test("classifyIntent recognizes small talk as chat, not a fixed command or task", async () => {
   const provider = fakeProvider(async () => ({ type: "text", text: "INTENT: chat" }));
   const result = await classifyIntent("gimana menurutmu soal ini", provider, new AbortController().signal);

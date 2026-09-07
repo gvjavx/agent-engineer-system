@@ -25,7 +25,12 @@ export const INTENTS = [
 ] as const;
 export type Intent = (typeof INTENTS)[number];
 
-function buildIntentPrompt(text: string): string {
+function buildIntentPrompt(text: string, recentImage = false): string {
+  const imageContext = recentImage
+    ? `
+
+Context: the bot just generated an image for this user. Read a short follow-up as a change to that image — generate_image — when it's about the picture: its colour, lighting, an element added or removed, its style, framing, background, or a "lebih X" / "tanpa X" / "ganti ... jadi ..." modifier. Treat it as task only if it names something concrete in the user's code or app: a feature, a bug, an API/endpoint, a database, a deploy, a code comment, or a specific screen/page of their project.`
+    : "";
   return `The user sent this WhatsApp message to a coding assistant bot. Decide what it means.
 
 Fixed commands:
@@ -47,7 +52,7 @@ Anything that isn't one of the categories above is one of these two:
 chat — general conversation: a question, opinion, comment, or small talk that is NOT asking the bot to build/fix/change anything right now and isn't one of the categories above. This includes hypothetical or meta questions about what the bot would do or how it works (e.g. "kalau saya minta bikin aplikasi dari nol, apa yang bakal kamu lakukan") — these ask ABOUT a process, they are not themselves a request to start one. It also includes asking the bot to look something up or check real-world / live information — weather, news, prices, exchange rates, scores, a definition, general trivia (e.g. "cek cuaca hari ini di Surabaya", "kurs dollar sekarang berapa") — even phrased as an order; the bot answers or says it can't, it does not start a coding task.
 task — an instruction or request to build, fix, change, deploy, or otherwise work on the user's own software/code/app/repo, right now, however short or vague (e.g. "tambahin dark mode", "kenapa error terus", "benerin bug di halaman login"), and anything not confidently one of the categories above. "cek"/"check" here means checking the user's own project (e.g. "cek kenapa build gagal"), not looking up outside facts.
 
-A message describing a hypothetical task ("kalau saya minta X", "misalnya saya mau Y") without actually requesting it right now is "chat", not "task". If genuinely unsure between chat and task, prefer task. If genuinely unsure between generate_image / generate_document and task — i.e. the "picture" or "document" might be part of an app — prefer task.
+A message describing a hypothetical task ("kalau saya minta X", "misalnya saya mau Y") without actually requesting it right now is "chat", not "task". If genuinely unsure between chat and task, prefer task. If genuinely unsure between generate_image / generate_document and task — i.e. the "picture" or "document" might be part of an app — prefer task.${imageContext}
 
 Reply with exactly one line, in exactly this format, nothing else:
 INTENT: <key>
@@ -76,14 +81,15 @@ export async function classifyIntent(
   text: string,
   provider: Provider,
   signal: AbortSignal,
-  opts?: LocalClassifyOpts
+  opts?: LocalClassifyOpts & { recentImage?: boolean }
 ): Promise<Intent> {
+  const { recentImage, ...localOpts } = opts ?? {};
   return runClassifier({
-    prompt: buildIntentPrompt(text),
+    prompt: buildIntentPrompt(text, recentImage),
     provider,
     signal,
     parse: parseIntentLine,
     fallback: "task",
-    opts,
+    opts: localOpts,
   });
 }
