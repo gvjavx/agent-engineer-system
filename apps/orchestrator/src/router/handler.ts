@@ -73,7 +73,7 @@ import { classifyConfirmationIntent, type ConfirmationIntent } from "../agent/co
 import { describeImage, mergeImageDescription } from "../agent/imageDescription.js";
 import { transcribeVoiceNote } from "../agent/audioTranscription.js";
 import { generateImageFromPrompt } from "../agent/imageGeneration.js";
-import { refineImagePrompt } from "../agent/imagePrompt.js";
+import { refineImagePrompt, isImageTweak } from "../agent/imagePrompt.js";
 import { cloudflareImageProviders, cloudflareEditImage } from "../agent/cloudflareImage.js";
 import { generateDocument } from "../agent/documentGen.js";
 import { generateChatReply, needsConversationContext } from "../agent/chatAssistant.js";
@@ -955,6 +955,11 @@ export async function handleInboundMessage(
     await handleMultiRepoInstruction(from, multi.aliases, multi.instruction);
     return;
   }
+
+  // A short "bikin yang lebih gelap" right after an image is a tweak of that
+  // image — the classifier can't know that (no memory), it'd read "gelap" as
+  // dark mode and start a coding task. Catch it here, before classification.
+  if (await tryHandleImageTweak(from, trimmed)) return;
 
   // Nothing matched exactly — before assuming it's a coding task, check
   // whether it's actually a paraphrase of one of the fixed commands above,
@@ -2229,13 +2234,26 @@ async function transcribeInboundVoiceNote(
 // Last generated image prompt per sender, so a quick "bikin yang lebih gelap"
 // can build on it without restating everything. In-memory, best-effort.
 const lastImagePrompt = new Map<string, { prompt: string; at: number }>();
-const IMAGE_TWEAK_TTL_MS = 10 * 60_000;
-const IMAGE_TWEAK_RE =
-  /^\s*(yang\s+)?(lebih|kurang(in)?|tanpa|pakai|pake|ganti|ubah|tambah(in|kan)?|hapus|buang|jadiin|jadikan|warnanya|background(nya)?|latar(nya)?|gayanya|style-?nya|bikin\s+(lebih|jadi)|coba\s+(lebih|ganti|ubah|tambah))\b/i;
+const IMAGE_TWEAK_TTL_MS = 30 * 60_000;
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // WhatsApp inbound image cap
 const MAX_DOC_BYTES = 16 * 1024 * 1024; // our internal base64 transfer cap
 const approxBytes = (base64: string): number => Math.floor((base64.length * 3) / 4);
+
+// Only fires when there's a recent generated image for this sender and the
+// message is a short modifier phrase ("lebih gelap", "tambahin pohon", "ganti
+// warnanya jadi biru"). Routes straight to image generation, which then folds
+// the phrase into the previous prompt.
+async function tryHandleImageTweak(from: string, trimmed: string): Promise<boolean> {
+  const prev = lastImagePrompt.get(from);
+  if (!prev || Date.now() - prev.at >= IMAGE_TWEAK_TTL_MS) return false;
+  if (!isImageTweak(trimmed)) return false;
+
+  const providers = buildProviders(resolveManajemenProvider(from, conversationRepo.get(from)));
+  if (providers.length === 0 && cloudflareImageProviders().length === 0) return false;
+  await handleGenerateImageCommand(from, trimmed, providers);
+  return true;
+}
 
 async function handleGenerateImageCommand(from: string, prompt: string, providers: Provider[]): Promise<void> {
   // Cloudflare first — Gemini's image models 429 on a free key, so only fall
@@ -2252,7 +2270,7 @@ async function handleGenerateImageCommand(from: string, prompt: string, provider
   await sendWhatsApp(from, "Oke, bentar aku gambar dulu...");
   const signal = new AbortController().signal;
   const prev = lastImagePrompt.get(from);
-  const tweakOf = prev && Date.now() - prev.at < IMAGE_TWEAK_TTL_MS && IMAGE_TWEAK_RE.test(prompt) ? prev.prompt : undefined;
+  const tweakOf = prev && Date.now() - prev.at < IMAGE_TWEAK_TTL_MS && isImageTweak(prompt) ? prev.prompt : undefined;
   const imagePrompt = await refineImagePrompt(prompt, providers[0], signal, tweakOf);
   const result = await generateImageFromPrompt(imagePrompt, imageProviders, signal);
   if (!result.ok) {

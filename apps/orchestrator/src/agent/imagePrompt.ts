@@ -15,6 +15,24 @@ export function stripImageInstruction(request: string): string {
   return stripped || request.trim();
 }
 
+// A short modifier phrase that only makes sense as a change to a picture just
+// made — "lebih gelap", "bikin yang lebih cerah", "tambahin pohon", "ganti
+// warnanya jadi biru". Used to route it back to image generation instead of
+// letting the intent classifier read "gelap" as dark mode.
+const IMAGE_TWEAK_RE =
+  /^\s*(tolong\s+|coba\s+)?(bikin(in)?|buat(in)?)?\s*(yang\s+|biar\s+|jadi\s+)?(lebih|kurang(in)?|tanpa|pakai|pake|ganti|ubah|tambah(in|kan)?|hapus|buang|ilangin|jadiin|jadikan|warnany?a?|background|latar|gayanya|style-?nya|angle|sudut|zoom|crop|fokus(in)?)\b/i;
+// "tambahin ..." / "ganti ..." also open coding tasks; if the phrase names an
+// app/code thing it isn't a picture tweak.
+const CODE_WORD_RE = /\b(fitur|halaman|aplikasi|aplikasinya|website|web|app|endpoint|api|bug|error|login|logout|database|db|button|tombol|form|menu|nav|route|komponen|deploy|commit|repo|branch)\b/i;
+
+export function isImageTweak(message: string): boolean {
+  return (
+    message.split(/\s+/).filter(Boolean).length <= 12 &&
+    IMAGE_TWEAK_RE.test(message) &&
+    !CODE_WORD_RE.test(message)
+  );
+}
+
 function buildPrompt(request: string, previousPrompt?: string): string {
   if (previousPrompt) {
     return `A previous image was generated from this prompt:

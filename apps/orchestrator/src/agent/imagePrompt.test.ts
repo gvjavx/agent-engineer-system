@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { refineImagePrompt, stripImageInstruction } from "./imagePrompt.js";
+import { refineImagePrompt, stripImageInstruction, isImageTweak } from "./imagePrompt.js";
 import type { Provider, ProviderResponse } from "./types.js";
 
 const sig = () => new AbortController().signal;
@@ -50,6 +50,29 @@ test("refineImagePrompt falls back when the model returns a non-text or empty re
 
   const blank: Provider = { name: "f", chat: async () => ({ type: "text", text: "   " }) };
   assert.equal(await refineImagePrompt("gambarin kucing", blank, sig()), "kucing");
+});
+
+test("isImageTweak recognizes short modifier phrases, rejects fresh requests and long text", () => {
+  for (const s of [
+    "bikin yang lebih gelap",
+    "lebih cerah dong",
+    "buat lebih gelap",
+    "tambahin pohon di belakang",
+    "ganti warnanya jadi biru",
+    "tanpa background",
+    "jadikan hitam putih",
+    "coba lebih zoom",
+  ]) {
+    assert.equal(isImageTweak(s), true, s);
+  }
+  for (const s of [
+    "buatkan gambar mobil merah",
+    "bikin ilustrasi kucing",
+    "tambahin fitur login di halaman dashboard aplikasi yang kemarin itu ya",
+    "kenapa error terus",
+  ]) {
+    assert.equal(isImageTweak(s), false, s);
+  }
 });
 
 test("refineImagePrompt merges a tweak onto the previous prompt", async () => {
