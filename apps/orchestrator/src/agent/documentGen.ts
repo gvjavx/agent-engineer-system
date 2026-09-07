@@ -39,10 +39,33 @@ export interface RenderedDoc {
 }
 
 // Header lines then a "---" divider then the raw document body — not JSON.
+// Pull an inline data block off the request: everything after a line ending
+// "data ini:" / "datanya:" / "data berikut:" / "data:", or a fenced ``` block.
+// The rest is the instruction. When the user gives numbers, the document must
+// use those exact figures instead of inventing plausible-looking ones.
+const DATA_MARKER_RE = /\b(?:dari |pakai |berdasarkan |dengan |berikut )?data(?:nya)?(?: ini| berikut| di ?bawah)?\s*[::]\s*\n?/i;
+
+export function splitSourceData(request: string): { instruction: string; sourceData?: string } {
+  const fence = request.match(/```[a-z]*\s*\n([\s\S]*?)```/i);
+  if (fence && fence[1].trim()) {
+    return { instruction: request.replace(fence[0], "").trim(), sourceData: fence[1].trim() };
+  }
+  const marker = request.match(DATA_MARKER_RE);
+  if (marker && typeof marker.index === "number") {
+    const after = request.slice(marker.index + marker[0].length).trim();
+    if (after) return { instruction: request.slice(0, marker.index).trim() || request, sourceData: after };
+  }
+  return { instruction: request };
+}
+
 // These models routinely put literal newlines inside a JSON string value,
 // which is invalid JSON and makes JSON.parse throw on the common multi-line
 // case; a divided plain-text reply has nothing to escape.
 function buildPrompt(request: string): string {
+  const { instruction, sourceData } = splitSourceData(request);
+  const dataBlock = sourceData
+    ? `\n\nSOURCE DATA — build the document strictly on these exact figures and facts. Do not invent, round differently, or add data points the user didn't give; if the data doesn't cover part of the document, say so plainly there.\n${sourceData}\n`
+    : "";
   return `The user asked you to create a document/file, not code. Produce it in full.
 
 Pick the format. If the user named one (pdf, word/docx, excel/xlsx, powerpoint/pptx, csv, markdown, txt), use that. Otherwise: a report / proposal / letter / notes → pdf; a data table or list of records → xlsx; a slide deck / presentation → pptx.
@@ -52,7 +75,7 @@ Content rules by format:
 - csv, xlsx: the body is CSV text, first row = column headers.
 - pptx: the body is Markdown where every slide starts with "# Slide title" followed by "- bullet" lines.
 
-Write real, complete, publish-ready content — as long as the document genuinely needs to be. Do not abbreviate it or leave placeholders. Write in Indonesian unless the request is clearly in another language.
+Write real, complete, publish-ready content — as long as the document genuinely needs to be. Do not abbreviate it or leave placeholders. Write in Indonesian unless the request is clearly in another language.${dataBlock}
 
 Reply in exactly this shape and nothing else — three header lines, a line with only ---, then the document body verbatim:
 FORMAT: <one of: ${FORMATS.join(", ")}>
@@ -60,7 +83,7 @@ FILENAME: <name with the matching extension, no folders>
 ---
 <the document body>
 
-Request: "${request}"`;
+Request: "${instruction}"`;
 }
 
 const HEADER_RE = /^\s*([A-Za-z]+)\s*:\s*(.*)$/;

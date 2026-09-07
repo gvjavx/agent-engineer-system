@@ -322,9 +322,11 @@ Batasan:
 Beda dari bagian di atas — ini bukan agent nyerahin file dari repo, tapi bikin file baru dari nol lewat chat, tanpa perlu ada project terdaftar.
 
 - **Gambar**: `buatkan gambar pohon di tepi sawah pas senja` → digenerate, dikirim balik sebagai gambar. Jalur utamanya **Cloudflare Workers AI** (`flux-1-schnell`) — gratis beneran, tinggal isi `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` di `.env`. Akun Cloudflare gratis; tokennya bikin lewat *Create Custom Token* dengan satu permission **Account / Workers AI / Read**. Kalau gak diisi, jatuh ke model image Gemini — tapi itu butuh billing aktif (tier gratisnya 429). Gagal di semua jalur → Mas ADE nempelin error aslinya di balasan, gak diam-diam. Sebelum digenerate, permintaanmu ditulis ulang jadi prompt Inggris yang deskriptif (flux dilatih pakai caption Inggris, jadi "buatkan gambar pohon" mentah hasilnya jelek) — satu panggilan AI kecil, jatuh ke versi teks yang dibersihkan kalau gagal.
+- **Edit gambar**: kirim gambar dengan caption yang diawali kata kerja ubah — "ubah jadi malam hari", "jadikan hitam putih", "ganti background jadi pantai". Ditarik ke img2img Cloudflare (`stable-diffusion-v1-5-img2img`), komposisi asli dipertahankan (`strength` ~0.6). Caption yang isinya kerjaan koding ("perbaiki tampilan sesuai screenshot ini") tetap lewat jalur vision → task seperti biasa.
 - **Dokumen**: `bikinin proposal sponsorship dalam pdf`, `buat file excel daftar stok`, `bikin slide company profile`. Mas ADE nyusun isinya lalu ngirim file-nya. Format: `pdf`, `docx`, `xlsx`, `pptx`, `csv`, `md`, `txt` — sebut kalau mau format tertentu, kalau nggak dia pilih sendiri (laporan/proposal → pdf, tabel data → xlsx, deck → pptx). Semua render pure-JS (PDF pakai `pdfmake`, bukan headless browser), jadi jalan di mesin dev maupun server.
+- **Kasih data sendiri**: tempel datanya di pesan yang sama, diawali "data ini:" / "datanya:" atau di dalam blok ``` ``` ```. Mas ADE bikin dokumennya pakai angka itu persis, nggak ngarang — mis. `buatkan laporan penjualan xlsx dari data ini:` terus baris-baris CSV-nya.
 
-Permintaan panjang (lebih dari ~40 kata) lewat ke pipeline task biasa, bukan ke jalur ini — jadi buat gambar/dokumen, instruksinya singkat aja.
+Permintaan panjang (>40 kata) yang diawali "buatkan gambar/dokumen ..." tetap masuk jalur ini; selain itu lewat ke pipeline task biasa.
 
 ## Kirim gambar buat direview/dikerjain
 

@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { makeCloudflareImageProvider } from "./cloudflareImage.js";
+import { makeCloudflareImageProvider, cloudflareEditImage } from "./cloudflareImage.js";
 
-const cfg = { accountId: "acct", apiToken: "tok", model: "@cf/black-forest-labs/flux-1-schnell" };
+const cfg = {
+  accountId: "acct",
+  apiToken: "tok",
+  model: "@cf/black-forest-labs/flux-1-schnell",
+  editModel: "@cf/runwayml/stable-diffusion-v1-5-img2img",
+};
 const sig = () => new AbortController().signal;
 
 async function withFetch(stub: typeof fetch, run: () => Promise<void>): Promise<void> {
@@ -61,6 +66,33 @@ test("makeCloudflareImageProvider throws when JSON has no image", async () => {
       }),
     async () => {
       await assert.rejects(makeCloudflareImageProvider(cfg).generateImage!("x", sig()), /tanpa image/);
+    }
+  );
+});
+
+test("cloudflareEditImage hits the edit model with the image and returns the redrawn bytes", async () => {
+  await withFetch(
+    async (url, init) => {
+      assert.match(String(url), /ai\/run\/@cf\/runwayml\/stable-diffusion-v1-5-img2img$/);
+      const body = JSON.parse(String((init as RequestInit).body));
+      assert.equal(body.prompt, "a red car at night");
+      assert.equal(body.image_b64, "SU1H");
+      assert.equal(typeof body.strength, "number");
+      return new Response(Buffer.from("EDITEDPNG"), { status: 200, headers: { "content-type": "image/png" } });
+    },
+    async () => {
+      const r = await cloudflareEditImage(cfg, "a red car at night", "SU1H", sig());
+      assert.equal(Buffer.from(r.base64, "base64").toString(), "EDITEDPNG");
+      assert.equal(r.mimeType, "image/png");
+    }
+  );
+});
+
+test("cloudflareEditImage surfaces the CF status and body on failure", async () => {
+  await withFetch(
+    async () => new Response("bad request", { status: 400 }),
+    async () => {
+      await assert.rejects(cloudflareEditImage(cfg, "x", "SU1H", sig()), /400 bad request/);
     }
   );
 });

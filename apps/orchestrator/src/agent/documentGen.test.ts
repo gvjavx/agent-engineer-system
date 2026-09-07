@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseDocSpec, parseSlides, renderDocument, generateDocument, toCellValue } from "./documentGen.js";
+import {
+  parseDocSpec,
+  parseSlides,
+  renderDocument,
+  generateDocument,
+  toCellValue,
+  splitSourceData,
+} from "./documentGen.js";
 import type { Provider, ProviderResponse } from "./types.js";
 
 const sig = () => new AbortController().signal;
@@ -53,6 +60,18 @@ test("parseSlides splits on headings and collects bullets with indent levels", (
     },
     { title: "Penutup", bullets: [{ text: "terima kasih", level: 0 }] },
   ]);
+});
+
+test("splitSourceData pulls a fenced block or a 'data ini:' tail off the instruction", () => {
+  assert.deepEqual(
+    splitSourceData("buatkan laporan penjualan xlsx dari data ini:\nbulan,unit\nJan,120\nFeb,98"),
+    { instruction: "buatkan laporan penjualan xlsx", sourceData: "bulan,unit\nJan,120\nFeb,98" }
+  );
+  assert.deepEqual(splitSourceData("bikin ringkasan dari:\n```\nA 1\nB 2\n```"), {
+    instruction: "bikin ringkasan dari:",
+    sourceData: "A 1\nB 2",
+  });
+  assert.deepEqual(splitSourceData("buatkan proposal biasa aja"), { instruction: "buatkan proposal biasa aja" });
 });
 
 test("toCellValue coerces only plain integers/decimals, leaving everything else as text", () => {

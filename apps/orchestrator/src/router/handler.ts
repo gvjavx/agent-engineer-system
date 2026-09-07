@@ -74,7 +74,7 @@ import { describeImage, mergeImageDescription } from "../agent/imageDescription.
 import { transcribeVoiceNote } from "../agent/audioTranscription.js";
 import { generateImageFromPrompt } from "../agent/imageGeneration.js";
 import { refineImagePrompt } from "../agent/imagePrompt.js";
-import { cloudflareImageProviders } from "../agent/cloudflareImage.js";
+import { cloudflareImageProviders, cloudflareEditImage } from "../agent/cloudflareImage.js";
 import { generateDocument } from "../agent/documentGen.js";
 import { generateChatReply, needsConversationContext } from "../agent/chatAssistant.js";
 import type { Provider } from "../agent/types.js";
@@ -2289,11 +2289,54 @@ async function handleGenerateDocumentCommand(from: string, request: string, prov
   }
 }
 
+async function handleEditImageCommand(
+  from: string,
+  caption: string,
+  image: { mimeType: string; base64Data: string }
+): Promise<void> {
+  const cf = config.cloudflareImage;
+  if (!cf) return; // guarded by the caller, but keep the type narrowing local
+  await sendWhatsApp(from, "Oke, bentar aku edit gambarnya...");
+  const signal = new AbortController().signal;
+  const providers = buildProviders(resolveManajemenProvider(from, conversationRepo.get(from)));
+  const prompt = await refineImagePrompt(caption, providers[0], signal);
+  let out;
+  try {
+    out = await cloudflareEditImage(cf, prompt, image.base64Data, signal);
+  } catch (err) {
+    await sendWhatsApp(from, `Waduh, gagal edit gambarnya. Errornya:\n${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  if (approxBytes(out.base64) > MAX_IMAGE_BYTES) {
+    await sendWhatsApp(from, "Hasil editnya kegedean buat dikirim ke WhatsApp (>5MB).");
+    return;
+  }
+  try {
+    await sendWhatsAppImage(from, out.base64, undefined, out.mimeType);
+    lastImagePrompt.set(from, { prompt, at: Date.now() });
+  } catch (err) {
+    await sendWhatsApp(from, `Editnya jadi, tapi gagal kekirim: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// A caption that opens with an edit verb ("ubah jadi ...", "jadikan hitam
+// putih", "ganti background jadi ...") — but not one that's really "build this
+// UI from the screenshot", which uses a different vocabulary.
+const IMAGE_EDIT_VERB_RE =
+  /^\s*(tolong\s+|coba\s+)?(ubah(lah)?|jadikan|jadiin|ganti|edit|olah|redraw|convert|bikin\s+(ini|jadi)|buat\s+(ini|versi))\b/i;
+const CODE_TASK_HINT_RE =
+  /\b(tampilan|halaman|layout|komponen|css|html|ui|ux|button|tombol|screenshot|mockup|desain\s+ulang|sesuai\s+(gambar|screenshot|desain|mockup))\b/i;
+
 async function handleImageMessage(
   from: string,
   caption: string,
   image: { mimeType: string; base64Data: string }
 ): Promise<void> {
+  if (config.cloudflareImage && caption && IMAGE_EDIT_VERB_RE.test(caption) && !CODE_TASK_HINT_RE.test(caption)) {
+    await handleEditImageCommand(from, caption, image);
+    return;
+  }
+
   const state = conversationRepo.get(from);
   const providers = buildProviders(resolveManajemenProvider(from, state));
   if (providers.length === 0) {

@@ -304,6 +304,8 @@ export const config = {
           accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
           apiToken: process.env.CLOUDFLARE_API_TOKEN,
           model: process.env.CLOUDFLARE_IMAGE_MODEL ?? "@cf/black-forest-labs/flux-1-schnell",
+          // img2img — used when a sent image comes with an "ubah jadi ..." caption.
+          editModel: process.env.CLOUDFLARE_EDIT_MODEL ?? "@cf/runwayml/stable-diffusion-v1-5-img2img",
         }
       : undefined,
 
