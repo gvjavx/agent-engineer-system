@@ -99,29 +99,43 @@ function sanitizeFilename(name: string, format: DocFormat): string {
   return `${stem}.${format}`;
 }
 
-// Split "# Title\n- a\n- b\n# Title2\n- c" into slides. Lines before the first
-// heading, if any, seed a leading slide with no title.
-export function parseSlides(md: string): { title: string; bullets: string[] }[] {
-  const slides: { title: string; bullets: string[] }[] = [];
-  let current: { title: string; bullets: string[] } | undefined;
+export interface Slide {
+  title: string;
+  // `level` is the bullet's indent depth (0 = top level), from leading spaces
+  // before the "-"/"*" — two spaces per level.
+  bullets: { text: string; level: number }[];
+}
+
+// Split "# Title\n- a\n  - nested\n# Title2\n- c" into slides. Lines before the
+// first heading, if any, seed a leading slide with no title.
+export function parseSlides(md: string): Slide[] {
+  const slides: Slide[] = [];
+  let current: Slide | undefined;
   for (const rawLine of md.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line === "" || line === "---") continue;
-    const heading = line.match(/^#{1,3}\s+(.*)$/);
+    if (rawLine.trim() === "" || rawLine.trim() === "---") continue;
+    const heading = rawLine.trim().match(/^#{1,3}\s+(.*)$/);
     if (heading) {
       current = { title: heading[1].trim(), bullets: [] };
       slides.push(current);
       continue;
     }
-    const bullet = line.match(/^[-*]\s+(.*)$/);
-    const textLine = bullet ? bullet[1].trim() : line;
+    const bullet = rawLine.match(/^(\s*)[-*]\s+(.*)$/);
+    const text = (bullet ? bullet[2] : rawLine).trim();
+    const level = bullet ? Math.min(Math.floor(bullet[1].length / 2), 4) : 0;
     if (!current) {
       current = { title: "", bullets: [] };
       slides.push(current);
     }
-    current.bullets.push(textLine);
+    current.bullets.push({ text, level });
   }
   return slides;
+}
+
+// A plain integer/decimal becomes a real number so xlsx cells sort and sum;
+// anything with separators, currency, dates, or leading zeros stays text.
+export function toCellValue(cell: string): string | number {
+  const t = cell.trim();
+  return t !== "" && !/^0\d/.test(t) && /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : cell;
 }
 
 function parseCsv(text: string): string[][] {
@@ -214,7 +228,10 @@ export async function renderDocument(spec: DocSpec, opts: RenderOpts = {}): Prom
       if (rows.length === 0) throw new Error("xlsx: model tidak mengembalikan CSV");
       const wb = new ExcelJS.Workbook();
       const sheet = wb.addWorksheet("Sheet1");
-      for (const row of rows) sheet.addRow(row);
+      // Header row stays text; body cells that are a plain integer/decimal
+      // become real numbers so they sort and sum. Deliberately strict — no
+      // thousands separators or dates, those are too ambiguous to guess.
+      rows.forEach((row, i) => sheet.addRow(i === 0 ? row : row.map(toCellValue)));
       if (sheet.getRow(1).cellCount > 0) sheet.getRow(1).font = { bold: true };
       return out(Buffer.from(await wb.xlsx.writeBuffer()));
     }
@@ -232,7 +249,7 @@ export async function renderDocument(spec: DocSpec, opts: RenderOpts = {}): Prom
         if (s.title) slide.addText(s.title, { x: 0.5, y: 0.3, w: 9, h: 0.8, fontSize: 28, bold: true });
         if (s.bullets.length > 0) {
           slide.addText(
-            s.bullets.map((t) => ({ text: t, options: { bullet: true } })),
+            s.bullets.map((b) => ({ text: b.text, options: { bullet: true, indentLevel: b.level } })),
             { x: 0.7, y: 1.3, w: 8.6, h: 5, fontSize: 18 }
           );
         }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseDocSpec, parseSlides, renderDocument, generateDocument } from "./documentGen.js";
+import { parseDocSpec, parseSlides, renderDocument, generateDocument, toCellValue } from "./documentGen.js";
 import type { Provider, ProviderResponse } from "./types.js";
 
 const sig = () => new AbortController().signal;
@@ -40,12 +40,32 @@ test("parseDocSpec rejects an unknown format, a missing divider, or empty body",
   assert.equal(parseDocSpec(reply("md", "x.md", "   ")), undefined);
 });
 
-test("parseSlides splits on headings and collects bullets", () => {
-  const slides = parseSlides("# Intro\n- poin satu\n- poin dua\n---\n# Penutup\n- terima kasih");
+test("parseSlides splits on headings and collects bullets with indent levels", () => {
+  const slides = parseSlides("# Intro\n- poin satu\n  - sub poin\n    - sub sub\n---\n# Penutup\n- terima kasih");
   assert.deepEqual(slides, [
-    { title: "Intro", bullets: ["poin satu", "poin dua"] },
-    { title: "Penutup", bullets: ["terima kasih"] },
+    {
+      title: "Intro",
+      bullets: [
+        { text: "poin satu", level: 0 },
+        { text: "sub poin", level: 1 },
+        { text: "sub sub", level: 2 },
+      ],
+    },
+    { title: "Penutup", bullets: [{ text: "terima kasih", level: 0 }] },
   ]);
+});
+
+test("toCellValue coerces only plain integers/decimals, leaving everything else as text", () => {
+  assert.equal(toCellValue("30"), 30);
+  assert.equal(toCellValue("4.5"), 4.5);
+  assert.equal(toCellValue("-12"), -12);
+  assert.equal(toCellValue(" 7 "), 7);
+  assert.equal(toCellValue("Andi"), "Andi");
+  assert.equal(toCellValue("1,000"), "1,000");
+  assert.equal(toCellValue("Rp 5000"), "Rp 5000");
+  assert.equal(toCellValue("007"), "007");
+  assert.equal(toCellValue("2026-01-01"), "2026-01-01");
+  assert.equal(toCellValue(""), "");
 });
 
 test("renderDocument passes markdown/text/csv straight through as bytes", async () => {
